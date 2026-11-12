@@ -165,6 +165,19 @@ if command -v ssh-keygen >/dev/null 2>&1; then
     '[ -z "$(git -C "$T/signing" for-each-ref refs/original)" ] && [ -z "$(git -C "$T/signing" remote)" ]'
   check "compare-rewrite.sh passes a signed history" \
     '"$here/compare-rewrite.sh" "$T/signing"'
+
+  # One pass: rewrite, then sign the same folder before anything is pushed.
+  printf '%s\n' 'New <new@example.com> <me@example.com>' >"$T/mailmap-sign"
+  q "$here/rewrite-identities.sh" "$T/signed.git" "$T/mailmap-sign" "$T/one-pass"
+  out=$("$here/sign-commits.sh" "$T/one-pass" new@example.com 2>&1)
+  check "sign-commits.sh signs a rewritten folder in place" \
+    'printf "%s\n" "$out" | grep -q "main: signed 3 of 4 commits" && [ "$(printf "%s\n" "$out" | tail -n 1)" = "$T/one-pass" ]'
+  check "sign-commits.sh keeps the rewritten identities" \
+    '[ -z "$(git -C "$T/one-pass" log --format="%an%ae%cn%ce" main | grep -e Me -e me@)" ] && [ "$(git -C "$T/one-pass" config rewrite.source)" = "$T/signed.git" ]'
+  check "compare-rewrite.sh passes a rewrite signed in one pass" \
+    '"$here/compare-rewrite.sh" "$T/one-pass"'
+  check "sign-commits.sh refuses a folder argument after a rewritten folder" \
+    '! "$here/sign-commits.sh" "$T/one-pass" new@example.com "$T/other-folder"'
 else
   echo "ssh-keygen is missing; sign-commits.sh not tested"
 fi

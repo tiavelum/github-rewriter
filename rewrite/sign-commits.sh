@@ -1,24 +1,27 @@
 #!/bin/sh
-# Signs again, in a fresh clone, the commits of the default branch that you
-# committed yourself, and leaves the result there to be checked and pushed;
-# a rewrite by rewrite-identities.sh drops every signature.
+# Signs again the commits of the default branch that you committed yourself,
+# and leaves the result to be checked and pushed; a rewrite by
+# rewrite-identities.sh drops every signature.
 #
+#   sign-commits.sh <rewritten folder> <committer address>
 #   sign-commits.sh <owner/repo | clone URL> <committer address> [folder]
 #
-# owner/repo stands for git@github.com:owner/repo.git. Signs, with the
-# signing key of your git configuration, each commit whose committer has
-# <committer address>, and leaves the others unsigned: GitHub would show a
-# commit that GitHub or someone else committed, signed with your key, as
-# unverified. Names, addresses, dates, messages and merges stay as they are;
-# signatures of other commits are dropped. The clone goes into <folder>,
-# which must not exist yet, or else into a new temporary folder. Prints how
-# many commits it signed, then the folder, which keeps the URL as
+# Given a folder that rewrite-identities.sh left, it signs there, so that the
+# rewrite and the signing reach GitHub in one push. Given a repository, it
+# signs in a fresh clone in <folder>, which must not exist yet, or else in a
+# new temporary folder; owner/repo stands for git@github.com:owner/repo.git.
+# Signs, with the signing key of your git configuration, each commit whose
+# committer has <committer address>, and leaves the others unsigned: GitHub
+# would show a commit that GitHub or someone else committed, signed with
+# your key, as unverified. Names, addresses, dates, messages and merges stay
+# as they are; signatures of other commits are dropped. Prints how many
+# commits it signed, then the folder, which keeps the original's URL as
 # rewrite.source for compare-rewrite.sh and force-push-rewrite.sh.
 
 set -eu
 
 usage() {
-  sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//' >&2
+  sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//' >&2
   exit 2
 }
 die() {
@@ -28,11 +31,17 @@ die() {
 
 [ $# -ge 2 ] && [ $# -le 3 ] || usage
 
-case $1 in
-*/*/* | *:* | /* | .*) url=$1 ;;
-*/*) url=git@github.com:$1.git ;;
-*) usage ;;
-esac
+if [ -d "$1" ] && url=$(git -C "$1" config rewrite.source 2>/dev/null); then
+  [ $# -eq 2 ] || usage
+  dir=$1
+else
+  case $1 in
+  */*/* | *:* | /* | .*) url=$1 ;;
+  */*) url=git@github.com:$1.git ;;
+  *) usage ;;
+  esac
+  dir=
+fi
 SIGN_EMAIL=$2
 export SIGN_EMAIL
 
@@ -50,16 +59,17 @@ if [ "$(git config gpg.format || true)" = ssh ]; then
   fi
 fi
 
-if [ $# -eq 3 ]; then
-  dir=$3
-  [ ! -e "$dir" ] || die "$dir exists already"
-else
-  dir=$(mktemp -d "${TMPDIR:-/tmp}/sign-commits.XXXXXX")/$(basename "$url" .git)
+if [ -z "$dir" ]; then
+  if [ $# -eq 3 ]; then
+    dir=$3
+    [ ! -e "$dir" ] || die "$dir exists already"
+  else
+    dir=$(mktemp -d "${TMPDIR:-/tmp}/sign-commits.XXXXXX")/$(basename "$url" .git)
+  fi
+  git clone --quiet "$url" "$dir"
+  git -C "$dir" remote remove origin
 fi
-
-git clone --quiet "$url" "$dir"
 branch=$(git -C "$dir" symbolic-ref --short HEAD)
-git -C "$dir" remote remove origin
 
 # filter-branch sets GIT_COMMITTER_* to each commit's own committer.
 # shellcheck disable=SC2016 # the filter's variables expand in filter-branch
