@@ -132,5 +132,42 @@ check "reset-clone.sh moves the clone onto the rewritten default branch" \
 check "reset-clone.sh makes the branch track origin and lists the branches" \
   '[ "$(git -C "$T/work" rev-parse --abbrev-ref "main@{upstream}")" = origin/main ] && printf "%s\n" "$out" | grep -q "feature"'
 
+# Signing: an original with a merge, where GitHub committed one commit.
+if command -v ssh-keygen >/dev/null 2>&1; then
+  git init -q --bare "$T/signed.git"
+  q git clone "$T/signed.git" "$T/sign-work"
+  cd "$T/sign-work" || exit 2
+  commit one Me me@example.com 2026-02-01T10:00:00
+  GIT_COMMITTER_NAME=GitHub GIT_COMMITTER_EMAIL=noreply@github.com \
+    GIT_COMMITTER_DATE=2026-02-02T10:00:00 GIT_AUTHOR_DATE=2026-02-02T10:00:00 \
+    git -c user.name=Me -c user.email=me@example.com commit -q --allow-empty -m two
+  git switch -q -c side HEAD~1
+  commit side Me me@example.com 2026-02-03T10:00:00
+  git switch -q main
+  GIT_AUTHOR_DATE=2026-02-04T10:00:00 GIT_COMMITTER_DATE=2026-02-04T10:00:00 \
+    git -c user.name=Me -c user.email=me@example.com merge -q --no-ff -m merge side
+  q git push origin main
+  identities=$(git log --format='%an %ae %cn %ce %ad %cd %s' --date=raw main)
+  cd "$T" || exit 2
+
+  check "sign-commits.sh refuses without a signing key" \
+    '! "$here/sign-commits.sh" "$T/signed.git" me@example.com "$T/unsigned"'
+  ssh-keygen -q -t ed25519 -N '' -C test -f "$T/key"
+  git config --global gpg.format ssh
+  git config --global user.signingkey "$T/key.pub"
+
+  out=$("$here/sign-commits.sh" "$T/signed.git" me@example.com "$T/signing" 2>&1)
+  check "sign-commits.sh signs only the commits of the given committer" \
+    'printf "%s\n" "$out" | grep -q "main: signed 3 of 4 commits" && for c in $(git -C "$T/signing" rev-list main); do s=no; git -C "$T/signing" cat-file commit "$c" | sed "/^\$/q" | grep -q "^gpgsig" && s=yes; case $(git -C "$T/signing" log -1 --format=%ce "$c")/$s in me@example.com/yes | noreply@github.com/no) ;; *) exit 1 ;; esac; done'
+  check "sign-commits.sh keeps identities, dates, messages and merges" \
+    '[ "$(git -C "$T/signing" log --format="%an %ae %cn %ce %ad %cd %s" --date=raw main)" = "$identities" ] && [ "$(git -C "$T/signing" rev-list --merges --count main)" = 1 ]'
+  check "sign-commits.sh leaves no backup refs and no remote" \
+    '[ -z "$(git -C "$T/signing" for-each-ref refs/original)" ] && [ -z "$(git -C "$T/signing" remote)" ]'
+  check "compare-rewrite.sh passes a signed history" \
+    '"$here/compare-rewrite.sh" "$T/signing"'
+else
+  echo "ssh-keygen is missing; sign-commits.sh not tested"
+fi
+
 printf '\n%s passed, %s failed\n' "$passed" "$failed"
 [ "$failed" = 0 ]
