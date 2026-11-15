@@ -7,4 +7,4 @@ Scripts and a procedure for rewriting or replaying the history of a GitHub repos
 - Documents describe the current way only. What a run hit goes into a comment on that run's tracking issue, what the work teaches about recording and learning into #8, and a decision that constrains future runs into `docs/decisions/`.
 - Commit no mailmap, export or test data with a real person's address other than the account owner's; tests use invented identities.
 - A script that pushes, deletes or changes a setting on GitHub asks for confirmation first, and its test runs without contacting GitHub.
-- Done: run `sh rewrite/test-history-rewrite.sh`. If you cannot run it, wait for the CI run of your commit and report its result.
+- Done: run `sh rewrite/test-history-rewrite.sh` and `sh replay/test-replay.sh`. If you cannot run them, wait for the CI run of your commit and report its result.
