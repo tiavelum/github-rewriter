@@ -377,7 +377,7 @@ check "the fake gh refuses writing requests" \
 check "plan-replay.py stops with a message at a branch that merges a commit no pull request holds" \
   '(FAKE_GH_API=$T/api-stray; export FAKE_GH_API; ! plan "$mirror" ada-example/tool "$T/mailmap" "$T/stray.jsonl" 2>"$T/stray-err") && s1=$(echo "$S1" | cut -c1-7) && grep -q "the branch of pull request #7 merges $s1, which is neither" "$T/stray-err" && ! grep -q Traceback "$T/stray-err" && [ ! -e "$T/stray.jsonl" ] || { cat "$T/stray-err"; exit 1; }'
 check "plan-replay.py refuses an existing event file and a missing folder" \
-  '! plan "$mirror" ada-example/tool "$T/mailmap" "$T/events.jsonl" && [ "$(wc -l <"$T/events.jsonl")" -eq 23 ] && ! plan "$mirror" ada-example/tool "$T/mailmap" "$T/nodir/out.jsonl" 2>"$T/nodir-err" && grep -q "no folder $T/nodir" "$T/nodir-err" && ! grep -q Traceback "$T/nodir-err" || { cat "$T/nodir-err"; exit 1; }'
+  '! plan "$mirror" ada-example/tool "$T/mailmap" "$T/events.jsonl" && [ "$(wc -l <"$T/events.jsonl")" -eq 23 ] && ! plan "$mirror" ada-example/tool "$T/mailmap" "$T/nodir/out.jsonl" 2>"$T/nodir-err" && grep -q "^plan-replay.py: no folder .*/nodir for the event file$" "$T/nodir-err" && ! grep -q Traceback "$T/nodir-err" || { cat "$T/nodir-err"; exit 1; }'
 check "plan-replay.py refuses a missing mailmap and a wrong line in the override file" \
   '! plan "$mirror" ada-example/tool "$T/nothing" "$T/other.jsonl" && printf "%s\n" "1 feature" >"$T/bad-types" && ! plan --types "$T/bad-types" "$mirror" ada-example/tool "$T/mailmap" "$T/other.jsonl" && printf "%s\n" "abc1234 summary Text" >"$T/bad-summary" && ! plan --types "$T/bad-summary" "$mirror" ada-example/tool "$T/mailmap" "$T/other.jsonl" && [ ! -e "$T/other.jsonl" ]'
 
