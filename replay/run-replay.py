@@ -1,0 +1,859 @@
+#!/usr/bin/env python3
+"""Applies an event file that plan-replay.py wrote to an empty GitHub
+repository, so that the target gets the source's labels, issues, pull
+requests, comments and commits under the same numbers.
+
+  run-replay.py [--state <file>] [--with-times] [--pace <seconds>]
+                <event file> <mirror> <owner/repo>
+
+<mirror> is the mirror the event file was planned from; <owner/repo> is the
+target. The target must exist and be empty, without commits, issues or pull
+requests, unless the state file records an earlier run of the same event
+file into it; the run then resumes after the last finished event. The state
+file is <event file> with .state.json for .jsonl unless --state names one;
+the work repository that holds the recreated commits lies next to it, with
+.work.git for .state.json.
+
+Prints the totals and asks for <owner/repo> to be typed before the first
+write; anything else stops without writing. Writes to GitHub through gh api
+and git push only, at least --pace seconds apart (default 1), and waits out
+GitHub's rate limits. --with-times appends the original creation time to
+each body and comment.
+"""
+
+import bisect
+import hashlib
+import json
+import os
+import re
+import signal
+import subprocess
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from urllib.parse import quote
+
+PROG = "run-replay.py"
+FORMAT = 1
+STATE_FORMAT = 1
+KINDS = (
+    "create-label",
+    "push-commits",
+    "push-branch",
+    "create-issue",
+    "create-pull",
+    "add-comment",
+    "merge-pull",
+    "close-item",
+)
+# A hash in a text: 7 to 40 lowercase hexadecimal characters, not part of a longer word.
+HASH = re.compile(r"(?<![0-9A-Za-z])[0-9a-f]{7,40}(?![0-9A-Za-z])")
+# A closing keyword for an item of the same repository, which GitHub acts on at a merge.
+CLOSING = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?\s+#(\d+)\b", re.IGNORECASE)
+RETRIES = 5
+# GitHub's guidance for a secondary rate limit without retry-after: wait at
+# least a minute, longer with each retry.
+RATE_LIMIT_WAIT = 60
+# GitHub may answer a read with a server error, and refuse a merge or a pull
+# request right after the push or creation it depends on, until it has
+# caught up; these waits are long enough for that in practice.
+TRANSIENT_WAIT = 5
+CATCH_UP_WAIT = 3
+# GitHub closes the items a merged pull request names with a closing keyword
+# shortly after the merge; close-item waits this long for that.
+CLOSE_WAIT = 10
+
+
+class ReplayError(Exception):
+    """Ends the run with a message; the state file keeps the last finished event."""
+
+
+def usage(status=2):
+    print(__doc__.strip("\n"), file=sys.stderr if status else sys.stdout)
+    sys.exit(status)
+
+
+def run(args, stdin=None, env=None, new_session=False):
+    try:
+        return subprocess.run(
+            args,
+            input=stdin,
+            stdin=subprocess.DEVNULL if stdin is None else None,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=env,
+            start_new_session=new_session,
+        )
+    except FileNotFoundError:
+        raise ReplayError(f"{args[0]} is missing") from None
+
+
+def git(repo, *args, stdin=None, env=None):
+    result = run(["git", "-C", str(repo), *args], stdin, env)
+    if result.returncode:
+        raise ReplayError(f"git {args[0]} failed: {result.stderr.strip()}")
+    return result.stdout.strip()
+
+
+def git_date(stamp):
+    """An ISO 8601 time as git's raw date, seconds and offset, so that the offset stays."""
+    moment = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    minutes = int(moment.utcoffset().total_seconds()) // 60
+    sign = "-" if minutes < 0 else "+"
+    return f"{int(moment.timestamp())} {sign}{abs(minutes) // 60:02}{abs(minutes) % 60:02}"
+
+
+def parse_response(out):
+    """Status, headers and JSON body of what gh api --include printed."""
+    if not out.startswith("HTTP/"):
+        return None, {}, None
+    end = re.search(r"\r?\n\r?\n", out)
+    head, body = (out[: end.start()], out[end.end() :]) if end else (out, "")
+    lines = head.splitlines()
+    headers = {}
+    for line in lines[1:]:
+        name, _, value = line.partition(":")
+        headers[name.strip().lower()] = value.strip()
+    try:
+        data = json.loads(body) if body.strip() else None
+    except ValueError:
+        data = {"message": body.strip()[:200]}
+    return int(lines[0].split()[1]), headers, data
+
+
+def message_of(data):
+    if not isinstance(data, dict):
+        return ""
+    parts = [str(data.get("message", ""))]
+    for error in data.get("errors") or []:
+        if isinstance(error, dict):
+            parts.append(error.get("message") or error.get("code") or "")
+        else:
+            parts.append(str(error))
+    return "; ".join(p for p in parts if p)
+
+
+def rate_limit_wait(status, headers, data, attempt):
+    """Seconds to wait before retrying a call that hit a rate limit, else None."""
+    if status not in (403, 429):
+        return None
+    if headers.get("retry-after", "").isdigit():
+        return max(1, int(headers["retry-after"]))
+    if (
+        headers.get("x-ratelimit-remaining") == "0"
+        and headers.get("x-ratelimit-reset", "").isdigit()
+    ):
+        return max(1, int(headers["x-ratelimit-reset"]) - int(time.time()) + 1)
+    if status == 429 or "rate limit" in message_of(data).lower():
+        return RATE_LIMIT_WAIT * 2**attempt
+    return None
+
+
+class Api:
+    """Calls gh api, at least pace seconds after the end of the previous write."""
+
+    def __init__(self, pace):
+        self.pace = pace
+        self.last_write = None
+
+    def before_write(self):
+        if self.last_write is not None:
+            wait = self.last_write + self.pace - time.monotonic()
+            if wait > 0:
+                time.sleep(wait)
+
+    def after_write(self):
+        self.last_write = time.monotonic()
+
+    def call(self, method, endpoint, body=None):
+        """Status and body of one request. A rate limit is waited out and the
+        same call retried; a read is also retried after a server error."""
+        write = method != "GET"
+        args = ["gh", "api", "--include", "--method", method, endpoint]
+        payload = None
+        if body is not None:
+            args += ["--input", "-"]
+            payload = json.dumps(body)
+        for attempt in range(RETRIES + 1):
+            if write:
+                self.before_write()
+            # A session of its own keeps a Ctrl-C from killing gh in the middle of a call.
+            result = run(args, payload, new_session=True)
+            if write:
+                self.after_write()
+            status, headers, data = parse_response(result.stdout)
+            wait, why = rate_limit_wait(status, headers, data, attempt), "rate limited"
+            if wait is None and not write and (status is None or status >= 500):
+                wait, why = TRANSIENT_WAIT, f"HTTP {status}" if status else "no answer"
+            if wait is None:
+                if status is None:
+                    error = result.stderr.strip().splitlines()
+                    raise ReplayError(
+                        f"{method} {endpoint}: no answer from GitHub: {error[-1] if error else ''}"
+                    )
+                return status, data
+            if attempt == RETRIES:
+                raise ReplayError(f"{method} {endpoint}: still {why} after {RETRIES} retries")
+            print(
+                f"      {why} on {method} {endpoint}; waiting {wait} s"
+                f" before retry {attempt + 1} of {RETRIES}",
+                flush=True,
+            )
+            time.sleep(wait)
+        raise AssertionError("unreachable")
+
+    def expect(self, method, endpoint, body=None, ok=(200,)):
+        status, data = self.call(method, endpoint, body)
+        if status not in ok:
+            raise ReplayError(f"{method} {endpoint} answered HTTP {status}: {message_of(data)}")
+        return data
+
+    def pages(self, endpoint):
+        """All entries of a list endpoint, read page by page up to the first
+        empty one, since --paginate fails through some proxies."""
+        joiner = "&" if "?" in endpoint else "?"
+        entries, page = [], 1
+        while True:
+            batch = self.expect("GET", f"{endpoint}{joiner}per_page=100&page={page}")
+            if not batch:
+                return entries
+            entries.extend(batch)
+            page += 1
+
+
+def default_state_path(events_path):
+    name = events_path.name
+    stem = name[: -len(".jsonl")] if name.endswith(".jsonl") else name
+    return events_path.with_name(stem + ".state.json")
+
+
+def work_path(state_path):
+    name = state_path.name
+    stem = name[: -len(".state.json")] if name.endswith(".state.json") else name
+    return state_path.with_name(stem + ".work.git")
+
+
+def load_events(path):
+    raw = path.read_bytes()
+    try:
+        lines = [json.loads(line) for line in raw.decode("utf-8").splitlines() if line.strip()]
+    except ValueError as error:
+        raise ReplayError(f"{path} is no event file: {error}") from None
+    if not lines or lines[0].get("kind") != "header" or lines[0].get("format") != FORMAT:
+        raise ReplayError(f"{path} has no header of format {FORMAT}; plan it with plan-replay.py")
+    header, events = lines[0], lines[1:]
+    for seq, e in enumerate(events, 1):
+        if e.get("seq") != seq or e.get("kind") not in KINDS:
+            raise ReplayError(f"{path}: event {seq} is out of sequence or of an unknown kind")
+    return header, events, hashlib.sha256(raw).hexdigest()
+
+
+def commits(count):
+    return f"{count} commit{'' if count == 1 else 's'}"
+
+
+def utc_text(stamp):
+    moment = datetime.fromisoformat(stamp.replace("Z", "+00:00")).astimezone(timezone.utc)
+    return moment.strftime("%Y-%m-%d %H:%M UTC")
+
+
+class Replay:
+    def __init__(self, events_path, mirror, slug, state_path, with_times, pace):
+        self.events_path, self.mirror, self.slug = events_path, mirror, slug
+        self.state_path, self.work = state_path, work_path(state_path)
+        self.with_times = with_times
+        self.api = Api(pace)
+        self.header, self.events, self.digest = load_events(events_path)
+        self.default = self.header["default_branch"]
+        self.sources = sorted(set(self.header["source_commits"]))
+        self.creates = {
+            e["number"]: e for e in self.events if e["kind"] in ("create-issue", "create-pull")
+        }
+        self.done, self.highest, self.head = 0, 0, None
+        self.hashes, self.numbers, self.heads, self.urls = {}, {}, {}, {}
+        self.finished, self.resumed_at, self.closing = False, None, (0.0, set())
+        self.stopping, self.current = False, None
+        self.counts = {}
+
+    # The state file
+
+    def load_state(self):
+        if not self.state_path.exists():
+            return False
+        try:
+            state = json.loads(self.state_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as error:
+            raise ReplayError(f"cannot read the state file {self.state_path}: {error}") from None
+        if state.get("format") != STATE_FORMAT or state.get("events") != self.digest:
+            raise ReplayError(
+                f"{self.state_path} belongs to another event file; give another --state"
+                " or remove it"
+            )
+        if state.get("target") != self.slug:
+            raise ReplayError(f"{self.state_path} records a replay into {state.get('target')}")
+        self.done, self.highest, self.head = state["done"], state["highest"], state["head"]
+        self.hashes = state["hashes"]
+        self.numbers = {int(k): v for k, v in state["numbers"].items()}
+        self.heads = {int(k): v for k, v in state["heads"].items()}
+        self.urls = {int(k): v for k, v in state["urls"].items()}
+        self.finished = state.get("finished", False)
+        return True
+
+    def save_state(self):
+        state = {
+            "format": STATE_FORMAT,
+            "events": self.digest,
+            "event_file": str(self.events_path),
+            "source": self.header["source"],
+            "target": self.slug,
+            "done": self.done,
+            "finished": self.finished,
+            "highest": self.highest,
+            "head": self.head,
+            "numbers": {str(k): v for k, v in sorted(self.numbers.items())},
+            "heads": {str(k): v for k, v in sorted(self.heads.items())},
+            "urls": {str(k): v for k, v in sorted(self.urls.items())},
+            "hashes": self.hashes,
+        }
+        partial = self.state_path.with_name(self.state_path.name + ".partial")
+        with partial.open("w", encoding="utf-8") as file:
+            json.dump(state, file, indent=1)
+            file.write("\n")
+            file.flush()
+            os.fsync(file.fileno())
+        partial.replace(self.state_path)
+
+    # Checks before the first write
+
+    def check_mirror(self):
+        trees = {c["tree"] for e in self.events for c in e.get("commits", [])}
+        trees |= {e["tree"] for e in self.events if e["kind"] == "merge-pull"}
+        if not trees:
+            return
+        out = git(self.mirror, "cat-file", "--batch-check", stdin="\n".join(sorted(trees)) + "\n")
+        missing = [line.split()[0] for line in out.splitlines() if line.endswith(" missing")]
+        if missing:
+            raise ReplayError(
+                f"{self.mirror} lacks {len(missing)} trees of the event file, such as"
+                f" {missing[0][:7]}; give the mirror it was planned from"
+            )
+
+    def read_target(self):
+        status, info = self.api.call("GET", f"repos/{self.slug}")
+        if status != 200:
+            raise ReplayError(
+                f"no repository {self.slug}, or gh has no access to it (HTTP {status})"
+            )
+        permissions = info.get("permissions") or {}
+        if not (permissions.get("push") or permissions.get("admin")):
+            raise ReplayError(f"gh may not write to {self.slug}")
+        if info.get("default_branch") != self.default:
+            raise ReplayError(
+                f"the default branch of {self.slug} is {info.get('default_branch')}, the"
+                f" source's {self.default}; rename it on GitHub first"
+            )
+        self.url = info["html_url"]
+        protocol = run(["gh", "config", "get", "git_protocol"]).stdout.strip()
+        self.remote = info["ssh_url"] if protocol == "ssh" else info["clone_url"]
+        newest = self.api.expect(
+            "GET", f"repos/{self.slug}/issues?state=all&sort=created&direction=desc&per_page=1"
+        )
+        result = run(["git", "ls-remote", self.remote])
+        if result.returncode:
+            raise ReplayError(f"git ls-remote of {self.slug} failed: {result.stderr.strip()}")
+        refs = {}
+        for line in result.stdout.splitlines():
+            sha, _, ref = line.partition("\t")
+            refs[ref] = sha
+        return (newest[0]["number"] if newest else 0), refs
+
+    def check_target(self, resumed, highest, refs):
+        head = refs.get(f"refs/heads/{self.default}")
+        if not resumed:
+            if refs or highest:
+                raise ReplayError(
+                    f"{self.slug} is not empty: it has {len(refs)} refs and items up to"
+                    f" #{highest}; replay only into an empty repository"
+                )
+            return
+        following = self.events[self.done] if self.done < len(self.events) else None
+        kind = following["kind"] if following else None
+        problems = []
+        # The event that was running when the last run stopped may have done
+        # part of its work; it checks what it finds, so it may account for one
+        # difference.
+        if highest != self.highest and not (
+            kind in ("create-issue", "create-pull")
+            and highest == self.highest + 1 == following["number"]
+        ):
+            problems.append(f"its highest number is #{highest}, the state's #{self.highest}")
+        if head != self.head and kind not in ("push-commits", "merge-pull"):
+            problems.append(
+                f"{self.default} is at {(head or 'nothing')[:7]}, the state's"
+                f" {(self.head or 'nothing')[:7]}"
+            )
+        if problems:
+            raise ReplayError(
+                f"{self.slug} does not match {self.state_path}: {'; '.join(problems)}"
+            )
+        self.highest = highest
+
+    def label_changes(self):
+        planned = {e["name"] for e in self.events if e["kind"] == "create-label"}
+        present = {label["name"] for label in self.api.pages(f"repos/{self.slug}/labels")}
+        return sorted(present & planned), sorted(present - planned)
+
+    def summary(self, resumed, updated, removed):
+        left = self.events[self.done :]
+        total = len(self.events)
+        if self.done == total:
+            print(
+                f"All {total} events of the replay of {self.header['source']} into {self.slug}"
+                f" are done, as {self.state_path} records; the target is checked again"
+            )
+        elif resumed:
+            print(
+                f"Resume the replay of {self.header['source']} into {self.slug}"
+                f" at event {self.done + 1} of {total}, from {self.state_path}"
+            )
+        else:
+            print(f"Replay {self.header['source']} into {self.slug}: {total} events")
+
+        def count(kind):
+            return sum(e["kind"] == kind for e in left)
+
+        rows = [
+            ("labels", count("create-label")),
+            ("commits", sum(len(e.get("commits", [])) for e in left)),
+            ("issues", count("create-issue")),
+            ("pull requests", count("create-pull")),
+            ("comments", count("add-comment")),
+            ("merges", count("merge-pull")),
+            ("closes", count("close-item")),
+        ]
+        for name, value in rows:
+            print(f"  {name:<25}{value:>6}")
+        if updated:
+            print(f"  labels the target has and the replay updates: {', '.join(updated)}")
+        if removed:
+            print(f"  labels the target has and the replay deletes: {', '.join(removed)}")
+
+    # Commits
+
+    def prepare_work(self, resumed):
+        objects = git(self.mirror, "rev-parse", "--path-format=absolute", "--git-path", "objects")
+        if not self.work.is_dir():
+            git(self.work.parent, "init", "-q", "--bare", self.work.name)
+            git(self.work, "config", "gc.auto", "0")
+        # The work repository borrows the mirror's objects instead of copying them.
+        (self.work / "objects" / "info" / "alternates").write_text(objects + "\n", encoding="utf-8")
+        if resumed and self.head:
+            git(self.work, "fetch", "-q", self.remote, "+refs/heads/*:refs/target/*")
+
+    def text(self, value):
+        """value with each hash that is the prefix of exactly one source commit,
+        which the replay has recreated, replaced by the new hash's prefix."""
+        if not value:
+            return value or ""
+
+        def replace(match):
+            prefix = match.group(0)
+            i = bisect.bisect_left(self.sources, prefix)
+            found = [s for s in self.sources[i : i + 2] if s.startswith(prefix)]
+            if len(found) == 1 and found[0] in self.hashes:
+                return self.hashes[found[0]][: len(prefix)]
+            return prefix
+
+        return HASH.sub(replace, value)
+
+    def stamped(self, body, created):
+        if not self.with_times or not created:
+            return body
+        line = f"_Originally created {utc_text(created)}._"
+        return f"{body}\n\n{line}" if body else line
+
+    def recreate(self, commit):
+        parents = []
+        for parent in commit["parents"]:
+            if parent not in self.hashes:
+                raise ReplayError(
+                    f"commit {commit['sha'][:7]} has the parent {parent[:7]},"
+                    " which no earlier event recreated"
+                )
+            parents.append(self.hashes[parent])
+        a, c = commit["author"], commit["committer"]
+        env = dict(
+            os.environ,
+            GIT_AUTHOR_NAME=a["name"],
+            GIT_AUTHOR_EMAIL=a["email"],
+            GIT_AUTHOR_DATE=git_date(a["date"]),
+            GIT_COMMITTER_NAME=c["name"],
+            GIT_COMMITTER_EMAIL=c["email"],
+            GIT_COMMITTER_DATE=git_date(c["date"]),
+        )
+        args = ["commit-tree", commit["tree"]]
+        for parent in parents:
+            args += ["-p", parent]
+        sha = git(self.work, *args, stdin=self.text(commit["message"]), env=env)
+        self.hashes[commit["sha"]] = sha
+        return sha
+
+    def push(self, sha, branch):
+        self.api.before_write()
+        git(self.work, "push", "-q", self.remote, f"{sha}:refs/heads/{branch}")
+        self.api.after_write()
+        git(self.work, "update-ref", f"refs/target/{branch}", sha)
+
+    def push_commits(self, e):
+        sha = None
+        for commit in e["commits"]:
+            sha = self.recreate(commit)
+        self.push(sha, e["branch"])
+        self.head = sha
+        return f"{commits(len(e['commits']))} to {e['branch']}, now at {sha[:7]}"
+
+    def push_branch(self, e):
+        if e["base_commit"] not in self.hashes:
+            raise ReplayError(
+                f"the branch of #{e['number']} starts on {e['base_commit'][:7]}, not yet recreated"
+            )
+        sha = None
+        for commit in e["commits"]:
+            sha = self.recreate(commit)
+        self.push(sha, e["branch"])
+        self.heads[e["number"]] = sha
+        return f"#{e['number']} branch {e['branch']}, {commits(len(e['commits']))}, at {sha[:7]}"
+
+    # Items
+
+    def check_number(self, e, data, what):
+        got = data.get("number")
+        if got != e["number"]:
+            raise ReplayError(
+                f"the {what} planned as #{e['number']} got #{got}; the target's numbers no longer"
+                " follow the source's, so the replay stops. Find out what took the number."
+            )
+
+    def create_label(self, e):
+        endpoint = f"repos/{self.slug}/labels"
+        fields = {"color": e.get("color") or "ededed", "description": e.get("description") or ""}
+        status, data = self.api.call("POST", endpoint, {"name": e["name"], **fields})
+        if status == 201:
+            return f"{e['name']} created"
+        errors = (data or {}).get("errors") or []
+        if status == 422 and any(
+            isinstance(x, dict) and x.get("code") == "already_exists" for x in errors
+        ):
+            self.api.expect("PATCH", f"{endpoint}/{quote(e['name'], safe='')}", fields)
+            return f"{e['name']} updated"
+        raise ReplayError(f"POST {endpoint} answered HTTP {status}: {message_of(data)}")
+
+    def create_issue(self, e):
+        n = e["number"]
+        title = self.text(e["title"])
+        if self.highest >= n:
+            data = self.api.expect("GET", f"repos/{self.slug}/issues/{n}")
+            if data.get("title") != title or "pull_request" in data:
+                raise ReplayError(f"#{n} exists in {self.slug}, but is not the planned issue")
+            note = ", found created"
+        else:
+            body = {
+                "title": title,
+                "body": self.stamped(self.text(e["body"]), e.get("created_at")),
+                "labels": e["labels"],
+                "assignees": e["assignees"],
+            }
+            data = self.api.expect("POST", f"repos/{self.slug}/issues", body, ok=(201,))
+            self.check_number(e, data, "issue")
+            note = ""
+        self.highest, self.numbers[n] = n, n
+        return f"#{n} issue{note}"
+
+    def create_pull(self, e):
+        n = e["number"]
+        title = self.text(e["title"])
+        if self.highest >= n:
+            data = self.api.expect("GET", f"repos/{self.slug}/pulls/{n}")
+            if data.get("title") != title or data["head"]["ref"] != e["head"]:
+                raise ReplayError(
+                    f"#{n} exists in {self.slug}, but is not the planned pull request"
+                )
+            note = ", found created"
+        else:
+            body = {
+                "title": title,
+                "body": self.stamped(self.text(e["body"]), e.get("created_at")),
+                "head": e["head"],
+                "base": e["base"],
+                "draft": e["draft"],
+            }
+            endpoint = f"repos/{self.slug}/pulls"
+            for attempt in range(RETRIES + 1):
+                status, data = self.api.call("POST", endpoint, body)
+                # Right after a push, GitHub may not see the branch yet; a 422 created nothing.
+                if status != 422 or attempt == RETRIES:
+                    break
+                print(f"      HTTP 422 on POST {endpoint}; waiting {CATCH_UP_WAIT} s", flush=True)
+                time.sleep(CATCH_UP_WAIT)
+            if status != 201:
+                raise ReplayError(f"POST {endpoint} answered HTTP {status}: {message_of(data)}")
+            self.check_number(e, data, "pull request")
+            note = ""
+        self.highest, self.numbers[n] = n, n
+        self.urls[n] = data["html_url"]
+        if e["labels"] or e["assignees"]:
+            fields = {"labels": e["labels"], "assignees": e["assignees"]}
+            self.api.expect("PATCH", f"repos/{self.slug}/issues/{n}", fields)
+        return f"#{n} pull request {e['head']} into {e['base']}{note}"
+
+    def add_comment(self, e):
+        n = e["number"]
+        body = self.stamped(self.text(e["body"]), e.get("created_at"))
+        endpoint = f"repos/{self.slug}/issues/{n}/comments"
+        if self.resumed_at == e["seq"]:
+            comments = self.api.pages(endpoint)
+            if comments and comments[-1].get("body") == body:
+                return f"#{n} comment, found created"
+        self.api.expect("POST", endpoint, {"body": body}, ok=(201,))
+        return f"#{n} comment"
+
+    def merge_pull(self, e):
+        n = e["number"]
+        if n not in self.heads or n not in self.urls:
+            raise ReplayError(f"#{n} is merged before its branch was pushed or it was created")
+        title = self.text(e["commit_title"])
+        message = self.text(e["commit_message"]).replace("{pr_url}", self.urls[n])
+        sha, note = None, ""
+        if self.resumed_at == e["seq"]:
+            pull = self.api.expect("GET", f"repos/{self.slug}/pulls/{n}")
+            if pull.get("merged"):
+                sha, note = pull["merge_commit_sha"], ", found merged"
+        endpoint = f"repos/{self.slug}/pulls/{n}/merge"
+        body = {
+            "merge_method": e["method"],
+            "commit_title": title,
+            "commit_message": message,
+            "sha": self.heads[n],
+        }
+        for attempt in range(RETRIES + 1):
+            if sha:
+                break
+            status, data = self.api.call("PUT", endpoint, body)
+            if status == 200:
+                sha = data["sha"]
+            elif status in (405, 409) and attempt < RETRIES:
+                # GitHub refuses a merge while it still computes whether the pull request merges.
+                print(
+                    f"      HTTP {status} on PUT {endpoint}; waiting {CATCH_UP_WAIT} s", flush=True
+                )
+                time.sleep(CATCH_UP_WAIT)
+            else:
+                raise ReplayError(f"PUT {endpoint} answered HTTP {status}: {message_of(data)}")
+        git(
+            self.work,
+            "fetch",
+            "-q",
+            self.remote,
+            f"+refs/heads/{self.default}:refs/target/{self.default}",
+        )
+        fetched = git(self.work, "rev-parse", f"refs/target/{self.default}")
+        if fetched != sha:
+            raise ReplayError(
+                f"after the merge of #{n}, {self.default} is at {fetched[:7]}, not at {sha[:7]}"
+            )
+        tree = git(self.work, "rev-parse", f"{sha}^{{tree}}")
+        if tree != e["tree"]:
+            raise ReplayError(
+                f"after the merge of #{n}, the tree of {self.default} is {tree[:7]}, the source's"
+                f" {e['tree'][:7]}; the replay stops at the first difference"
+            )
+        self.hashes[e["source_commit"]] = sha
+        self.head = sha
+        named = self.creates[n].get("body", "") + "\n" + message
+        self.closing = (time.monotonic(), {int(x) for x in CLOSING.findall(named)})
+        return f"#{n} {e['method']}-merged into {self.default} as {sha[:7]}{note}"
+
+    def close_item(self, e):
+        n, reason = e["number"], e.get("state_reason")
+        is_pull = self.creates[n]["kind"] == "create-pull"
+        item = self.api.expect("GET", f"repos/{self.slug}/issues/{n}")
+        merged_at, named = self.closing
+        while item["state"] == "open" and n in named and time.monotonic() - merged_at < CLOSE_WAIT:
+            time.sleep(1)
+            item = self.api.expect("GET", f"repos/{self.slug}/issues/{n}")
+        said = f" as {reason}" if reason else ""
+        note = ""
+        if item["state"] == "closed":
+            if reason in (None, item.get("state_reason")):
+                return f"#{n} already closed{said}"
+            # GitHub ignores a state reason unless the state changes.
+            self.api.expect("PATCH", f"repos/{self.slug}/issues/{n}", {"state": "open"})
+            note = f", reopened from {item.get('state_reason')}"
+        if is_pull:
+            self.api.expect("PATCH", f"repos/{self.slug}/pulls/{n}", {"state": "closed"})
+        else:
+            fields = {"state": "closed", **({"state_reason": reason} if reason else {})}
+            self.api.expect("PATCH", f"repos/{self.slug}/issues/{n}", fields)
+        return f"#{n} closed{said}{note}"
+
+    # The run
+
+    def apply(self, e):
+        handler = {
+            "create-label": self.create_label,
+            "push-commits": self.push_commits,
+            "push-branch": self.push_branch,
+            "create-issue": self.create_issue,
+            "create-pull": self.create_pull,
+            "add-comment": self.add_comment,
+            "merge-pull": self.merge_pull,
+            "close-item": self.close_item,
+        }[e["kind"]]
+        return handler(e)
+
+    def reconcile(self):
+        """Reopens what a closing keyword closed that the source has open, and
+        stops if anything else differs from the plan."""
+        found = {i["number"]: i for i in self.api.pages(f"repos/{self.slug}/issues?state=all")}
+        problems, reopened = [], []
+        for n, e in sorted(self.creates.items()):
+            item = found.get(n)
+            if item is None:
+                problems.append(f"#{n} is missing")
+                continue
+            merged = (item.get("pull_request") or {}).get("merged_at")
+            state = "merged" if merged else item["state"]
+            if e["state"] == "open" and state == "closed":
+                kind = "pulls" if e["kind"] == "create-pull" else "issues"
+                self.api.expect("PATCH", f"repos/{self.slug}/{kind}/{n}", {"state": "open"})
+                reopened.append(n)
+            elif state != e["state"]:
+                problems.append(f"#{n} is {state}, planned {e['state']}")
+            elif e["kind"] == "create-issue" and state == "closed" and e.get("state_reason"):
+                if item.get("state_reason") != e["state_reason"]:
+                    problems.append(
+                        f"#{n} is closed as {item.get('state_reason')}, planned {e['state_reason']}"
+                    )
+        problems += [f"#{n} is not in the plan" for n in sorted(set(found) - set(self.creates))]
+        planned = {e["name"] for e in self.events if e["kind"] == "create-label"}
+        labels = {label["name"] for label in self.api.pages(f"repos/{self.slug}/labels")}
+        if labels != planned:
+            problems.append(f"the labels differ: {', '.join(sorted(labels ^ planned))}")
+        for n in reopened:
+            print(f"  #{n} reopened: a closing keyword closed it, the source has it open")
+        if problems:
+            raise ReplayError(f"{self.slug} differs from the plan: {'; '.join(problems)}")
+
+    def interrupt(self, signum, frame):
+        if self.stopping:
+            raise KeyboardInterrupt
+        self.stopping = True
+        print(f"{PROG}: interrupted; stopping after this event", file=sys.stderr, flush=True)
+
+    def main(self):
+        self.check_mirror()
+        resumed = self.load_state()
+        highest, refs = self.read_target()
+        self.check_target(resumed, highest, refs)
+        # Labels the target has, such as GitHub's defaults, are changed only before the first event.
+        updated, removed = self.label_changes() if self.done == 0 else ([], [])
+        self.summary(resumed, updated, removed)
+        print(f"Type {self.slug} to confirm: ", end="", flush=True)
+        try:
+            answer = sys.stdin.readline().strip()
+        except KeyboardInterrupt:
+            answer = ""
+        if answer != self.slug:
+            raise ReplayError("not confirmed; nothing changed")
+
+        signal.signal(signal.SIGINT, self.interrupt)
+        if resumed:
+            self.resumed_at = self.done + 1
+        else:
+            self.save_state()
+        self.prepare_work(resumed)
+        for name in removed:
+            self.api.expect("DELETE", f"repos/{self.slug}/labels/{quote(name, safe='')}", ok=(204,))
+            print(f"  label {name} deleted")
+
+        total = len(self.events)
+        width = len(str(total))
+        for e in self.events[self.done :]:
+            self.current = e["seq"]
+            detail = self.apply(e)
+            self.done = e["seq"]
+            self.save_state()
+            self.counts[e["kind"]] = self.counts.get(e["kind"], 0) + 1
+            print(f"{e['seq']:>{width}}/{total}  {e['kind']:<12}  {detail}", flush=True)
+            if self.stopping:
+                print(
+                    f"{PROG}: stopped after event {e['seq']} of {total};"
+                    " run the same command again to resume"
+                )
+                return 130
+        self.current = None
+        self.reconcile()
+        self.finished = True
+        self.save_state()
+        print("Done in this run:")
+        for kind in KINDS:
+            print(f"  {kind:<25}{self.counts.get(kind, 0):>6}")
+        print(self.url)
+        return 0
+
+
+def main(argv):
+    if argv[:1] in (["-h"], ["--help"]):
+        usage(0)
+    state, with_times, pace = None, False, 1.0
+    while argv[:1] and argv[0].startswith("--"):
+        option, argv = argv[0], argv[1:]
+        if option == "--state" and argv:
+            state, argv = Path(argv[0]), argv[1:]
+        elif option == "--with-times":
+            with_times = True
+        elif option == "--pace" and argv and re.fullmatch(r"\d+(\.\d+)?", argv[0]):
+            pace, argv = float(argv[0]), argv[1:]
+        else:
+            usage()
+    if len(argv) != 3 or argv[0].startswith("-"):
+        usage()
+    events_path, mirror, slug = Path(argv[0]), Path(argv[1]), argv[2]
+    if not re.fullmatch(r"[\w.-]+/[\w.-]+", slug):
+        usage()
+    replay = None
+    try:
+        if not events_path.is_file():
+            raise ReplayError(f"no event file at {events_path}")
+        if not mirror.is_dir():
+            raise ReplayError(f"no mirror at {mirror}")
+        state = state or default_state_path(events_path)
+        if not state.parent.is_dir():
+            raise ReplayError(f"no folder {state.parent} for the state file")
+        replay = Replay(events_path, mirror, slug, state, with_times, pace)
+        return replay.main()
+    except ReplayError as stop:
+        print(f"{PROG}: {stop}", file=sys.stderr)
+        if replay and replay.current:
+            print(
+                f"{PROG}: stopped in event {replay.current} of {len(replay.events)};"
+                f" {replay.state_path} holds the events up to {replay.done}",
+                file=sys.stderr,
+            )
+        return 1
+    except KeyboardInterrupt:
+        print(file=sys.stderr)
+        if replay and replay.current:
+            print(
+                f"{PROG}: stopped in event {replay.current}; run the same command again,"
+                " and that event checks what of it is done",
+                file=sys.stderr,
+            )
+        return 130
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
