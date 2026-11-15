@@ -43,10 +43,19 @@ jobs:
       - name: Test the replay scripts
         run: sh replay/test-replay.sh
 
-      # The formatter and the linter gate every Python file (TL-23, TL-33);
-      # their result does not depend on the runner, so one runs them.
+      # The formatters and the linters gate every Python and shell file
+      # (TL-23, TL-33); their result does not depend on the runner, so one
+      # runs them. shfmt takes its options from .editorconfig.
       - name: Check the format and lint of the Python files
         if: runner.os == 'Linux'
         run: |
           pipx run --spec ruff==0.16.6 ruff format --check .
           pipx run --spec ruff==0.16.6 ruff check .
+
+      - name: Check the format of the shell files
+        if: runner.os == 'Linux'
+        run: pipx run --spec shfmt-py==3.13.0.3 shfmt -d $(git ls-files '*.sh')
+
+      - name: Lint the shell files
+        if: runner.os == 'Linux'
+        run: pipx run --spec shellcheck-py==0.11.0.1 shellcheck $(git ls-files '*.sh')

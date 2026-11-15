@@ -10,11 +10,7 @@
 # the end; KEEP=1 keeps it. Your own ~/.gitconfig is not read, and GitHub is
 # never contacted: the fake gh comes first on PATH, and it refuses, and the
 # test fails on, every request but a GET.
-#
-# Each check is a condition in single quotes that check() evaluates later,
-# so the variables in it expand only then, and shellcheck sees them neither
-# expanded (SC2016) nor used (SC2034).
-# shellcheck disable=SC2016,SC2034
+# shellcheck disable=SC2016,SC2034 # each check is a single-quoted condition that check() evaluates later, so its variables are neither expanded nor used before
 
 set -u
 
