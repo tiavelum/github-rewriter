@@ -30,11 +30,23 @@ jobs:
 
       # The test skips everything without git-filter-repo, so its absence
       # has to fail here rather than pass silently.
-      - name: Show the shell, git and git-filter-repo versions
+      - name: Show the shell, git, git-filter-repo and Python versions
         run: |
           ls -l /bin/sh
           git --version
           git filter-repo --version
+          python3 --version
 
       - name: Test the rewrite scripts
         run: sh rewrite/test-history-rewrite.sh
+
+      - name: Test the replay scripts
+        run: sh replay/test-replay.sh
+
+      # The formatter and the linter gate every Python file (TL-23, TL-33);
+      # their result does not depend on the runner, so one runs them.
+      - name: Check the format and lint of the Python files
+        if: runner.os == 'Linux'
+        run: |
+          pipx run --spec ruff==0.16.6 ruff format --check .
+          pipx run --spec ruff==0.16.6 ruff check .
