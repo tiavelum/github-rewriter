@@ -243,13 +243,14 @@ class Overrides:
             return self.summaries[n]
         return None
 
-    def unused(self):
-        """What the file sets and the replay has no use for, in words."""
+    def unused(self, typed=True):
+        """What the file sets and the replay has no use for, in words; without
+        typing, type lines are ignored by choice, not for want of a title."""
         return [
             *(
                 f"a type for {k}, which the replay has no title for"
                 for k in [*self.numbers, *self.hashes]
-                if ("type", k) not in self.used
+                if typed and ("type", k) not in self.used
             ),
             *(
                 f"a summary for #{n}, which the replay writes no squash message for"
@@ -744,7 +745,7 @@ def main(argv):
     mirror = Mirror(mirror_path, mailmap.resolve())
     default, events = plan(mirror, repo, overrides, typed, keep_merges)
     events = join_direct_pushes(order(events))
-    for unused in overrides.unused():
+    for unused in overrides.unused(typed):
         warn(f"{types} sets {unused}")
 
     source_commits, latest, late = [], "", 0
