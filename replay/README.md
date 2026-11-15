@@ -81,7 +81,13 @@ Two options, given before the mirror, turn off what the replay changes; without 
 
 ## Running a replay
 
-Requires Python 3.10 or later, git 2.31 or later, and `gh`, signed in with the right to push to the target, to create its issues, pull requests, comments and labels, and to merge its pull requests; `git push` reaches the target over the protocol `gh config get git_protocol` names.
+Requires Python 3.10 or later, git 2.31 or later, and `gh`, signed in with the right to push to the target, to create its issues, pull requests, comments and labels, and to merge its pull requests; `git push` reaches the target over the protocol `gh config get git_protocol` names. The run asks git for no password, so that protocol has to work without one: where git reaches GitHub over SSH, set it with:
+
+```sh
+gh config set git_protocol ssh
+```
+
+Otherwise the run stops in its first check, before any write, at `could not read Username for 'https://github.com': terminal prompts disabled`.
 
 First create the target on GitHub, empty: without a README, license or ignore file, with the default branch named as the source's, and with no ruleset or branch protection on it yet, since the direct commits are pushed to it. Then, with the mirror and the event file of [Planning a replay](#planning-a-replay):
 
