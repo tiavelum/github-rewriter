@@ -41,7 +41,7 @@ esac
 mailmap=$(cd "$(dirname "$2")" && pwd)/$(basename "$2")
 
 git filter-repo --version >/dev/null 2>&1 ||
-  die "git filter-repo is missing; install it with: brew bundle --file=~/vc/mac-config/Brewfile"
+  die "git filter-repo is missing; install it with: brew install git-filter-repo"
 
 if [ $# -eq 3 ]; then
   dir=$3

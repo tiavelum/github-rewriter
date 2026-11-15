@@ -2,7 +2,7 @@
 # Tests the scripts of this folder in throwaway repositories, one of which
 # plays the original on GitHub.
 #
-#   sh ~/vc/mac-config/history-rewrite/test-history-rewrite.sh
+#   sh ~/vc/github-rewriter/rewrite/test-history-rewrite.sh
 #
 # It needs git filter-repo and skips everything without it. The
 # repositories live in a temporary folder that is deleted at the end; KEEP=1
