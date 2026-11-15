@@ -3,21 +3,29 @@
 commits from a mirror and the issues, pull requests, comments and labels from
 GitHub, and writes the ordered events that run-replay.py applies.
 
-  plan-replay.py [--types <file>] <mirror> <owner/repo> <mailmap> <event file>
+  plan-replay.py [--types <file>] [--no-types] [--keep-merges]
+                 <mirror> <owner/repo> <mailmap> <event file>
 
 <mirror> is a bare clone with refs/pull/*/head, as backup-mirror.sh makes.
 <mailmap> maps the author and committer of every commit, in git's mailmap
 format. <event file> must not exist yet; it gets JSON Lines: a header that
 lists every source commit the replay recreates, then one event per line, in
 the order run-replay.py applies them. Reads GitHub through gh api with GET
-requests only. Prints every title it changed, and the totals.
+requests only. Prints every title it changed, every squash message it
+wrote, and the totals.
 
 Each commit title and pull request title without a type gets one: from
 --types, else from the prefix of the pull request's branch, else guessed
-from the changed files. The <file> of --types holds one type per line, for
-a pull request number or a commit hash of at least 7 characters:
+from the changed files; --no-types keeps every title as it is. A pull
+request merged with a merge commit is squash-merged, with its title, a
+summary of its description and its URL as the message; --keep-merges
+merges it with its merge commit's message instead. The <file> of --types
+holds one line per pull request number or commit hash of at least 7
+characters, with a type; or a pull request number, "summary" and the
+summary that replaces the one taken from the description:
   12       fix
   3f2a9c1  docs
+  10       summary Signs commits and tags with the SSH key.
 """
 
 import heapq
@@ -48,6 +56,14 @@ RANK = {
 TYPED = re.compile(r"(?P<type>[A-Za-z]+)(?:\([^)]*\))?!?: ")
 ORDINARY_WORD = re.compile(r"[A-Z][a-z]+")
 TEST_NAME = re.compile(r"(^tests?[-_.]|[-_.]tests?\.[^.]+$|_spec\.[^.]+$)")
+# A paragraph of closing keywords alone, such as "Closes #5" or "Fixes o/r#7 (Title)".
+CLOSING = re.compile(
+    r"((close[sd]?|fix(e[sd])?|resolve[sd]?):?\s+([\w.-]+/[\w.-]+)?#\d+(\s*\([^)]*\))?[\s,.;]*)+",
+    re.IGNORECASE,
+)
+SENTENCE_END = re.compile(r"[.!?](?=\s)")
+# A summary longer than this many characters is cut to its first sentence.
+SUMMARY_LENGTH = 300
 # Dates are read raw: git 2.45 changed how %aI writes UTC, "Z" for "+00:00".
 COMMIT_FORMAT = "%H%x1f%T%x1f%aN%x1f%aE%x1f%ad%x1f%cN%x1f%cE%x1f%cd%x1f%B"
 
@@ -174,10 +190,11 @@ class Mirror:
 
 
 class Overrides:
-    """The types --types sets, by pull request number and by commit hash prefix."""
+    """The types --types sets, by pull request number and by commit hash
+    prefix, and the summaries it sets by pull request number."""
 
     def __init__(self, path):
-        self.numbers, self.hashes, self.used = {}, {}, set()
+        self.numbers, self.hashes, self.summaries, self.used = {}, {}, {}, set()
         if path is None:
             return
         try:
@@ -185,34 +202,61 @@ class Overrides:
         except OSError as error:
             die(f"cannot read {path}: {error.strerror}")
         for count, line in enumerate(text.splitlines(), 1):
-            fields = line.split()
+            fields = line.split(None, 2)
             if not fields or fields[0].startswith("#"):
                 continue
+            key = fields[0]
+            is_number = key.isdigit() and len(key) < 7
+            if len(fields) == 3 and fields[1] == "summary":
+                if not is_number:
+                    die(f"{path}:{count}: a summary needs a pull request number, not {key}")
+                self.summaries[int(key)] = fields[2].strip()
+                continue
             if len(fields) != 2 or fields[1] not in TYPES:
-                die(f"{path}:{count}: expected a number or hash and one of {', '.join(TYPES)}")
-            key, kind = fields
-            if key.isdigit() and len(key) < 7:
-                self.numbers[int(key)] = kind
+                die(
+                    f"{path}:{count}: expected a number or hash and one of {', '.join(TYPES)},"
+                    " or a number, summary and the summary"
+                )
+            if is_number:
+                self.numbers[int(key)] = fields[1]
             elif re.fullmatch(r"[0-9a-fA-F]{7,40}", key):
-                self.hashes[key.lower()] = kind
+                self.hashes[key.lower()] = fields[1]
             else:
                 die(f"{path}:{count}: {key} is neither a number nor a hash of 7 or more characters")
 
     def number(self, n):
         if n in self.numbers:
-            self.used.add(str(n))
+            self.used.add(("type", n))
             return self.numbers[n]
         return None
 
     def commit(self, sha):
         for key, kind in self.hashes.items():
             if sha.startswith(key):
-                self.used.add(key)
+                self.used.add(("type", key))
                 return kind
         return None
 
+    def summary(self, n):
+        if n in self.summaries:
+            self.used.add(("summary", n))
+            return self.summaries[n]
+        return None
+
     def unused(self):
-        return [k for k in [*map(str, self.numbers), *self.hashes] if k not in self.used]
+        """What the file sets and the replay has no use for, in words."""
+        return [
+            *(
+                f"a type for {k}, which the replay has no title for"
+                for k in [*self.numbers, *self.hashes]
+                if ("type", k) not in self.used
+            ),
+            *(
+                f"a summary for #{n}, which the replay writes no squash message for"
+                for n in self.summaries
+                if ("summary", n) not in self.used
+            ),
+        ]
 
 
 def branch_type(ref):
@@ -265,13 +309,24 @@ def split_message(message):
     return title, ("\n" + rest if rest or message.endswith("\n") else "")
 
 
-def first_paragraph(body):
-    """The first paragraph of a description that is prose, not a heading,
-    an HTML block or a horizontal rule."""
+def summary(body):
+    """A short summary of a description, for GW-40: its first paragraph that
+    is not a heading, an HTML block, a horizontal rule, closing keywords
+    alone or a lead-in that ends in a colon; cut to its first sentence where
+    it is longer than SUMMARY_LENGTH characters."""
     for paragraph in re.split(r"\n\s*\n", (body or "").replace("\r\n", "\n")):
         text = paragraph.strip()
-        if text and not text.startswith(("#", "<", "---", "***")):
-            return text
+        if (
+            not text
+            or text.startswith(("#", "<", "---", "***"))
+            or text.endswith(":")
+            or CLOSING.fullmatch(text)
+        ):
+            continue
+        end = SENTENCE_END.search(text)
+        if len(text) > SUMMARY_LENGTH and end:
+            text = text[: end.start() + 1]
+        return text
     return ""
 
 
@@ -324,7 +379,7 @@ def join_direct_pushes(events):
     return joined
 
 
-def plan(mirror, repo, overrides):
+def plan(mirror, repo, overrides, typed=True, keep_merges=False):
     default = gh_get(f"repos/{repo}")["default_branch"]
     labels = gh_pages(f"repos/{repo}/labels")
     items = {i["number"]: i for i in gh_pages(f"repos/{repo}/issues?state=all")}
@@ -375,6 +430,9 @@ def plan(mirror, repo, overrides):
 
     details = mirror.details(main + [c for b in branches.values() for c in b["chain"]])
 
+    def retitle(title, resolve):
+        return typed_title(title, resolve) if typed else (title, None, None)
+
     pull_types = {}
 
     def pull_type(n):
@@ -393,7 +451,7 @@ def plan(mirror, repo, overrides):
     def commit(sha, kept_parents, resolve):
         d = details[sha]
         title, rest = split_message(d["message"])
-        new_title, kind, source = typed_title(title, resolve)
+        new_title, kind, source = retitle(title, resolve)
         return {
             "sha": sha,
             "tree": d["tree"],
@@ -455,30 +513,34 @@ def plan(mirror, repo, overrides):
         deps.append(("create", n))
         d = details[sha]
         title, rest = split_message(d["message"])
-        method = "merge" if len(parents[sha]) > 1 else "squash"
+        source_method = "merge" if len(parents[sha]) > 1 else "squash"
+        method = "merge" if keep_merges and source_method == "merge" else "squash"
 
         def resolve_merge(sha=sha, n=n):
             kind = overrides.commit(sha)
             return (kind, "override") if kind else pull_type(n)
 
-        if method == "squash":
-            commit_title, kind, source = typed_title(title, resolve_merge)
+        if source_method == "merge" and pulls[n]["head"]["sha"] not in parents[sha][1:]:
+            warn(f"the merge commit of #{n} does not merge its head; its tree is the merge's")
+        if method == "merge":
+            commit_title, kind, source = title, None, None
+            commit_message = rest.strip("\n")
+        elif source_method == "squash":
+            commit_title, kind, source = retitle(title, resolve_merge)
             commit_message = rest.strip("\n")
         else:
-            pull_title, kind, source = typed_title(items[n]["title"], resolve_merge)
+            pull_title, kind, source = retitle(items[n]["title"], resolve_merge)
             commit_title = f"{pull_title} (#{n})"
-            summary = first_paragraph(items[n].get("body"))
-            commit_message = f"{summary}\n\n{{pr_url}}" if summary else "{pr_url}"
-            if pulls[n]["head"]["sha"] not in parents[sha][1:]:
-                warn(f"the merge commit of #{n} does not merge its head; its tree is the merge's")
+            text = overrides.summary(n) or summary(items[n].get("body"))
+            commit_message = f"{text}\n\n{{pr_url}}" if text else "{pr_url}"
         add(
             ("main", i),
             "merge-pull",
             utc(pulls[n]["merged_at"]),
             deps,
             number=n,
-            method="squash",
-            source_method=method,
+            method=method,
+            source_method=source_method,
             source_commit=sha,
             tree=d["tree"],
             original_title=title,
@@ -492,6 +554,12 @@ def plan(mirror, repo, overrides):
     for n, b in sorted(branches.items()):
         chain = set(b["chain"])
         outside = {p for c in b["chain"] for p in parents[c] if p not in chain}
+        unknown = sorted(p for p in outside if p not in main_index and p not in owner)
+        if unknown:
+            die(
+                f"the branch of pull request #{n} merges {unknown[0][:7]}, which is neither on"
+                f" the first-parent line of {default} nor on the branch of a pull request"
+            )
         deps = sorted({producer(p) for p in outside | {b["base"]}})
 
         def resolve_branch(sha, n=n):
@@ -557,7 +625,7 @@ def plan(mirror, repo, overrides):
         }
         time = utc(item["created_at"])
         if n in pulls:
-            title, kind, source = typed_title(item["title"], lambda n=n: pull_type(n))
+            title, kind, source = retitle(item["title"], lambda n=n: pull_type(n))
             p = pulls[n]
             state = "merged" if p.get("merged_at") else item["state"]
             if p["base"]["ref"] != default:
@@ -634,12 +702,30 @@ def review(events):
     return [r for r in rows if r[1] != r[2]]
 
 
+def written_messages(events):
+    """The squash messages written for pull requests merged with a merge
+    commit, as (reference, first line, body)."""
+    return [
+        (f"#{e['number']}", e["commit_title"], e["commit_message"])
+        for e in events
+        if e["kind"] == "merge-pull" and e["method"] == "squash" and e["source_method"] == "merge"
+    ]
+
+
 def main(argv):
     if argv[:1] in (["-h"], ["--help"]):
         usage(0)
-    types = None
-    if argv[:1] == ["--types"] and len(argv) >= 2:
-        types, argv = Path(argv[1]), argv[2:]
+    types, typed, keep_merges = None, True, False
+    while argv[:1] and argv[0].startswith("--"):
+        option, argv = argv[0], argv[1:]
+        if option == "--types" and argv:
+            types, argv = Path(argv[0]), argv[1:]
+        elif option == "--no-types":
+            typed = False
+        elif option == "--keep-merges":
+            keep_merges = True
+        else:
+            usage()
     if len(argv) != 4 or argv[0].startswith("-"):
         usage()
     mirror_path, repo, mailmap, output = Path(argv[0]), argv[1], Path(argv[2]), Path(argv[3])
@@ -651,12 +737,15 @@ def main(argv):
         die(f"no mailmap at {mailmap}")
     if output.exists():
         die(f"{output} exists already; remove it to plan again")
+    if not output.parent.is_dir():
+        die(f"no folder {output.parent} for the event file")
     overrides = Overrides(types)
 
-    default, events = plan(Mirror(mirror_path, mailmap.resolve()), repo, overrides)
+    mirror = Mirror(mirror_path, mailmap.resolve())
+    default, events = plan(mirror, repo, overrides, typed, keep_merges)
     events = join_direct_pushes(order(events))
     for unused in overrides.unused():
-        warn(f"{types} sets a type for {unused}, which the replay has no title for")
+        warn(f"{types} sets {unused}")
 
     source_commits, latest, late = [], "", 0
     for seq, e in enumerate(events, 1):
@@ -687,9 +776,18 @@ def main(argv):
     width = max((len(r[0]) for r in rows), default=0)
     for ref, old, new, guessed in rows:
         print(f"  {ref:<{width}}  {'guessed' if guessed else '       '}  {old}  ->  {new}")
+    messages = written_messages(events)
+    print(f"Squash messages written for merge commits: {len(messages)}")
+    for ref, first, body in messages:
+        print(f"  {ref}  {first}")
+        for line in body.split("\n"):
+            print(f"      {line}" if line else "")
 
     def count(*kinds):
         return sum(e["kind"] in kinds for e in events)
+
+    def merges(method):
+        return sum(e["kind"] == "merge-pull" and e["method"] == method for e in events)
 
     pushed = sum(len(e.get("commits", [])) for e in events)
     totals = [
@@ -699,7 +797,8 @@ def main(argv):
         ("comments", count("add-comment")),
         ("labels", count("create-label")),
         ("commits", pushed),
-        ("squash merges", count("merge-pull")),
+        ("squash merges", merges("squash")),
+        ("merge commits", merges("merge")),
         ("events", len(events)),
         ("guessed types", sum(r[3] for r in rows)),
         ("events out of time order", late),
