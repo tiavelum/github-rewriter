@@ -1,14 +1,14 @@
 # github-rewriter
 
-Scripts for changing the history of a GitHub repository safely: back it up, rewrite the names and addresses of its commits, check that nothing else changed, push, and know what the change leaves behind on GitHub.
+Scripts for changing the history of a GitHub repository safely, in one of two ways: rewrite the names and addresses of its commits in place, or replay the repository into a new one, with its issues, pull requests, comments and labels under the same numbers.
 
 ## What it is for
 
-Use it when the commits of a repository carry names or addresses that should be one identity, such as an old address or a machine's default name. It does not change the content, dates or messages of a history, and it does not touch a repository's issues or pull requests.
+Use the rewrite when the commits of a repository carry names or addresses that should be one identity, such as an old address or a machine's default name: it backs the repository up, rewrites the identities, checks that nothing else changed and pushes; it changes no content, dates or messages, and no issues or pull requests. Use the replay when the history should start over in a new repository, also with typed titles and squash merges instead of merge commits, and leave the original as it is: it recreates everything in an empty repository, with the original commit dates, but with the time of the replay on items, comments and merges. Neither renames, archives or deletes a repository.
 
 ## Getting started
 
-Requires a POSIX shell, git with [git-filter-repo](https://github.com/newren/git-filter-repo) (tested with git 2.43 and git-filter-repo a40bce548d2c), `ssh-keygen` for the signing tests, and Python 3.10 or later for the replay.
+Requires a POSIX shell, git with [git-filter-repo](https://github.com/newren/git-filter-repo) (tested with git 2.43 and git-filter-repo a40bce548d2c), `ssh-keygen` for the signing tests, and Python 3.10 or later and git 2.38 or later for the replay.
 
 ```bash
 git clone git@github.com:tiavelum/github-rewriter.git ~/vc/github-rewriter
@@ -26,17 +26,17 @@ The tests run every script in throwaway repositories and contact no server; the 
 The second ends with:
 
 ```
-30 passed, 0 failed
+48 passed, 0 failed
 ```
 
-To rewrite a repository, follow the steps in [rewrite/README.md](rewrite/README.md); to plan its replay into a new one, those in [replay/README.md](replay/README.md).
+To rewrite a repository, follow the steps in [rewrite/README.md](rewrite/README.md); to replay it into a new one, those in [replay/README.md](replay/README.md).
 
 ## Content and structure
 
 | Path | Contains |
 |---|---|
 | [`rewrite/`](rewrite/README.md) | The scripts that rewrite the identities of a repository's history in place, one step each, and their test |
-| [`replay/`](replay/README.md) | The script that plans the replay of a repository into a new one, with its issues and pull requests under the same numbers, as an event file, and its test |
+| [`replay/`](replay/README.md) | The scripts that plan the replay of a repository into a new one, with its issues and pull requests under the same numbers, as an event file, and apply that file to an empty repository, with their test |
 | `.github/workflows/` | The workflow that runs the tests on macOS and Linux, and the formatter and linter on the Python files, for every pull request and every push to `main` |
 | `project-instructions.md`, `CLAUDE.md` | The rules for Claude working in this repository |
 
