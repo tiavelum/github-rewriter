@@ -645,6 +645,7 @@ def handle(method, endpoint, body):
 
 args = sys.argv[1:]
 if args == ["config", "get", "git_protocol"]:
+    (root / "prompt").write_text(os.environ.get("GIT_TERMINAL_PROMPT", "unset"))
     print("https")
     sys.exit(0)
 if args[:1] != ["api"]:
@@ -819,6 +820,27 @@ check "run-replay.py stops at a number other than the planned one, before anythi
   '[ "$status_c" = 1 ] && grep -q "^run-replay.py: the issue planned as #4 got #5" "$T/c-out" && [ "$(writes "$T/gh-c" | tail -n 1 | cut -d" " -f2-)" = "POST repos/ada-example/tool-c/issues" ] && [ -f "$T/run.state.json" ] && [ -d "$T/run.work.git" ] || { cat "$T/c-out"; writes "$T/gh-c"; exit 1; }'
 rcheck "run-replay.py --with-times appends the original creation time to bodies and comments" "$T/gh-c" "$T/run.state.json" \
   'items[1]["body"] == "The readme is empty.\n\n_Originally created 2026-03-01 11:00 UTC._" and comments[0] == (1, "Seen in the readme.\n\n_Originally created 2026-03-02 12:00 UTC._") and items[2]["title"] == "feat: add thing"'
+
+check "run-replay.py runs gh and git with GIT_TERMINAL_PROMPT=0, so no call waits for a password" \
+  '[ "$(cat "$T/gh-a/prompt")" = 0 ] || { cat "$T/gh-a/prompt"; exit 1; }'
+
+# D: a plan whose second merge expects the tree of the first; the mirror holds
+# it, so only the check after the merge can see the difference.
+python3 - "$T/run.jsonl" "$T/bad-tree.jsonl" <<'EOF'
+import json, sys
+lines = open(sys.argv[1], encoding="utf-8").read().splitlines()
+merges = [i for i, line in enumerate(lines) if json.loads(line).get("kind") == "merge-pull"]
+event = json.loads(lines[merges[1]])
+event["tree"] = json.loads(lines[merges[0]])["tree"]
+lines[merges[1]] = json.dumps(event)
+open(sys.argv[2], "w", encoding="utf-8").write("\n".join(lines) + "\n")
+EOF
+target "$T/gh-d" ada-example/tool-d
+replay "$T/gh-d" ada-example/tool-d --pace 0 --state "$T/d.state.json" "$T/bad-tree.jsonl" "$mirror" ada-example/tool-d \
+  >"$T/d-out" 2>&1
+status_d=$?
+check "run-replay.py stops when the tree after a merge differs from the plan's, and names both" \
+  '[ "$status_d" = 1 ] && grep -q "^run-replay.py: after the merge of #[0-9]*, the tree of main is [0-9a-f]\{7\}, the source'"'"'s [0-9a-f]\{7\}; the replay stops at the first difference" "$T/d-out" || { cat "$T/d-out"; exit 1; }'
 
 printf '\n%s passed, %s failed\n' "$passed" "$failed"
 [ "$failed" = 0 ]

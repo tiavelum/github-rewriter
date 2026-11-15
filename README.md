@@ -8,7 +8,7 @@ Use the rewrite when the commits of a repository carry names or addresses that s
 
 ## Getting started
 
-Requires a POSIX shell, git with [git-filter-repo](https://github.com/newren/git-filter-repo) (tested with git 2.43 and git-filter-repo a40bce548d2c), `ssh-keygen` for the signing tests, and for the replay Python 3.10 or later and git 2.31 or later, 2.38 or later for its test.
+Requires a POSIX shell, git with [git-filter-repo](https://github.com/newren/git-filter-repo) (tested with git 2.43 and git-filter-repo a40bce548d2c), `ssh-keygen` for the signing tests, and Python 3.10 or later and git 2.38 or later for the replay's test; what a replay itself needs is in [replay/README.md](replay/README.md).
 
 ```bash
 git clone git@github.com:tiavelum/github-rewriter.git ~/vc/github-rewriter
@@ -26,7 +26,7 @@ The tests run every script in throwaway repositories and contact no server; the 
 The second ends with:
 
 ```
-49 passed, 0 failed
+51 passed, 0 failed
 ```
 
 To rewrite a repository, follow the steps in [rewrite/README.md](rewrite/README.md); to replay it into a new one, those in [replay/README.md](replay/README.md).
