@@ -251,6 +251,10 @@ def load_events(path):
     return header, events, hashlib.sha256(raw).hexdigest()
 
 
+def commits(count):
+    return f"{count} commit{'' if count == 1 else 's'}"
+
+
 def utc_text(stamp):
     moment = datetime.fromisoformat(stamp.replace("Z", "+00:00")).astimezone(timezone.utc)
     return moment.strftime("%Y-%m-%d %H:%M UTC")
@@ -395,6 +399,7 @@ class Replay:
             raise ReplayError(
                 f"{self.slug} does not match {self.state_path}: {'; '.join(problems)}"
             )
+        self.highest = highest
 
     def label_changes(self):
         planned = {e["name"] for e in self.events if e["kind"] == "create-label"}
@@ -404,7 +409,12 @@ class Replay:
     def summary(self, resumed, updated, removed):
         left = self.events[self.done :]
         total = len(self.events)
-        if resumed:
+        if self.done == total:
+            print(
+                f"All {total} events of the replay of {self.header['source']} into {self.slug}"
+                f" are done, as {self.state_path} records; the target is checked again"
+            )
+        elif resumed:
             print(
                 f"Resume the replay of {self.header['source']} into {self.slug}"
                 f" at event {self.done + 1} of {total}, from {self.state_path}"
@@ -503,7 +513,7 @@ class Replay:
             sha = self.recreate(commit)
         self.push(sha, e["branch"])
         self.head = sha
-        return f"{len(e['commits'])} commits to {e['branch']}, now at {sha[:7]}"
+        return f"{commits(len(e['commits']))} to {e['branch']}, now at {sha[:7]}"
 
     def push_branch(self, e):
         if e["base_commit"] not in self.hashes:
@@ -515,7 +525,7 @@ class Replay:
             sha = self.recreate(commit)
         self.push(sha, e["branch"])
         self.heads[e["number"]] = sha
-        return f"#{e['number']} branch {e['branch']}, {len(e['commits'])} commits, at {sha[:7]}"
+        return f"#{e['number']} branch {e['branch']}, {commits(len(e['commits']))}, at {sha[:7]}"
 
     # Items
 
