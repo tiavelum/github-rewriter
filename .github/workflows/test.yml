@@ -1,0 +1,40 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    # macOS runs the test under its own /bin/sh, bash 3.2, and the BSD tools;
+    # Linux under dash and the GNU tools.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Install git-filter-repo
+        run: |
+          if [ "$RUNNER_OS" = macOS ]; then
+            brew install git-filter-repo
+          else
+            sudo apt-get update -q && sudo apt-get install -y -q git-filter-repo
+          fi
+
+      # The test skips everything without git-filter-repo, so its absence
+      # has to fail here rather than pass silently.
+      - name: Show the shell, git and git-filter-repo versions
+        run: |
+          ls -l /bin/sh
+          git --version
+          git filter-repo --version
+
+      - name: Test the rewrite scripts
+        run: sh rewrite/test-history-rewrite.sh
