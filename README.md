@@ -37,6 +37,7 @@ To rewrite a repository, follow the steps in [rewrite/README.md](rewrite/README.
 |---|---|
 | [`rewrite/`](rewrite/README.md) | The scripts that rewrite the identities of a repository's history in place, one step each, and their test |
 | [`replay/`](replay/README.md) | The scripts that plan the replay of a repository into a new one, with its issues and pull requests under the same numbers, as an event file, and apply that file to an empty repository, with their test |
+| `docs/decisions/` | The decisions that constrain every run, such as why a repository is replayed into a new one rather than rewritten or forked |
 | `.github/workflows/` | The workflow that runs the tests on macOS and Linux, and the formatter and linter on the Python files, for every pull request and every push to `main` |
 | `project-instructions.md`, `CLAUDE.md` | The rules for Claude working in this repository |
 

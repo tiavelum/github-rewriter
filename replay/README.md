@@ -175,6 +175,18 @@ Next to it lies the work repository, with `.work.git` for `.state.json`: a bare 
 
 The target does not get the original times and authors: every item, comment and merge is by the account that runs the replay, at the time of the replay; `--with-times` keeps the creation time in the text. Nor does it get reactions, reviews, review comments, milestones or projects, which the plan does not read, or an item's history between its creation and its final state. References to items, in this repository or another, and `@` mentions act again: GitHub adds them to the timeline of the item named, and notifies the person mentioned.
 
+## Taking over the source's name
+
+Once the replay is checked, give it the source's name, so that links to the source's items reach the replayed ones under the same numbers. Archive the source under a new name first, since its issues, pull requests and comments exist nowhere else, then rename the replay; for `tiavelum/mac-config` replayed into `tiavelum/mac-config-new`:
+
+```sh
+gh api -X PATCH repos/tiavelum/mac-config -f name=mac-config-archive
+gh api -X PATCH repos/tiavelum/mac-config-archive -F archived=true
+gh api -X PATCH repos/tiavelum/mac-config-new -f name=mac-config
+```
+
+[GitHub redirects a renamed repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/renaming-a-repository) until another repository takes its old name, so the third command ends the redirect from `mac-config` to the archive. Then replace each local clone of the source with a fresh clone of the replay at the same path, since their histories differ.
+
 ## How a title gets its type
 
 The first line of each commit message and each pull request title takes the form `<type>: <summary>`, with one of the types `feat`, `fix`, `docs`, `chore`, `refactor`, `test`, `build`, `ci` and `revert`. A title that starts with one of them and a colon keeps it, in lowercase. Every other title gets the first type of this list that applies:
