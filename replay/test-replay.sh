@@ -39,7 +39,7 @@ cat >"$T/global" <<EOF
 	detachedHead = false
 EOF
 export GIT_CONFIG_GLOBAL="$T/global" GIT_CONFIG_NOSYSTEM=1
-unset GIT_DIR GIT_WORK_TREE
+unset GIT_DIR GIT_WORK_TREE GIT_TERMINAL_PROMPT
 
 passed=0
 failed=0
@@ -821,7 +821,7 @@ check "run-replay.py stops at a number other than the planned one, before anythi
 rcheck "run-replay.py --with-times appends the original creation time to bodies and comments" "$T/gh-c" "$T/run.state.json" \
   'items[1]["body"] == "The readme is empty.\n\n_Originally created 2026-03-01 11:00 UTC._" and comments[0] == (1, "Seen in the readme.\n\n_Originally created 2026-03-02 12:00 UTC._") and items[2]["title"] == "feat: add thing"'
 
-check "run-replay.py runs gh and git with GIT_TERMINAL_PROMPT=0, so no call waits for a password" \
+check "run-replay.py runs gh with GIT_TERMINAL_PROMPT=0, so no call through run() waits for a password" \
   '[ "$(cat "$T/gh-a/prompt")" = 0 ] || { cat "$T/gh-a/prompt"; exit 1; }'
 
 # D: a plan whose second merge expects the tree of the first; the mirror holds
