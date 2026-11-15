@@ -6,11 +6,11 @@ The scripts change the identities through a [mailmap](https://git-scm.com/docs/g
 
 ## Steps
 
-A mailmap maps one identity per line, for authors and committers alike. These two lines give every commit made under either address one identity:
+A mailmap maps one identity per line, for authors and committers alike. These two lines give every commit made under either address one identity, here an invented one:
 
 ```
-Andreas Tiefenauer <tiavelum@gmail.com> <old@example.com>
-Andreas Tiefenauer <tiavelum@gmail.com> <tiavelum@gmail.com>
+Ada Example <ada@example.com> <old@example.com>
+Ada Example <ada@example.com> <ada@example.com>
 ```
 
 The steps, for `tiavelum/claude-setup` with the mailmap in `~/rewrite-mailmap`:
@@ -19,7 +19,7 @@ The steps, for `tiavelum/claude-setup` with the mailmap in `~/rewrite-mailmap`:
 cd ~/vc/github-rewriter/rewrite
 ./backup-mirror.sh tiavelum/claude-setup                    # mirror in ~/vc-backup
 dir=$(./rewrite-identities.sh tiavelum/claude-setup ~/rewrite-mailmap | tee /dev/stderr | tail -n 1)
-./sign-commits.sh "$dir" tiavelum@gmail.com                 # your own commits, signed again
+./sign-commits.sh "$dir" ada@example.com                    # your own commits, signed again
 ./compare-rewrite.sh "$dir"                                 # same commits, dates and tree
 ./force-push-rewrite.sh "$dir"                              # asks for the name, then pushes
 ./reset-clone.sh ~/vc/claude-setup                          # your clone onto the new history

@@ -8,11 +8,11 @@ Planning reads the source and writes the replay as an event file; it changes not
 
 Requires Python 3.10 or later, git, and the GitHub CLI `gh`, signed in with read access to the source.
 
-The mailmap maps the author and committer of every commit, in the format that [rewrite/README.md](../rewrite/README.md#steps) describes. These two lines give an old address and GitHub, as the committer of changes made on github.com, the owner's identity:
+The mailmap maps the author and committer of every commit, in the format that [rewrite/README.md](../rewrite/README.md#steps) describes. These two lines give an old address and GitHub, as the committer of changes made on github.com, the owner's identity, here an invented one:
 
 ```
-Andreas Tiefenauer <tiavelum@gmail.com> <old@example.com>
-Andreas Tiefenauer <tiavelum@gmail.com> GitHub <noreply@github.com>
+Ada Example <ada@example.com> <old@example.com>
+Ada Example <ada@example.com> GitHub <noreply@github.com>
 ```
 
 The steps, for `tiavelum/github-rewriter` with that mailmap in `~/rewrite-mailmap`:
