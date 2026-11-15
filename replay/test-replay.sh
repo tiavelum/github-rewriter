@@ -51,15 +51,17 @@ check() {
   else
     failed=$((failed + 1))
     printf 'FAIL  %s\n' "$1"
-    sed 's/^/      /' "$T/out" | tail -n 5
+    sed 's/^/      /' "$T/out" | tail -n 30
   fi
 }
 q() { "$@" >/dev/null 2>&1; }
-# save <date> <message> [name] [email]: commits the index by that author, as
-# committer too unless CN and CE name another, on that date.
+# save <date> <message> [name email [committer name email]]: commits the
+# index by that author, and by that committer or else the author, on that
+# date. The committer is an argument, since macOS's sh, bash 3.2, keeps an
+# assignment written before a function call after the call.
 save() {
   GIT_AUTHOR_NAME=${3:-Ada Old} GIT_AUTHOR_EMAIL=${4:-ada.old@example.com} GIT_AUTHOR_DATE=$1 \
-    GIT_COMMITTER_NAME=${CN:-${3:-Ada Old}} GIT_COMMITTER_EMAIL=${CE:-${4:-ada.old@example.com}} \
+    GIT_COMMITTER_NAME=${5:-${3:-Ada Old}} GIT_COMMITTER_EMAIL=${6:-${4:-ada.old@example.com}} \
     GIT_COMMITTER_DATE=$1 git commit -q -m "$2"
 }
 # change <file> <date> <message> [name] [email]: appends the message to the
@@ -85,11 +87,11 @@ B2=$(git rev-parse HEAD)
 q git push origin HEAD:refs/pull/2/head
 git switch -q main
 q git merge --squash feat/2-thing
-CN=GitHub CE=noreply@github.com save 2026-03-03T10:00:00+00:00 "Add thing (#2)
+save 2026-03-03T10:00:00+00:00 "Add thing (#2)
 
 * Add thing
 
-* README: mention thing"
+* README: mention thing" "Ada Old" ada.old@example.com GitHub noreply@github.com
 M2=$(git rev-parse HEAD)
 git switch -q -c fix/3-parser
 change thing.sh 2026-03-04T09:00:00+00:00 "Repair the parser" "Bob Example" bob@example.com
@@ -106,7 +108,7 @@ M3=$(git rev-parse HEAD)
 TREE3=$(git rev-parse 'HEAD^{tree}')
 change .github/workflows/test.yml 2026-03-05T11:00:00+00:00 "ci: add the test workflow"
 C2=$(git rev-parse HEAD)
-change tests/test-thing.sh 2026-03-05T12:00:00+00:00 "Update the tests"
+change tests/test-thing.sh 2026-03-05T14:00:00+02:00 "Update the tests"
 C3=$(git rev-parse HEAD)
 change thing.sh 2026-03-05T13:00:00+00:00 "Tidy the scripts"
 C4=$(git rev-parse HEAD)
@@ -234,10 +236,11 @@ export PATH FAKE_GH_API FAKE_GH_LOG FAKE_GH_REFUSED
 
 # expect <condition>: a Python condition on the plan, with H its header, E
 # its events, the source's hashes in S, of(kind[, number]) the events of a
-# kind, commit(sha) a planned commit and title(sha) its first line.
+# kind, commit(sha) a planned commit and title(sha) its first line. When it
+# is false, it prints each false part of an "and", with the values compared.
 expect() {
   python3 - "$T/events.jsonl" "$1" <<'EOF'
-import json, os, sys
+import ast, json, os, sys
 with open(sys.argv[1], encoding="utf-8") as f:
     H, *E = [json.loads(line) for line in f]
 S = os.environ
@@ -247,8 +250,22 @@ def commit(sha):
     return next(c for e in E for c in e.get("commits", []) if c["sha"] == sha)
 def title(sha):
     return commit(sha)["message"].partition("\n")[0]
-if not eval(sys.argv[2]):
-    sys.exit(f"false: {sys.argv[2]}")
+source = sys.argv[2]
+tree = ast.parse(source, mode="eval").body
+parts = tree.values if isinstance(tree, ast.BoolOp) and isinstance(tree.op, ast.And) else [tree]
+def value(node):
+    return eval(compile(ast.Expression(node), "<check>", "eval"), globals())
+for part in parts:
+    try:
+        if value(part):
+            continue
+        print("false:", ast.get_source_segment(source, part))
+        if isinstance(part, ast.Compare):
+            for side in [part.left, *part.comparators]:
+                print("  ", ast.get_source_segment(source, side), "=", repr(value(side))[:400])
+    except Exception as error:
+        print("error:", ast.get_source_segment(source, part), "->", repr(error))
+    sys.exit(1)
 EOF
 }
 pcheck() {
@@ -263,7 +280,13 @@ plan --types "$T/types" "$mirror" ada-example/tool "$T/mailmap" "$T/events.jsonl
 status=$?
 
 check "plan-replay.py writes the plan and prints the totals, without warnings" \
-  '[ $status = 0 ] && [ ! -s "$T/plan-err" ] && [ "$(tail -n 1 "$T/plan-out")" = "$T/events.jsonl" ] && for t in "items +6" "issues +3" "pull requests +3" "comments +3" "labels +2" "commits +9" "events +22" "events out of time order +0"; do grep -Eqx "  $t" "$T/plan-out" || exit 1; done'
+  '[ "$status" = 0 ] || { echo "exit status $status"; cat "$T/plan-err"; exit 1; }
+  [ ! -s "$T/plan-err" ] || { echo "standard error:"; cat "$T/plan-err"; exit 1; }
+  last=$(tail -n 1 "$T/plan-out")
+  [ "$last" = "$T/events.jsonl" ] || { echo "last line \"$last\", expected \"$T/events.jsonl\""; exit 1; }
+  for t in "items +6" "issues +3" "pull requests +3" "comments +3" "labels +2" "commits +9" "events +22" "events out of time order +0"; do
+    grep -Eqx "  $t" "$T/plan-out" || { echo "no line \"$t\" in:"; cat "$T/plan-out"; exit 1; }
+  done'
 pcheck "plan-replay.py creates the items in number order, issues and pull requests interleaved" \
   '[(e["number"], e["kind"]) for e in E if e["kind"] in ("create-issue", "create-pull")] == [(1, "create-issue"), (2, "create-pull"), (3, "create-pull"), (4, "create-issue"), (5, "create-pull"), (6, "create-issue")]'
 pcheck "plan-replay.py orders the events by time, after the labels" \
@@ -273,7 +296,7 @@ pcheck "plan-replay.py pushes a branch right before its pull request and comment
 pcheck "plan-replay.py applies the mailmap to author and committer, not the committed .mailmap" \
   '{(p["name"], p["email"]) for e in E for c in e.get("commits", []) for p in (c["author"], c["committer"])} == {("Ada Example", "ada@example.com"), ("Bob Example", "bob@example.com")} and commit(S["F1"])["committer"]["email"] == "bob@example.com"'
 pcheck "plan-replay.py keeps the original dates, trees and parents" \
-  'commit(S["C1"])["author"]["date"] == "2026-03-01T10:00:00+00:00" and commit(S["F1"])["parents"] == [S["M2"]] and of("push-branch", 3)[0]["base_commit"] == S["M2"] and of("merge-pull", 3)[0]["tree"] == S["TREE3"]'
+  'commit(S["C1"])["author"]["date"] == "2026-03-01T10:00:00+00:00" and commit(S["C3"])["committer"]["date"] == "2026-03-05T14:00:00+02:00" and commit(S["F1"])["parents"] == [S["M2"]] and of("push-branch", 3)[0]["base_commit"] == S["M2"] and of("merge-pull", 3)[0]["tree"] == S["TREE3"]'
 pcheck "plan-replay.py takes the type from the branch prefix" \
   'title(S["B1"]) == "feat: add thing" and of("create-pull", 3)[0]["title"] == "fix: repair the parser" and title(S["N1"]) == "docs: add notes" and commit(S["B1"])["type_from"] == "branch"'
 pcheck "plan-replay.py keeps a type that is present" \
@@ -299,9 +322,9 @@ pcheck "plan-replay.py pushes direct commits in a row as one push" \
 pcheck "plan-replay.py lists every recreated source commit in the header" \
   'H["kind"] == "header" and H["source"] == "ada-example/tool" and sorted(H["source_commits"]) == sorted(S[k] for k in ("C1", "B1", "B2", "M2", "F1", "M3", "C2", "C3", "C4", "N1", "C5"))'
 check "plan-replay.py prints every changed title, marking guessed types" \
-  'c1=$(echo "$C1" | cut -c1-7) && grep -Fqx "  $c1  guessed  Add the readme  ->  docs: add the readme" "$T/plan-out" && grep -Fqx "  #3                Repair the parser  ->  fix: repair the parser" "$T/plan-out" && ! grep -q "ci: add the test workflow" "$T/plan-out" && grep -qx "Changed titles: 13" "$T/plan-out"'
+  'c1=$(echo "$C1" | cut -c1-7) && grep -Fqx "  $c1  guessed  Add the readme  ->  docs: add the readme" "$T/plan-out" && grep -Fqx "  #3                Repair the parser  ->  fix: repair the parser" "$T/plan-out" && ! grep -q "ci: add the test workflow" "$T/plan-out" && grep -qx "Changed titles: 13" "$T/plan-out" || { cat "$T/plan-out"; exit 1; }'
 check "plan-replay.py reads every page and calls gh only with GET requests" \
-  '[ ! -e "$T/gh-refused" ] && grep -q "issues?state=all&per_page=100&page=3" "$T/gh-calls" && ! grep -v "^api repos/ada-example/tool" "$T/gh-calls"'
+  '[ ! -e "$T/gh-refused" ] && grep -q "issues?state=all&per_page=100&page=3" "$T/gh-calls" && ! grep -v "^api repos/ada-example/tool" "$T/gh-calls" || { cat "$T/gh-calls" "$T/gh-refused" 2>&1; exit 1; }'
 check "the fake gh refuses writing requests" \
   '(FAKE_GH_REFUSED=$T/guard; export FAKE_GH_REFUSED; ! gh api -X POST repos/a/b/issues && ! gh api repos/a/b/issues -f title=x && ! gh api --method PATCH repos/a/b/issues/1) && [ "$(wc -l <"$T/guard")" -eq 3 ]'
 check "plan-replay.py refuses an existing event file" \

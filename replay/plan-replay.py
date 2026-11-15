@@ -25,7 +25,7 @@ import json
 import re
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 PROG = "plan-replay.py"
@@ -48,7 +48,8 @@ RANK = {
 TYPED = re.compile(r"(?P<type>[A-Za-z]+)(?:\([^)]*\))?!?: ")
 ORDINARY_WORD = re.compile(r"[A-Z][a-z]+")
 TEST_NAME = re.compile(r"(^tests?[-_.]|[-_.]tests?\.[^.]+$|_spec\.[^.]+$)")
-COMMIT_FORMAT = "%H%x1f%T%x1f%aN%x1f%aE%x1f%aI%x1f%cN%x1f%cE%x1f%cI%x1f%B"
+# Dates are read raw: git 2.45 changed how %aI writes UTC, "Z" for "+00:00".
+COMMIT_FORMAT = "%H%x1f%T%x1f%aN%x1f%aE%x1f%ad%x1f%cN%x1f%cE%x1f%cd%x1f%B"
 
 
 def die(message):
@@ -92,6 +93,14 @@ def gh_pages(endpoint):
             return entries
         entries.extend(batch)
         page += 1
+
+
+def iso_date(raw):
+    """A raw git date, seconds and offset, as ISO 8601 with that offset."""
+    seconds, offset = raw.split()
+    sign = -1 if offset.startswith("-") else 1
+    zone = timezone(sign * timedelta(hours=int(offset[1:3]), minutes=int(offset[3:5])))
+    return datetime.fromtimestamp(int(seconds), zone).isoformat()
 
 
 def utc(stamp):
@@ -138,6 +147,7 @@ class Mirror:
             "--no-walk=unsorted",
             "--stdin",
             "-z",
+            "--date=raw",
             f"--format={COMMIT_FORMAT}",
             stdin="\n".join(shas) + "\n",
         )
@@ -148,8 +158,8 @@ class Mirror:
             sha, tree, an, ae, ad, cn, ce, cd, message = record.split("\x1f", 8)
             details[sha] = {
                 "tree": tree,
-                "author": {"name": an, "email": ae, "date": ad},
-                "committer": {"name": cn, "email": ce, "date": cd},
+                "author": {"name": an, "email": ae, "date": iso_date(ad)},
+                "committer": {"name": cn, "email": ce, "date": iso_date(cd)},
                 "message": message,
             }
         return details
@@ -697,7 +707,8 @@ def main(argv):
     print("Totals:")
     for name, value in totals:
         print(f"  {name:<25}{value:>6}")
-    print(output)
+    # As given, as the shell scripts print paths; Path drops a "//" in it.
+    print(argv[3])
 
 
 if __name__ == "__main__":
