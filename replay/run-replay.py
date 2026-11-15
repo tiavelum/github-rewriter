@@ -75,7 +75,8 @@ def usage(status=2):
 
 
 def run(args, stdin=None, env=None, new_session=False):
-    # A git call that needs a password fails instead of waiting for one.
+    # A git call that needs a password fails instead of waiting for one; the
+    # gh calls through here get the variable too.
     env = {**(os.environ if env is None else env), "GIT_TERMINAL_PROMPT": "0"}
     try:
         return subprocess.run(
