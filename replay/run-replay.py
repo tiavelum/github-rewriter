@@ -75,6 +75,8 @@ def usage(status=2):
 
 
 def run(args, stdin=None, env=None, new_session=False):
+    # A git call that needs a password fails instead of waiting for one.
+    env = {**(os.environ if env is None else env), "GIT_TERMINAL_PROMPT": "0"}
     try:
         return subprocess.run(
             args,
@@ -346,6 +348,11 @@ class Replay:
         if status != 200:
             raise ReplayError(
                 f"no repository {self.slug}, or gh has no access to it (HTTP {status})"
+            )
+        # GitHub answers for a renamed repository under its new name.
+        if str(info.get("full_name", "")).lower() != self.slug.lower():
+            raise ReplayError(
+                f"GitHub answers for {self.slug} with {info.get('full_name')}; name that one"
             )
         permissions = info.get("permissions") or {}
         if not (permissions.get("push") or permissions.get("admin")):

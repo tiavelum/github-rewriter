@@ -1,0 +1,2 @@
+# The scripts run under /bin/sh, which is bash 3.2 on macOS and dash on Linux.
+shell=sh

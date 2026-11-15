@@ -378,6 +378,11 @@ status_merges=$?
 # --no-types changes only the first line of the squash merge of #3, to its pull request's title.
 check "plan-replay.py plans with --no-types and with --keep-merges, without warnings" \
   '[ "$status_plain$status_merges" = 00 ] && [ ! -s "$T/plain-err" ] && [ ! -s "$T/merges-err" ] && grep -qx "Changed titles: 1" "$T/plain-out" && grep -Eqx "  squash merges +1" "$T/merges-out" && grep -Eqx "  merge commits +1" "$T/merges-out" && grep -qx "Squash messages written for merge commits: 0" "$T/merges-out" || { cat "$T/plain-err" "$T/plain-out" "$T/merges-err" "$T/merges-out"; exit 1; }'
+plan --no-types --types "$T/types" "$mirror" ada-example/tool "$T/mailmap" "$T/plain-typed.jsonl" \
+  >"$T/plain-typed-out" 2>"$T/plain-typed-err"
+status_plain_typed=$?
+check "plan-replay.py --no-types ignores the type lines of the override file without a warning" \
+  '[ "$status_plain_typed" = 0 ] && [ ! -s "$T/plain-typed-err" ] || { cat "$T/plain-typed-err"; exit 1; }'
 plan_file=$T/plain.jsonl
 pcheck "plan-replay.py --no-types keeps every title as it is" \
   'title(S["B1"]) == "Add thing" and title(S["C2"]) == "ci: add the test workflow" and of("create-pull", 3)[0]["title"] == "Repair the parser" and of("merge-pull", 2)[0]["commit_title"] == "Add thing (#2)" and {(c["type"], c["type_from"]) for e in E for c in e.get("commits", [])} == {(None, None)}'

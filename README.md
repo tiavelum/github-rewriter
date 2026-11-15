@@ -8,7 +8,7 @@ Use the rewrite when the commits of a repository carry names or addresses that s
 
 ## Getting started
 
-Requires a POSIX shell, git with [git-filter-repo](https://github.com/newren/git-filter-repo) (tested with git 2.43 and git-filter-repo a40bce548d2c), `ssh-keygen` for the signing tests, and Python 3.10 or later and git 2.38 or later for the replay.
+Requires a POSIX shell, git with [git-filter-repo](https://github.com/newren/git-filter-repo) (tested with git 2.43 and git-filter-repo a40bce548d2c), `ssh-keygen` for the signing tests, and for the replay Python 3.10 or later and git 2.31 or later, 2.38 or later for its test.
 
 ```bash
 git clone git@github.com:tiavelum/github-rewriter.git ~/vc/github-rewriter
