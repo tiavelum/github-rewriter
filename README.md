@@ -43,6 +43,10 @@ zip -q -r ~/Downloads/replay-repository.zip replay-repository -x '*.DS_Store'
 
 Then upload `~/Downloads/replay-repository.zip` in the Claude app under Customize > Skills: +, Create skill, Upload a skill.
 
+## After changing the project instructions
+
+Paste the whole of `project-instructions.md` into the instructions field of the claude.ai project "github-rewriter" once the change is on `main`. That field holds a copy, which no tool updates; Claude Code reads the file from its clone through `CLAUDE.md`.
+
 ## Content and structure
 
 | Path | Contains |
