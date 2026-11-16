@@ -10,7 +10,7 @@ These steps take a replay from the owner's first answers to the replay holding t
 ## Roles
 
 - You survey the source, ask the owner every question in one round, plan until the types are settled, write the run file, read every output, check the result and record the run.
-- The owner runs `replay.py` on their own machine with their own `gh`: it creates the target and its settings, replays, compares and moves the sub-issue links, which a Claude session's access to GitHub refuses, and it does not add the footer that access adds to every body it creates. The owner also runs the commands it prints at the end, which archive and rename repositories and delete branches.
+- The owner runs `replay.py` on their own machine with their own `gh`, since a Claude session's access to GitHub refuses to create repositories and change their settings and adds a footer to every body it creates. The owner also runs the commands it prints at the end, which archive and rename repositories and delete branches.
 - Give each step of the owner's as one command block. Leave every git step over SSH to the owner's machine; a Claude session has no SSH.
 
 ## The run's issue
@@ -21,16 +21,17 @@ Record there too where the run file, the mirror and the event file lie on the ow
 
 ## Ask the owner
 
-Ask these in one round, each with your recommendation, before planning, and record each answer on the run's issue. Each answer becomes a field of the run file, as "Replaying with one command" names them.
+Ask these in one round, each with your recommendation, before planning, and record each answer on the run's issue. Each answer that names a field becomes that field of the run file, as "Replaying with one command" names them.
 
 1. **Replay or rewrite**: replay into a new repository, or rewrite the identities in place. Recommend the replay for the reasons of `docs/decisions/0001-replay-into-a-new-repository.md`. For a rewrite, follow `rewrite/README.md` instead of these steps.
 2. **Identities**, for `mailmap`: list every identity of the source as author and as committer, with the commands of the next section, and ask which are the owner's, what becomes of `GitHub <noreply@github.com>` as the committer of changes made on github.com, of Claude as a committer, and of any test identity.
 3. **Merge commits**, for `keep_merges`: squash merges, or merge commits kept.
 4. **Types**, for `no_types` and `types`: typed titles, or titles as they are; with types, the owner confirms the types table and the squash summaries of the Plan section.
 5. **Signing**, for `sign`: whether the owner's recreated commits are signed, with the requirements "Running a replay" names.
-6. **Names**, for `final_name` and `target`: the name the replay takes over at the end, and the day of the run, which gives the target's temporary name.
+6. **Names**, for `source`, `final_name` and `target`: the source, the name the replay takes over at the end, and the day of the run, which gives the target's temporary name.
 7. **Times**, for `with_times`: whether each body and comment keeps its original creation time.
-8. **Trial**: recommend a trial into a throwaway private repository first where the run uses an option, such as `sign` or `keep_merges`, that no earlier run's issue in tiavelum/github-rewriter records; the owner deletes it once its check holds.
+8. **Pace and places**, for `pace`, `backup` and `clone_url`: the seconds between two writes, the folder of the mirror and the run's files, and the URL the mirror is cloned from; recommend the defaults of "Replaying with one command", and a URL of the protocol the owner's git uses where that is not SSH.
+9. **Trial**: recommend a trial into a throwaway private repository first where the run uses an option, such as `sign` or `keep_merges`, that no earlier run's issue in tiavelum/github-rewriter records. For it, give `final_name` a throwaway name under the owner, such as `<repo>-trial`, and have the owner run none of the commands `replay.py` prints at its end; the owner deletes the target once its check holds.
 
 ## Survey the source
 
@@ -56,14 +57,14 @@ Where this session cannot read the source, give the owner the planning commands 
 ## Run
 
 1. Check with the owner the requirements "Replaying with one command" names, among them the git protocol of `gh` and the rights to create a repository and change its settings, since `replay.py` stops otherwise.
-2. Give the owner one command block that writes the run file outside any repository, with every field from the answers, and runs `replay.py` on it. Have them compare the totals and changed titles it prints before its prompt with those of your last plan, and answer the prompt only where they agree.
+2. Give the owner one command block that writes the run file outside any repository, with every field from the answers, and runs `replay.py` on it. Have them compare the totals and changed titles it prints before its prompt with those of your last plan, and answer the prompt only where they agree, and have them send you the paths of the mirror and the event file that it prints.
 3. Ask the owner to keep the machine awake until `replay.py` prints its last step.
 4. When it stops, ask for its last lines, find the cause from the step it names and from "Stopping and resuming", and have the owner run the same command again once the cause is removed.
 
 ## Check
 
 1. Ask the owner for the output of the comparison step, and record it on the run's issue; `replay.py` goes on to the links only where it found no difference.
-2. Compare the target with the source yourself, read-only, as "Comparing the replay with its source" describes what the comparison covers: items, labels, bodies and comments, the default branch step by step, and the branches. Look in particular for a footer the source lacks and a `Co-authored-by` line added twice by a merge.
+2. Compare the target with the source yourself, read-only, as "Comparing the replay with its source" describes what the comparison covers: each point of its list, with the recreated commits and the pull request heads among them. Look in particular for a footer the source lacks and a `Co-authored-by` line added twice by a merge.
 3. Record the result on the run's issue.
 4. Have a `checker` agent that did not see the run check the same points against the source and the event file. Name in its brief the addresses the target may hold, and have it report any other address only by where and how often it occurs, in place of the passage, since a checker tends to name the private values it finds.
 5. List for the owner what a Claude session cannot read and the owner checks before archiving: the source's secrets, variables, webhooks, deploy keys and collaborators.
