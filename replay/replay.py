@@ -407,7 +407,8 @@ class OneCommand:
                 f" owner is {owner}: {'; '.join(crossing)}. GitHub refuses such a link whoever"
                 " makes it, so replay.py cannot carry it. Move or remove these links in the"
                 " source first, or replay with plan-replay.py and run-replay.py alone, which"
-                " leave links alone"
+                " leave links alone, and leave these links out of the first move in the README's"
+                " Taking over the source's name"
             )
 
     def describe_links(self):
