@@ -45,7 +45,13 @@ Then upload `~/Downloads/replay-repository.zip` in the Claude app under Customiz
 
 ## After changing the project instructions
 
-Paste the whole of `project-instructions.md` into the instructions field of the claude.ai project "github-rewriter" once the change is on `main`. That field holds a copy, which no tool updates; Claude Code reads the file from its clone through `CLAUDE.md`.
+Once the change is on `main`, copy the file:
+
+```bash
+git -C ~/vc/github-rewriter pull --ff-only && pbcopy < ~/vc/github-rewriter/project-instructions.md
+```
+
+Then paste it into the instructions field of the claude.ai project "github-rewriter", replacing its content. That field holds a copy, which no tool updates; Claude Code reads the file from its clone through `CLAUDE.md`.
 
 ## Content and structure
 
