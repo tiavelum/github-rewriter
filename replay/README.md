@@ -2,7 +2,109 @@
 
 How to replay a GitHub repository into a new, empty one with the scripts of this folder, for the owner of both: every commit, issue, pull request, comment and label of the source, so that the target gets them under the same numbers, with mapped identities and typed titles.
 
-Planning reads the source and writes the replay as an event file; it changes nothing on GitHub. Running applies the event file to the target, after you confirm it, and can stop and resume. Each script takes its inputs as arguments; run without arguments, it prints its usage.
+Planning reads the source and writes the replay as an event file; it changes nothing on GitHub. Running applies the event file to the target, after you confirm it, and can stop and resume. Comparing reads the source and the target and names every difference between them; it changes nothing either. `replay.py` takes these three steps in turn from one run file, with the steps around them, and is the way to run a replay; the sections after it describe the steps it takes, which you can also run alone. Each script takes its inputs as arguments; run without arguments, it prints its usage.
+
+## Replaying with one command
+
+`replay.py` runs a whole replay from a run file: it mirrors and plans the source, asks you once to confirm, and then creates the target, replays the source into it, compares the two and moves the sub-issue links without further questions. It ends with the commands that give the replay the source's name, which stay yours to run. It runs the scripts of the sections below as processes, so it needs what [Planning a replay](#planning-a-replay) and [Running a replay](#running-a-replay) require, the git protocol and, with `sign`, the signing key among them. Its `gh` also needs the right to create a repository for the target's owner, which for [a repository of your account](https://docs.github.com/en/rest/repos/repos#create-a-repository-for-the-authenticated-user) a classic token has with the scope `repo` and a fine-grained one with the repository permission "Administration" or "Repository creation" set to write, and which for [a repository of an organisation](https://docs.github.com/en/rest/repos/repos#create-an-organization-repository) only a member of it has. It also needs the right to change the target's settings and, where the source's issues have sub-issue links, the repository permission "Issues" set to write in the repository of each parent, which [Add sub-issue](https://docs.github.com/en/rest/issues/sub-issues#add-sub-issue) asks for. Since [GitHub adds a sub-issue only to a parent of the same repository owner](https://docs.github.com/en/rest/issues/sub-issues#add-sub-issue), `replay.py` stops before the confirmation where a parent of a source's issue, or a sub-issue from elsewhere, belongs to an owner other than the target's. GitHub refuses such a link whoever makes it, so move or remove these links in the source first, or replay with the scripts of the sections below alone, which leave links alone, and leave these links out of the first move of [Taking over the source's name](#taking-over-the-sources-name).
+
+Write the run file first, outside any repository, since it holds the mailmap; `replay.py` stops where the run file lies in a git work tree. Its name ends in `.run.json`. For `tiavelum/github-rewriter`, in `~/github-rewriter.run.json`, with an invented identity:
+
+```json
+{
+  "source": "tiavelum/github-rewriter",
+  "target": "tiavelum/github-rewriter-replay-20261116",
+  "mailmap": [
+    "Ada Example <ada@example.com> <old@example.com>",
+    "Ada Example <ada@example.com> GitHub <noreply@github.com>"
+  ],
+  "types": [
+    "c1e8a97 chore",
+    "10 summary Signs commits and tags with the SSH key."
+  ],
+  "sign": "ada@example.com"
+}
+```
+
+| Field | Holds | Default |
+|---|---|---|
+| `source` | The source, as `owner/repo` | Required |
+| `target` | The target's temporary name: the repository name of `final_name` with `-replay-` and the day of the replay as `YYYYMMDD`, under the owner of `final_name`, so that the rename at the end keeps its owner and no earlier replay has used the name | Required |
+| `mailmap` | The lines of the mailmap that [Planning a replay](#planning-a-replay) describes | Required |
+| `final_name` | The name the replay takes over at the end, which `run-replay.py` gets as `--final-name` | `source` |
+| `types` | The lines of the file of `--types`: types and `summary` lines | None |
+| `sign` | The address of `--sign` | `null`, nothing signed |
+| `keep_merges` | Whether the plan has `--keep-merges` | `false` |
+| `no_types` | Whether the plan has `--no-types` | `false` |
+| `with_times` | Whether the run and the comparison have `--with-times` | `false` |
+| `pace` | The seconds of `--pace` | `1` |
+| `backup` | The folder of the mirror, the event file, the state file and the work repository | `~/vc-backup` |
+| `clone_url` | The URL `backup-mirror.sh` clones the source from | `git@github.com:<source>.git` |
+
+A field it does not know stops it, as does a value of the wrong kind. Then run it:
+
+```sh
+python3 ~/vc/github-rewriter/replay/replay.py ~/github-rewriter.run.json
+```
+
+It announces each of its eight steps as `Step <n> of 8`:
+
+1. **mirror**: makes the mirror with `backup-mirror.sh` in `backup`.
+2. **plan**: plans into the event file next to the mirror, with the mailmap and the types written into a temporary folder that it deletes afterwards, and prints every changed title and the totals, as [Planning a replay](#planning-a-replay) shows. It stops where a title would get a guessed type; give that title's commit or pull request its type in `types` and run again.
+3. **create**: creates the target, private and empty, for your account or for the organisation that owns it.
+4. **settings**: turns Actions off in the target, and the deletion of head branches on where the source has it on.
+5. **replay**: runs `run-replay.py` with `--pace`, `--final-name`, and `--sign` and `--with-times` where the run file sets them, and gives it your confirmation with `--confirmed`. Where GitHub has named the target's default branch other than the source's, it then makes the source's the default branch, once the replay has pushed it, and before `run-replay.py` where a stopped replay pushed it already.
+6. **compare**: runs `compare-replay.py`, as [Comparing the replay with its source](#comparing-the-replay-with-its-source) describes, and stops at any difference.
+7. **links**: moves the sub-issue links, as [Taking over the source's name](#taking-over-the-sources-name) describes. Where an issue of the source is a sub-issue of an issue elsewhere, it links the replayed issue, moves it with `after_id` after the sub-issue just before the source's, or with `before_id` before the one after it where the source's is the first, so that it takes that one's place, and unlinks the source's; where the source's is the only one, it skips the move. Where an issue of the source has sub-issues, the replayed issue gets them in the same order: the replayed ones for those of the source, and those from elsewhere moved over with `replace_parent`, the option of [Add sub-issue](https://docs.github.com/en/rest/issues/sub-issues#add-sub-issue) that replaces a sub-issue's current parent, so that they leave the source's issue.
+8. **commands**: prints what is left to you, with the commands of [Taking over the source's name](#taking-over-the-sources-name) for this replay.
+
+Before the first step it checks that the target does not exist yet. Between the plan and the creation it reads the sub-issue links, and stops where one crosses owners; then it lists what it will do, with each repository other than the target that a link is written in, and asks for the target's `owner/repo`; anything else stops it without a write to GitHub. This is the middle and the end of its output for the test's source, `ada-example/tool`, with a sub-issue link to an invented `ada-example/plans`; the answer stands after the prompt, since the test pipes it in:
+
+```
+Replay ada-example/tool into ada-example/tool-replay-20261116, to be renamed ada-example/tool:
+  3. create ada-example/tool-replay-20261116, private and empty
+  4. turn Actions off in it and the deletion of head branches on, as the source has it
+  5. run run-replay.py --pace 0 --final-name ada-example/tool, and make main the default branch where GitHub names another
+  6. compare the replay with the source with compare-replay.py
+  7. move sub-issue links: 4
+       #1: in ada-example/plans#9, links the replay's #1 in the place of the source's and unlinks the source's (writes in ada-example/plans)
+       #4: in ada-example/plans#9, links the replay's #4 in the place of the source's and unlinks the source's (writes in ada-example/plans)
+       the replay's #4 gets the sub-issues of the source's: #6
+       the replay's #6 gets the sub-issues of the source's: ada-example/plans#11, taken from the source's #6 with replace_parent (writes in ada-example/plans and in the source)
+  8. print the commands that archive the source and rename the replay
+Type ada-example/tool-replay-20261116 to confirm: ada-example/tool-replay-20261116
+Step 3 of 8, create: create ada-example/tool-replay-20261116, private and empty
+  https://github.com/ada-example/tool-replay-20261116
+Step 4 of 8, settings: turn Actions off until the replay is checked
+  Actions off
+  deletion of head branches on, as the source has it
+Step 5 of 8, replay: run-replay.py into ada-example/tool-replay-20261116
+```
+
+```
+Step 7 of 8, links: move the sub-issue links of the source's issues to the replay's
+  #1 under ada-example/plans#9, in the place of the source's
+  #4 under ada-example/plans#9, in the place of the source's
+  #6 under the replay's #4
+  ada-example/plans#11 under the replay's #6
+Step 8 of 8, commands: what is left to you
+1. Check what compare-replay.py cannot see in the source: its secrets, variables, webhooks, deploy keys and collaborators.
+2. Archive the source under a new name, give the replay its name, Actions and settings, and delete the branches the source no longer has:
+
+gh api -X PATCH repos/ada-example/tool -f name=tool-archive
+gh api -X PATCH repos/ada-example/tool-archive -F archived=true
+gh api -X PATCH repos/ada-example/tool-replay-20261116 -f name=tool
+gh api -X PUT repos/ada-example/tool/actions/permissions -F enabled=true
+gh api -X PATCH repos/ada-example/tool -F allow_merge_commit=false -F allow_squash_merge=true -F allow_rebase_merge=false -F delete_branch_on_merge=true -f 'description=A small tool'
+gh api -X DELETE repos/ada-example/tool/git/refs/heads/docs/5-notes
+
+3. Replace each local clone of ada-example/tool with a fresh clone of the replay.
+4. Delete ~/tool.progress.json, ~/vc-backup/tool-2026-11-16-033713.state.json and ~/vc-backup/tool-2026-11-16-033713.work.git.
+```
+
+The paths of the last line stand for those of a run file `~/tool.run.json` and a mirror made in `~/vc-backup`. What is left to you is what these lines say: check the source's secrets, variables, webhooks, deploy keys and collaborators, which neither script reads; run the commands of step 2 in their order, which give the replay the source's Actions setting, merge methods, deletion of head branches and description; replace your clones; and delete the run's files. The commands name the archive `<repository>-archive`, and a note above them says so where a repository of that name exists already: give the archive another name in the first two then. Where `final_name` is not the source, the first command only archives the source.
+
+Where it stops, it names the step and says how to go on. A stop before the confirmation writes nothing to GitHub, and the next run starts over with a new mirror and event file; the stopped run's stay in `backup`. After the confirmation it keeps its progress in the progress file next to the run file, `~/github-rewriter.progress.json` for the run file above: the mirror, the event file and the steps done. Once you have removed the cause of the stop, run the same command again: it asks you to confirm again, skips the creation and the settings where they are done, lets `run-replay.py` resume where [Stopping and resuming](#stopping-and-resuming) says, compares again, and moves the links that are not moved yet. Ctrl-C reaches the script that runs, so in the replay step it stops `run-replay.py` after the event in progress. A run file that changed after the confirmation stops it; undo the change to resume. Where the comparison finds a difference that you accept, take the remaining steps by hand, as the sections below describe them.
 
 ## Planning a replay
 
@@ -101,7 +203,7 @@ With a classic or OAuth token, `gh` lists [SSH signing keys only with the scope 
 gh auth refresh -s read:ssh_signing_key
 ```
 
-First create the target on GitHub, empty: without a README, license or ignore file, with the default branch named as the source's, and with no ruleset or branch protection on it yet, since the direct commits are pushed to it. Turn off Actions in it until the replay is checked, since every pushed branch and every merge would otherwise start the source's workflows; and where the source has deleted the branches of its merged pull requests, turn on the deletion of head branches, so that the replay's are deleted on merge too:
+Where you run `run-replay.py` alone, not through `replay.py`, which does this itself, first create the target on GitHub, empty: without a README, license or ignore file, and with no ruleset or branch protection on it yet, since the direct commits are pushed to it. Turn off Actions in it until the replay is checked, since every pushed branch and every merge would otherwise start the source's workflows; and where the source has deleted the branches of its merged pull requests, turn on the deletion of head branches, so that the replay's are deleted on merge too:
 
 ```sh
 gh api -X PUT repos/tiavelum/github-rewriter-trial/actions/permissions -F enabled=false
@@ -112,6 +214,12 @@ Then, with the mirror and the event file of [Planning a replay](#planning-a-repl
 
 ```sh
 python3 replay/run-replay.py "${mirror%.git}-typed.jsonl" "$mirror" tiavelum/github-rewriter-trial
+```
+
+Where GitHub names the target's default branch other than the source's, the run goes on while the target is empty. Once it is done, make the source's the default branch, here `main`; where a resumed run stops at `the default branch of tiavelum/github-rewriter-trial is master, the source's main`, do so first and run it again:
+
+```sh
+gh api -X PATCH repos/tiavelum/github-rewriter-trial -f default_branch=main
 ```
 
 It checks that the mirror holds every tree of the event file, that GitHub answers for the target under the name you gave (a renamed repository stops it), and that the target is empty, prints what it will do in totals, with the labels the target already has, and asks for the target's `owner/repo`; anything else stops it without a write. It then prints one line per event, and at the end what it did and the target's URL. This is the output of a run of the test's source, `ada-example/tool`, into a fake target, as `test-replay.sh` makes it; the answer typed at the prompt does not show, since the test pipes it in:
@@ -165,12 +273,13 @@ Done in this run:
 https://github.com/ada-example/tool-new
 ```
 
-Five options, given before the event file:
+Six options, given before the event file:
 
 - `--with-times` appends the original creation time to each body and comment, as `_Originally created 2026-03-01 11:00 UTC._` after a blank line; off by default.
 - `--sign <address>` signs, with the signing key of your git configuration, each recreated commit whose mapped committer has that address, as [Running a replay](#running-a-replay) requires; the others stay unsigned, since nobody running the replay holds the key of a commit someone else committed. Off by default.
 - `--final-name <owner/repo>` fills `{pr_url}` with the URL of the pull request under the name the target will carry once it takes over the source's name, such as `https://github.com/tiavelum/github-rewriter/pull/3`, instead of the target's current name; off by default.
 - `--state <file>` keeps the state in that file instead of the one next to the event file.
+- `--confirmed <owner/repo>` takes `<owner/repo>` as the answer to the confirmation instead of asking for it, as `replay.py` gives the answer you typed; any other value stops the run as a wrong answer does.
 - `--pace <seconds>` sets the least time between two writes; the default, 1, follows GitHub's advice to [pause at least one second between mutative requests](https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api#pause-between-mutative-requests), and the test uses less.
 
 For a replay into `tiavelum/github-rewriter-trial` that takes over the source's name, signing the commits you committed under an invented address:
@@ -236,9 +345,59 @@ Next to it lies the work repository, with `.work.git` for `.state.json`: a bare 
 
 The target does not get the original times and authors: every item, comment and merge is by the account that runs the replay, at the time of the replay; `--with-times` keeps the creation time in the text. Nor does it get reactions, reviews, review comments, milestones or projects, which the plan does not read, or an item's history between its creation and its final state. References to items, in this repository or another, and `@` mentions act again: GitHub adds them to the timeline of the item named, and notifies the person mentioned.
 
+## Comparing the replay with its source
+
+Once the run has printed the target's URL, compare the target with the source, with the event file, the mirror and the state file of the run; give `--with-times` where the run had it, and `--state` where it had one:
+
+```sh
+python3 replay/compare-replay.py "${mirror%.git}-typed.jsonl" "$mirror" tiavelum/github-rewriter-trial
+```
+
+It needs `gh` signed in with read access to the source and the target, reads GitHub with GET requests only, and fetches the target's commits into a temporary repository, over the protocol `gh config get git_protocol` names, which it deletes at the end. It compares:
+
+- **Items**: each issue and pull request under its number, with its kind, the title the event file plans, its state, its state reason where it is a closed issue, its labels and assignees, and whether it is merged; a number the source lacks has to hold a closed placeholder.
+- **Labels**: each with its colour and description.
+- **Texts**: every body and comment equal to the source's, with each hash of a recreated commit replaced as [What the target ends with](#what-the-target-ends-with) says, and with the original time where `--with-times` is given; where a text ends in a footer the source lacks, it says so.
+- **The default branch**: as many first-parent commits as the source's and as the event file plans, each with the source's tree at the same step and the hash the state file records; each direct commit with its planned message, author and committer and their dates; each merge with its planned message, `{pr_url}` filled as the run filled it, and GitHub as committer. A `Co-authored-by` line that GitHub appends to a merge's message passes; one that stands twice does not.
+- **Recreated commits**: each commit the state file records, in the target and with the tree of its source commit.
+- **Branches**: the default branch and each pull request's branch, at the head the state file records, without those of merged pull requests where the target deletes head branches on merge.
+- **Pull request heads**: the head of each pull request, `refs/pull/<number>/head`, at the head the state file records, also where its branch is deleted.
+
+It prints the totals, then notes, which are no differences: who authored the merges, and each branch the target keeps that the source no longer has, which [Taking over the source's name](#taking-over-the-sources-name) deletes. This is its output for the test's replay of `ada-example/tool`:
+
+```
+Compared ada-example/tool with ada-example/tool-new:
+  items                           6
+  labels                          2
+  comments                        4
+  texts with a replaced hash      1
+  commits on main                 7
+  recreated commits              12
+  branches                        4
+  pull request heads              3
+Notes:
+  merges authored by Ada Example <ada@example.com>
+  branch docs/5-notes stays in the target; the source no longer has it
+  branch feat/2-thing stays in the target; the source no longer has it
+  branch fix/3-parser stays in the target; the source no longer has it
+No differences
+```
+
+It exits with 0 where it finds no difference. Otherwise it ends with `Differences:` and their number, then one line per difference, and exits with 1; these are five of the lines for a copy of that target with changed data:
+
+```
+  #4 is closed as completed, the source's not_planned
+  label bug: colour ee0701, the source's d73a4a
+  #6, comment 1: the body differs; it has a footer the source lacks
+  branch fix/3-parser is missing in the target
+  #3: the pull request head is bac0273, the state file's 8ad4614
+```
+
+Where the state file records the replay unfinished, or belongs to another event file or target, it compares nothing and exits with 2. It cannot see the source's secrets, variables, webhooks, deploy keys and collaborators; check those yourself before the source is archived.
+
 ## Taking over the source's name
 
-Once the replay is checked, give it the source's name, so that links to the source's items reach the replayed ones under the same numbers.
+Once the replay is checked, give it the source's name, so that links to the source's items reach the replayed ones under the same numbers. `replay.py` moves the sub-issue links itself and prints the other commands of this section for its replay; where you run the steps alone, take them all as follows.
 
 First move what a replay does not carry and an archive no longer lets you change: where an item of the source is a sub-issue of an issue elsewhere, link the replayed item in its place and unlink the source's, since GitHub refuses to remove a sub-issue of an archived repository. For an item `N` of the source whose parent is `owner/other#P`, list the parent's sub-issues in their order, each with its id:
 
@@ -339,11 +498,14 @@ Events follow the original times, with these constraints: items are created stri
 - An item is replayed in its final state: one reopened and closed again is closed once, with its labels and assignees as they are now.
 - A pull request without commits of its own, or one whose base is not the default branch, is planned with a warning, since GitHub may refuse to create it; the run then stops at it.
 - A Ctrl-C reaches a running `git` too; the run then stops in the middle of the event, which the next run checks and finishes.
+- Where GitHub names a new target's default branch other than the source's, the replay's first push is of a branch with another name. [Update a repository](https://docs.github.com/en/rest/repos/repos#update-a-repository) says only that `default_branch` "updates the default branch for this repository", and [Changing the default branch](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-branches-in-your-repository/changing-the-default-branch) says that "your repository must have more than one branch" to change it, so how GitHub takes such a first push into an empty repository, and whether it lets the default branch be set while the target has one branch, are open; `replay.py` therefore sets it only once the branch exists, and `run-replay.py` checks it only then. Where GitHub refuses the change, `replay.py` stops in step 5 at every run: as an administrator of the target, set the default branch on GitHub by hand where [GitHub allows it](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-branches-in-your-repository/changing-the-default-branch), which it does only for a repository with more than one branch, then run the same command again. This has not run on GitHub yet; a trial with a source whose default branch is named otherwise than GitHub names a new repository's would settle it.
 
 ## Files
 
 | File | Step |
 |---|---|
+| `replay.py` | Runs a whole replay from a run file: mirrors, plans, creates and sets up the target, replays, compares, moves the sub-issue links and prints the commands that give the replay the source's name |
 | `plan-replay.py` | Reads the source from a mirror and from GitHub and writes the event file |
 | `run-replay.py` | Applies the event file to an empty target and keeps the state file, so that a stopped run resumes |
+| `compare-replay.py` | Compares the finished target with the source, the event file and the state file, read-only, and names every difference |
 | `test-replay.sh` | Tests the scripts of this folder against a source built in a temporary folder and fake GitHub targets, without contacting GitHub |
