@@ -573,7 +573,7 @@ Events follow the original times, with these constraints: items are created stri
 ## Known limits
 
 - Review comments, reviews, reactions, milestones and projects are not read.
-- Tags, releases and branches without a pull request are not carried; the plan stops at each until it is accepted as left behind, as [What a replay leaves behind](#what-a-replay-leaves-behind) describes.
+- Tags, releases and branches without a pull request are not carried; the plan stops at each until it is accepted as left behind, as [What a replay leaves behind](#what-a-replay-leaves-behind) describes. A plan without push access to the source sees no draft release, since GitHub lists drafts only to those who can push, and the comparison checks a release by its tag name alone, not its text, assets or state.
 - An item is replayed in its final state: one reopened and closed again is closed once, with its labels and assignees as they are now.
 - A pull request without commits of its own, or one whose base is not the default branch, is planned with a warning, since GitHub may refuse to create it; the run then stops at it.
 - A Ctrl-C reaches a running `git` too; the run then stops in the middle of the event, which the next run checks and finishes.

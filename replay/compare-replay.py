@@ -140,14 +140,17 @@ def without_added_trailers(message, planned):
 
 
 def peeled_refs(repo, *prefixes):
-    """The refs under the prefixes, each with the object it names or, for an
-    annotated tag, the object the tag points to."""
-    out = git(repo, "for-each-ref", "--format=%(refname) %(objectname) %(*objectname)", *prefixes)
-    found = {}
-    for line in out.splitlines():
-        name, sha, *peeled = line.split()
-        found[name] = peeled[0] if peeled else sha
-    return found
+    """The refs under the prefixes, each with the object it peels to through
+    every tag."""
+    names = git(repo, "for-each-ref", "--format=%(refname)", *prefixes).split()
+    # A tag of a tag peels one level in %(*objectname), so peel with ^{}.
+    peeled = git(
+        repo,
+        "cat-file",
+        "--batch-check=%(objectname)",
+        stdin="".join(f"{name}^{{}}\n" for name in names),
+    ).split()
+    return dict(zip(names, peeled, strict=True))
 
 
 def read_commits(repo, shas):
@@ -500,7 +503,17 @@ class Comparison:
         """Each branch, tag and release of the source in the target, a branch
         or tag at the commit recreated from the source's; a note where the
         target lacks one that the header lists as left behind."""
+        if "left_behind" not in self.header:
+            self.notes.append(
+                "the event file predates left_behind: it accepts nothing as left behind"
+            )
         left = {(x["kind"], x["name"]) for x in self.header.get("left_behind", [])}
+        # The target of each pushed branch, which branches() checks already.
+        pushed = {
+            e["branch"]: self.heads.get(e["number"])
+            for e in self.events
+            if e["kind"] == "push-branch"
+        }
 
         def lacks(kind, name, what):
             if (kind, name) in left:
@@ -515,6 +528,9 @@ class Comparison:
             if kind == "branch" and name == self.default:
                 continue
             found, want = refs.get(ref), self.hashes.get(sha)
+            carried = kind == "branch" and want is not None and pushed.get(name) == want
+            if carried and (kind, name) not in left:
+                continue
             if found is None:
                 lacks(kind, name, "is missing in the target")
             elif found != want:

@@ -200,13 +200,29 @@ class Mirror:
 
     def refs(self, prefix):
         """The refs under prefix by their short names, each with the object
-        it names and, for an annotated tag, the object the tag points to."""
+        it names, whether that is a tag object, and the object it peels to
+        through every tag, with that object's type."""
+        listed = [
+            line.split("\t")
+            for line in self.git(
+                "for-each-ref", "--format=%(refname)%09%(objectname)%09%(objecttype)", prefix
+            ).splitlines()
+        ]
+        # A tag of a tag peels one level in %(*objectname), so peel with ^{}.
+        peeled = self.git(
+            "cat-file",
+            "--batch-check=%(objectname) %(objecttype)",
+            stdin="".join(f"{name}^{{}}\n" for name, _, _ in listed),
+        ).splitlines()
         found = {}
-        for line in self.git(
-            "for-each-ref", "--format=%(refname)%09%(objectname)%09%(*objectname)", prefix
-        ).splitlines():
-            name, sha, peeled = line.split("\t")
-            found[name[len(prefix) :]] = {"sha": sha, "peeled": peeled or None}
+        for (name, sha, kind), line in zip(listed, peeled, strict=True):
+            target, target_type = line.split()
+            found[name[len(prefix) :]] = {
+                "sha": sha,
+                "annotated": kind == "tag",
+                "peeled": target,
+                "type": target_type,
+            }
         return found
 
 
@@ -296,10 +312,12 @@ class LeaveBehind:
         except OSError as error:
             die(f"cannot read {path}: {error.strerror}")
         for count, line in enumerate(text.splitlines(), 1):
-            fields = line.split()
+            # Only spaces and tabs part the fields: git allows other Unicode
+            # blanks, such as a no-break space, in the name of a ref.
+            fields = [f for f in re.split(r"[ \t]+", line) if f]
             if not fields or fields[0].startswith("#"):
                 continue
-            # A name holds no blank, so a "#" after one starts a comment, as in
+            # A name holds no space, so a "#" after one starts a comment, as in
             # the lines the plan prints where it stops.
             if len(fields) > 2 and fields[2].startswith("#"):
                 fields = fields[:2]
@@ -358,9 +376,10 @@ def left_behind(mirror, info, releases, events):
             continue
         left.append({"kind": "branch", "name": name, "sha": tip, "reason": reason})
     for name, ref in sorted(mirror.refs("refs/tags/").items()):
-        sha = ref["peeled"] or ref["sha"]
-        kind = "annotated" if ref["peeled"] else "lightweight"
-        reason = f"{kind}, at {sha[:7]}; the replay pushes no tags"
+        sha = ref["peeled"]
+        kind = "annotated" if ref["annotated"] else "lightweight"
+        at = sha[:7] if ref["type"] == "commit" else f"the {ref['type']} {sha[:7]}"
+        reason = f"{kind}, at {at}; the replay pushes no tags"
         left.append({"kind": "tag", "name": name, "sha": sha, "reason": reason})
     for r in sorted(releases, key=lambda r: r["tag_name"]):
         what = "draft" if r.get("draft") else "pre-release" if r.get("prerelease") else "published"
