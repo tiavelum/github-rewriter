@@ -89,7 +89,7 @@ Step 7 of 8, links: move the sub-issue links of the source's issues to the repla
   ada-example/plans#11 under the replay's #6
 Step 8 of 8, commands: what is left to you
 1. Check what compare-replay.py cannot see in the source: its secrets, variables, webhooks, deploy keys and collaborators.
-2. Archive the source under a new name, give the replay its name, Actions and settings, and delete the branches the source no longer has:
+2. Archive the source under a new name, give the replay its name, Actions, settings and visibility, and delete the branches the source no longer has:
 
 gh api -X PATCH repos/ada-example/tool -f name=tool-archive
 gh api -X PATCH repos/ada-example/tool-archive -F archived=true
@@ -102,7 +102,7 @@ gh api -X DELETE repos/ada-example/tool/git/refs/heads/docs/5-notes
 4. Delete ~/tool.progress.json, ~/vc-backup/tool-2026-11-16-033713.state.json and ~/vc-backup/tool-2026-11-16-033713.work.git.
 ```
 
-The paths of the last line stand for those of a run file `~/tool.run.json` and a mirror made in `~/vc-backup`. What is left to you is what these lines say: check the source's secrets, variables, webhooks, deploy keys and collaborators, which neither script reads; run the commands of step 2 in their order, which give the replay the source's Actions setting, merge methods, deletion of head branches and description; replace your clones; and delete the run's files. The commands name the archive `<repository>-archive`, and a note above them says so where a repository of that name exists already: give the archive another name in the first two then. Where `final_name` is not the source, the first command only archives the source.
+The paths of the last line stand for those of a run file `~/tool.run.json` and a mirror made in `~/vc-backup`. What is left to you is what these lines say: check the source's secrets, variables, webhooks, deploy keys and collaborators, which neither script reads; run the commands of step 2 in their order, which give the replay the source's Actions setting, merge methods, deletion of head branches and description and, where the source is not private, its visibility, which the replay gets only after its rename, since it is created private; replace your clones; and delete the run's files. The commands name the archive `<repository>-archive`, and a note above them says so where a repository of that name exists already: give the archive another name in the first two then. Where `final_name` is not the source, the first command only archives the source.
 
 Where it stops, it names the step and says how to go on. A stop before the confirmation writes nothing to GitHub, and the next run starts over with a new mirror and event file; the stopped run's stay in `backup`. After the confirmation it keeps its progress in the progress file next to the run file, `~/github-rewriter.progress.json` for the run file above: the mirror, the event file and the steps done. Once you have removed the cause of the stop, run the same command again: it asks you to confirm again, skips the creation and the settings where they are done, lets `run-replay.py` resume where [Stopping and resuming](#stopping-and-resuming) says, compares again, and moves the links that are not moved yet. Ctrl-C reaches the script that runs, so in the replay step it stops `run-replay.py` after the event in progress. A run file that changed after the confirmation stops it; undo the change to resume. Where the comparison finds a difference that you accept, take the remaining steps by hand, as the sections below describe them.
 
@@ -438,9 +438,15 @@ gh api -X PATCH repos/tiavelum/mac-config-new -f name=mac-config
 Then give the replay the settings of the source, such as its merge methods and description, and turn Actions on again. These commands show the source's settings, then turn Actions on, merge commits off and the description empty, as for `tiavelum/mac-config`, whose source allowed no merge commits and had no description:
 
 ```sh
-gh api repos/tiavelum/mac-config-archive --jq '{description, allow_merge_commit, allow_squash_merge, allow_rebase_merge, delete_branch_on_merge}'
+gh api repos/tiavelum/mac-config-archive --jq '{description, allow_merge_commit, allow_squash_merge, allow_rebase_merge, delete_branch_on_merge, visibility}'
 gh api -X PUT repos/tiavelum/mac-config/actions/permissions -F enabled=true
 gh api -X PATCH repos/tiavelum/mac-config -F allow_merge_commit=false -f description=
+```
+
+Where the source is public, then make the replay public, since it was created private so that nobody sees it before it is checked; for `tiavelum/git-alias-map`:
+
+```sh
+gh api -X PATCH repos/tiavelum/git-alias-map -f visibility=public
 ```
 
 Delete each branch of the replay that the source no longer has, such as the branch of a pull request the source closed unmerged and whose branch it deleted:
