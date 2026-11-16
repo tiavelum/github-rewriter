@@ -946,6 +946,17 @@ EOF
       replay "$1" "$2" --pace 0 --sign ada@example.com --state "$3" "$T/run.jsonl" "$mirror" ada-example/tool-new)
   }
 
+  # A key with a passphrase that no agent holds would ask at every commit.
+  ssh-keygen -q -t ed25519 -N x -C test -f "$T/pass-key"
+  sed "s#sign-key.pub#pass-key.pub#" "$T/global-sign" >"$T/global-pass"
+  sign_target "$T/gh-pass"
+  (GIT_CONFIG_GLOBAL=$T/global-pass && export GIT_CONFIG_GLOBAL && unset SSH_AUTH_SOCK &&
+    replay "$T/gh-pass" ada-example/tool-new --pace 0 --sign ada@example.com --state "$T/pass.state.json" "$T/run.jsonl" "$mirror" ada-example/tool-new) \
+    >"$T/pass-out" 2>&1
+  status_pass=$?
+  check "run-replay.py --sign stops before writing when the key has a passphrase and no agent holds it" \
+    '[ "$status_pass" = 1 ] && grep -q "the signing key is not in the agent" "$T/pass-out" && nothing_written "$T/gh-pass" "$T/pass.state.json" || { cat "$T/pass-out"; exit 1; }'
+
   target "$T/gh-unknown"
   sign_replay "$T/gh-unknown" ada-example/tool-new "$T/unknown.state.json" >"$T/unknown-out" 2>&1
   status_unknown=$?
@@ -1002,6 +1013,7 @@ EOF
 import json, sys
 with open(sys.argv[1], encoding="utf-8") as f:
     state = json.load(f)
+assert sys.argv[3] in state["hashes"], "the killed run saved no hash before its push"
 state["hashes"][sys.argv[3]] = "0123456789abcdef0123456789abcdef01234567"
 with open(sys.argv[2], "w", encoding="utf-8") as f:
     json.dump(state, f)

@@ -95,7 +95,7 @@ To sign your recreated commits with `--sign`, your git configuration needs a `us
 gh ssh-key add ~/.ssh/id_ed25519.pub --type signing
 ```
 
-`gh` lists [SSH signing keys only with the scope `read:ssh_signing_key`](https://docs.github.com/en/rest/users/ssh-signing-keys#list-ssh-signing-keys-for-the-authenticated-user) and [GPG keys only with `read:gpg_key`](https://docs.github.com/en/rest/users/gpg-keys#list-gpg-keys-for-the-authenticated-user); where it lacks the one your key needs, the run names it and stops. Add it with:
+With a classic or OAuth token, `gh` lists [SSH signing keys only with the scope `read:ssh_signing_key`](https://docs.github.com/en/rest/users/ssh-signing-keys#list-ssh-signing-keys-for-the-authenticated-user) and [GPG keys only with `read:gpg_key`](https://docs.github.com/en/rest/users/gpg-keys#list-gpg-keys-for-the-authenticated-user); a fine-grained token needs the user permission "SSH signing keys" or "GPG keys" set to read. Where it lacks the one your key needs, the run names it and stops. Add the scope with:
 
 ```sh
 gh auth refresh -s read:ssh_signing_key
@@ -172,7 +172,7 @@ For a replay into `tiavelum/github-rewriter-trial` that takes over the source's 
 python3 replay/run-replay.py --sign ada@example.com --final-name tiavelum/github-rewriter "${mirror%.git}-typed.jsonl" "$mirror" tiavelum/github-rewriter-trial
 ```
 
-Before the confirmation, the totals then also say how many commits it signs, with which key, and what `{pr_url}` becomes; each push says how many of its commits it signed. These are the first lines of a signed run of the test, with its throwaway key:
+Before the confirmation, the totals then also say how many commits it signs, with which key, and what `{pr_url}` becomes; each push says how many of its commits it signed. These are the first lines of a signed run of the test, with the path of its throwaway key replaced by `~/.ssh/id_ed25519.pub`:
 
 ```
 Replay ada-example/tool into ada-example/tool-new: 23 events
@@ -184,7 +184,7 @@ Replay ada-example/tool into ada-example/tool-new: 23 events
   merges                        2
   closes                        3
   commits to sign               9
-  signed: the commits committed by ada@example.com, with the SSH key /tmp/replay-test.kBDE6H/sign-key.pub (ssh-ed25519)
+  signed: the commits committed by ada@example.com, with the SSH key ~/.ssh/id_ed25519.pub (ssh-ed25519)
   {pr_url} in 1 squash message: https://github.com/ada-example/tool-new/pull/<number>
   labels the target has and the replay updates: bug
   labels the target has and the replay deletes: enhancement

@@ -26,7 +26,7 @@ The tests run every script in throwaway repositories and contact no server; the 
 The second ends with:
 
 ```
-64 passed, 0 failed
+65 passed, 0 failed
 ```
 
 To rewrite a repository, follow the steps in [rewrite/README.md](rewrite/README.md); to replay it into a new one, those in [replay/README.md](replay/README.md).
