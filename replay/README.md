@@ -89,6 +89,18 @@ gh config set git_protocol ssh
 
 Otherwise the run stops in its first check, before any write, at `could not read Username for 'https://github.com': terminal prompts disabled`.
 
+To sign your recreated commits with `--sign`, your git configuration needs a `user.signingkey`, with `gpg.format` `ssh` or `openpgp`, the default. For an SSH key, it needs `ssh-keygen` and, since [SSH signing is available in Git 2.34 or later](https://docs.github.com/en/authentication/managing-commit-signature-verification/about-commit-signature-verification), git 2.34 or later; a key with a passphrase has to be in the agent. GitHub [verifies a signature against a public key you have added to your account](https://docs.github.com/en/authentication/managing-commit-signature-verification/about-commit-signature-verification), so the run checks that GitHub lists the key, and stops where it does not. Add an SSH key as a signing key, here `~/.ssh/id_ed25519.pub`, with:
+
+```sh
+gh ssh-key add ~/.ssh/id_ed25519.pub --type signing
+```
+
+`gh` lists [SSH signing keys only with the scope `read:ssh_signing_key`](https://docs.github.com/en/rest/users/ssh-signing-keys#list-ssh-signing-keys-for-the-authenticated-user) and [GPG keys only with `read:gpg_key`](https://docs.github.com/en/rest/users/gpg-keys#list-gpg-keys-for-the-authenticated-user); where it lacks the one your key needs, the run names it and stops. Add it with:
+
+```sh
+gh auth refresh -s read:ssh_signing_key
+```
+
 First create the target on GitHub, empty: without a README, license or ignore file, with the default branch named as the source's, and with no ruleset or branch protection on it yet, since the direct commits are pushed to it. Then, with the mirror and the event file of [Planning a replay](#planning-a-replay):
 
 ```sh
@@ -106,6 +118,7 @@ Replay ada-example/tool into ada-example/tool-new: 23 events
   comments                      4
   merges                        2
   closes                        3
+  {pr_url} in 1 squash message: https://github.com/ada-example/tool-new/pull/<number>
   labels the target has and the replay updates: bug
   labels the target has and the replay deletes: enhancement
 Type ada-example/tool-new to confirm:   label enhancement deleted
@@ -145,11 +158,43 @@ Done in this run:
 https://github.com/ada-example/tool-new
 ```
 
-Three options, given before the event file:
+Five options, given before the event file:
 
 - `--with-times` appends the original creation time to each body and comment, as `_Originally created 2026-03-01 11:00 UTC._` after a blank line; off by default.
+- `--sign <address>` signs, with the signing key of your git configuration, each recreated commit whose mapped committer has that address, as [Running a replay](#running-a-replay) requires; the others stay unsigned, since nobody running the replay holds the key of a commit someone else committed. Off by default.
+- `--final-name <owner/repo>` fills `{pr_url}` with the URL of the pull request under the name the target will carry once it takes over the source's name, such as `https://github.com/tiavelum/github-rewriter/pull/3`, instead of the target's current name; off by default.
 - `--state <file>` keeps the state in that file instead of the one next to the event file.
 - `--pace <seconds>` sets the least time between two writes; the default, 1, follows GitHub's advice to [pause at least one second between mutative requests](https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api#pause-between-mutative-requests), and the test uses less.
+
+For a replay into `tiavelum/github-rewriter-trial` that takes over the source's name, signing the commits you committed under an invented address:
+
+```sh
+python3 replay/run-replay.py --sign ada@example.com --final-name tiavelum/github-rewriter "${mirror%.git}-typed.jsonl" "$mirror" tiavelum/github-rewriter-trial
+```
+
+Before the confirmation, the totals then also say how many commits it signs, with which key, and what `{pr_url}` becomes; each push says how many of its commits it signed. These are the first lines of a signed run of the test, with its throwaway key:
+
+```
+Replay ada-example/tool into ada-example/tool-new: 23 events
+  labels                        2
+  commits                      10
+  issues                        3
+  pull requests                 3
+  comments                      4
+  merges                        2
+  closes                        3
+  commits to sign               9
+  signed: the commits committed by ada@example.com, with the SSH key /tmp/replay-test.kBDE6H/sign-key.pub (ssh-ed25519)
+  {pr_url} in 1 squash message: https://github.com/ada-example/tool-new/pull/<number>
+  labels the target has and the replay updates: bug
+  labels the target has and the replay deletes: enhancement
+Type ada-example/tool-new to confirm:   label enhancement deleted
+ 1/23  create-label  bug updated
+ 2/23  create-label  docs created
+ 3/23  push-commits  1 commit to main, 1 signed, now at d1d4d85
+```
+
+With a key other than an Ed25519 SSH key, the totals add `this key does not sign a commit the same way twice: a run stopped in a push of signed commits cannot resume`, as [Stopping and resuming](#stopping-and-resuming) explains.
 
 On a rate limit, an answer 403 or 429, the run waits as [GitHub's guidance on exceeding a rate limit](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api#exceeding-the-rate-limit) says: the seconds of `retry-after`, else up to the time of `x-ratelimit-reset` where `x-ratelimit-remaining` is 0, else a minute, doubled at each retry; it retries the same call at most 5 times and then stops. GitHub allows [no more than 500 content-generating requests per hour](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api#about-secondary-rate-limits), and a replay makes about one per label, item, comment, merge and close, so a large one may stop on the limit; run it again after an hour.
 
@@ -160,20 +205,23 @@ Ctrl-C stops the run after the event in progress; a second Ctrl-C stops it at on
 - An issue or pull request gets a number other than the planned one, as when someone else creates an issue in the target during the run; nothing more is done.
 - After a merge, the tree of the default branch differs from the source's tree after that merge.
 - GitHub refuses a call, answers a write with nothing, or is still rate limited after 5 retries.
+- A commit of the push in progress, rebuilt on resuming, gets another hash than the state file records for it; the run stops before the push, so the target never gets a second history.
 
-To resume, find and remove the cause, and run the same command again. It checks the target against the state file: its highest number and the commit its default branch is at must be those the state file records. The event that was in progress may account for one difference, and it checks what of it is done: an item with its planned number and title, a comment that is already the last of its item, a merged pull request, a label that exists and a pushed commit are taken over, not made again. Where the target differs in another way, the run stops and names the difference. Run on a finished replay, it checks the target again.
+To resume, find and remove the cause, and run the same command again, with the same `--sign` and `--final-name`; a state file that records other ones stops the run. It checks the target against the state file: its highest number and the commit its default branch is at must be those the state file records. The event that was in progress may account for one difference, and it checks what of it is done: an item with its planned number and title, a comment that is already the last of its item, a merged pull request, a label that exists and a pushed commit are taken over, not made again. Where the target differs in another way, the run stops and names the difference. Run on a finished replay, it checks the target again.
+
+A resumed run rebuilds the commits of the push that was in progress, and takes the pushed ones over only where they get the same hashes. An Ed25519 SSH key signs the same commit the same way each time, which the test checks; an OpenPGP signature holds the time it was made, and other SSH keys may sign differently each time, so with such a key a run stopped in a push of signed commits stops again at that push. Replay into a new empty target then, or sign with an Ed25519 SSH key.
 
 ## The state file
 
-The state file is the event file with `.state.json` for `.jsonl`, such as `~/vc-backup/github-rewriter-2026-11-15-220456-typed.state.json`, unless `--state` names one. It is written after each event, by replacing it, so a stop at any point leaves the last finished event. It holds JSON: the SHA-256 of the event file, `source` and `target`, `done`, the number of the last finished event, `finished`, whether the target was checked after the last event, `highest`, the target's highest number, `head`, the commit the default branch is at, and the maps `numbers`, from source to target number, `hashes`, from source to target commit, `heads`, from pull request to the head of its pushed branch, and `urls`, from pull request to its URL. A state file for another event file or target stops the run.
+The state file is the event file with `.state.json` for `.jsonl`, such as `~/vc-backup/github-rewriter-2026-11-15-220456-typed.state.json`, unless `--state` names one. It is written after each event, and before each push with the hashes of the commits it pushes, by replacing it, so a stop at any point leaves the last finished event. It holds JSON: the SHA-256 of the event file, `source` and `target`, `sign` and `final_name`, the values of `--sign` and `--final-name` or `null`, `done`, the number of the last finished event, `finished`, whether the target was checked after the last event, `highest`, the target's highest number, `head`, the commit the default branch is at, and the maps `numbers`, from source to target number, `hashes`, from source to target commit, `heads`, from pull request to the head of its pushed branch, and `urls`, from pull request to its URL. A state file for another event file or target stops the run.
 
 Next to it lies the work repository, with `.work.git` for `.state.json`: a bare repository that borrows the mirror's objects and holds the recreated commits until they are pushed. Keep both until the replay is done and checked; then delete them.
 
 ## What the target ends with
 
 - **Labels**: the source's, with their colours and descriptions. Before the first event, the run deletes each label the target has and the source lacks, such as GitHub's defaults, and updates the others.
-- **Commits**: each commit of the default branch and of the pull requests' branches, recreated with `git commit-tree` from its planned tree, typed message and mapped author and committer with their original dates, on the recreated parents, so each gets a new hash. The recreated commits are never signed: `git commit-tree` does not read `commit.gpgSign`, so a resumed run builds each commit with the same hash again.
-- **Merges**: each merged pull request is merged through GitHub, with the planned method, title and message and `{pr_url}` replaced by its URL, so GitHub is the committer of the squash commit, the account that runs the replay its author, and the time of the replay its date. After each merge, the tree of the default branch equals the source's.
+- **Commits**: each commit of the default branch and of the pull requests' branches, recreated with `git commit-tree` from its planned tree, typed message and mapped author and committer with their original dates, on the recreated parents, so each gets a new hash. With `--sign`, those whose committer has the given address are signed with your signing key, so that GitHub can show them as verified; all others are unsigned, since `git commit-tree` does not read `commit.gpgSign`.
+- **Merges**: each merged pull request is merged through GitHub, with the planned method, title and message and `{pr_url}` replaced by its URL, under the name `--final-name` gives or else under the target's, so GitHub is the committer of the squash commit, the account that runs the replay its author, and the time of the replay its date. After each merge, the tree of the default branch equals the source's.
 - **Items**: each issue and pull request under its number, with its title, body, labels, assignees, draft state, and the state and state reason it ends in. Each is created open, then merged or closed. A merge closes the issues its pull request names with a closing keyword, as on GitHub; a later close leaves such an issue as it is where the state reason matches, and otherwise reopens and closes it with the planned one, since GitHub [ignores a state reason unless the state changes](https://docs.github.com/en/rest/issues/issues#update-an-issue). After the last event, the run reopens an item the source has open that a merge closed, and stops where any other item, or the labels, differ from the plan.
 - **Comments**: each comment, in the planned order, after its item.
 - **Hashes**: in every title, body, comment and commit message, a hash of 7 to 40 lowercase hexadecimal characters that is the prefix of exactly one source commit already recreated becomes the prefix of the same length of the new hash.
@@ -191,7 +239,7 @@ gh api -X PATCH repos/tiavelum/mac-config-archive -F archived=true
 gh api -X PATCH repos/tiavelum/mac-config-new -f name=mac-config
 ```
 
-[GitHub redirects a renamed repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/renaming-a-repository) until another repository takes its old name, so the third command ends the redirect from `mac-config` to the archive. Then replace each local clone of the source with a fresh clone of the replay at the same path, since their histories differ.
+[GitHub redirects a renamed repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/renaming-a-repository) until another repository takes its old name, so the third command ends the redirect from `mac-config` to the archive. For the same reason, run such a replay with `--final-name tiavelum/mac-config`, so that the links its squash messages end in name the repository the replay becomes, not `mac-config-new`. Then replace each local clone of the source with a fresh clone of the replay at the same path, since their histories differ.
 
 ## How a title gets its type
 
