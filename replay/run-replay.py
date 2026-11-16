@@ -959,13 +959,15 @@ class Replay:
         found = {i["number"]: i for i in self.api.pages(f"repos/{self.slug}/issues?state=all")}
         problems, reopened = [], []
         for n, e in sorted(self.creates.items()):
-            item = found.get(n)
+            item, status = found.get(n), None
             if item is None:
                 # GitHub's list can lag behind an item created a moment ago.
                 status, data = self.api.call("GET", f"repos/{self.slug}/issues/{n}")
                 item = data if status == 200 else None
             if item is None:
-                problems.append(f"#{n} is missing")
+                problems.append(
+                    f"#{n} is missing" + ("" if status == 404 else f", GET answered HTTP {status}")
+                )
                 continue
             merged = (item.get("pull_request") or {}).get("merged_at")
             state = "merged" if merged else item["state"]
