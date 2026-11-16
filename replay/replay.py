@@ -613,6 +613,12 @@ class OneCommand:
         ]
         fields.append("-f " + shlex.quote(f"description={self.info.get('description') or ''}"))
         lines.append(f"gh api -X PATCH repos/{self.final} {' '.join(fields)}")
+        # The target is created private, so that nobody sees it before the
+        # checks; a source of another visibility gets it back only here.
+        private = self.info.get("private", True)
+        visibility = self.info.get("visibility") or ("private" if private else "public")
+        if visibility != "private":
+            lines.append(f"gh api -X PATCH repos/{self.final} -f visibility={visibility}")
         lines += [
             f"gh api -X DELETE repos/{self.final}/git/refs/heads/{branch}"
             for branch in self.extra_branches()
@@ -624,8 +630,9 @@ class OneCommand:
             " webhooks, deploy keys and collaborators."
         )
         print(
-            "2. Archive the source under a new name, give the replay its name, Actions and"
-            " settings, and delete the branches the source no longer has:"
+            "2. Archive the source under a new name, give the replay its name, Actions,"
+            " settings and, where the source is not private, visibility, and delete the"
+            " branches the source no longer has:"
         )
         for note in notes:
             print(f"   note: {note}")
