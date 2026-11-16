@@ -631,7 +631,8 @@ class OneCommand:
         )
         print(
             "2. Archive the source under a new name, give the replay its name, Actions,"
-            " settings and visibility, and delete the branches the source no longer has:"
+            " settings and, where the source is not private, visibility, and delete the"
+            " branches the source no longer has:"
         )
         for note in notes:
             print(f"   note: {note}")

@@ -1388,7 +1388,7 @@ run_file "$T/runs-n/tool.run.json" "$T/backup-rn"
 check "replay.py gives the target the source's default branch after an uninterrupted replay into a target named master" \
   'grep -qx "  default branch main, where GitHub had named it master" "$T/rn-out" && [ ! -e "$T/rn/rejected" ] || { cat "$T/rn-out"; exit 1; }'
 check "replay.py creates the target of a public source private, and prints the command that makes the renamed replay public, after the rename, only for such a source" \
-  'python3 -c "import json, sys; sys.exit(not json.load(open(sys.argv[1]))[\"private\"])" "$T/rn/settings.json" && grep -Fqx "gh api -X PATCH repos/ada-example/tool -f visibility=public" "$T/rn-out" && [ "$(grep -n -e "-f name=tool$" -e "visibility=public$" "$T/rn-out" | cut -d: -f1 | sort -n | tr "\n" " " | awk "{print (\$1 < \$2)}")" = 1 ] && ! grep -q "visibility=" "$T/rn/calls" "$T/ra-out" || { cat "$T/rn-out"; exit 1; }'
+  'python3 -c "import json, sys; s = json.load(open(sys.argv[1])); sys.exit(not s[\"private\"] or \"visibility\" in s)" "$T/rn/settings.json" && grep -Fqx "gh api -X PATCH repos/ada-example/tool -f visibility=public" "$T/rn-out" && [ "$(grep -n -e "-f name=tool$" -e "visibility=public$" "$T/rn-out" | cut -d: -f1 | sort -n | tr "\n" " " | awk "{print (\$1 < \$2)}")" = 1 ] && ! grep -q "visibility=" "$T/ra-out" || { cat "$T/rn-out"; exit 1; }'
 
 check "replay.py reads the parent only of an issue whose parent_issue_url names one, and skips the move of an only sub-issue" \
   'grep -q " GET repos/ada-example/tool/issues/1/parent$" "$T/rm/calls" && ! grep -q " GET repos/ada-example/tool/issues/[46]/parent$" "$T/rm/calls" && [ ! -e "$T/rm/priorities" ] || { grep parent "$T/rm/calls"; cat "$T/rm/priorities"; exit 1; }'

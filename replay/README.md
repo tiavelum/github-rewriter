@@ -89,7 +89,7 @@ Step 7 of 8, links: move the sub-issue links of the source's issues to the repla
   ada-example/plans#11 under the replay's #6
 Step 8 of 8, commands: what is left to you
 1. Check what compare-replay.py cannot see in the source: its secrets, variables, webhooks, deploy keys and collaborators.
-2. Archive the source under a new name, give the replay its name, Actions, settings and visibility, and delete the branches the source no longer has:
+2. Archive the source under a new name, give the replay its name, Actions, settings and, where the source is not private, visibility, and delete the branches the source no longer has:
 
 gh api -X PATCH repos/ada-example/tool -f name=tool-archive
 gh api -X PATCH repos/ada-example/tool-archive -F archived=true
@@ -203,7 +203,7 @@ With a classic or OAuth token, `gh` lists [SSH signing keys only with the scope 
 gh auth refresh -s read:ssh_signing_key
 ```
 
-Where you run `run-replay.py` alone, not through `replay.py`, which does this itself, first create the target on GitHub, empty: without a README, license or ignore file, and with no ruleset or branch protection on it yet, since the direct commits are pushed to it. Turn off Actions in it until the replay is checked, since every pushed branch and every merge would otherwise start the source's workflows; and where the source has deleted the branches of its merged pull requests, turn on the deletion of head branches, so that the replay's are deleted on merge too:
+Where you run `run-replay.py` alone, not through `replay.py`, which does this itself, first create the target on GitHub, private and empty: without a README, license or ignore file, and with no ruleset or branch protection on it yet, since the direct commits are pushed to it. Turn off Actions in it until the replay is checked, since every pushed branch and every merge would otherwise start the source's workflows; and where the source has deleted the branches of its merged pull requests, turn on the deletion of head branches, so that the replay's are deleted on merge too:
 
 ```sh
 gh api -X PUT repos/tiavelum/github-rewriter-trial/actions/permissions -F enabled=false
@@ -443,7 +443,7 @@ gh api -X PUT repos/tiavelum/mac-config/actions/permissions -F enabled=true
 gh api -X PATCH repos/tiavelum/mac-config -F allow_merge_commit=false -f description=
 ```
 
-Where the source is public, then make the replay public, since it was created private so that nobody sees it before it is checked; for `tiavelum/git-alias-map`:
+Where the source is public and you created the replay private, so that nobody sees it before it is checked, make it public; for `tiavelum/git-alias-map`:
 
 ```sh
 gh api -X PATCH repos/tiavelum/git-alias-map -f visibility=public
