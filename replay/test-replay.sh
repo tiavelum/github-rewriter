@@ -438,7 +438,10 @@ status_run_plan=$?
 # 403 with Retry-After: 1 and does nothing, DENY answers 403 without a rate
 # limit and does nothing, INTERRUPT sends the caller a
 # SIGINT, as a Ctrl-C does, LOSE does the call and answers 502; FAKE_GH_SKIP
-# gives its number to an issue someone else creates. It lists the signing keys
+# gives its number to an issue someone else creates, and FAKE_GH_LAG leaves
+# the highest-numbered item and every pull request out of the first answer to
+# the list of issues it names, as GitHub's list lags behind an item just
+# created. It lists the signing keys
 # of the account from ssh_signing_keys.json and gpg_keys.json, none where a
 # file is missing; with FAKE_GH_NO_SCOPE, it refuses those lists as GitHub
 # refuses a token without the scope they need. Where $FAKE_GITHUB/absent
@@ -823,6 +826,9 @@ else:
     if once("FAKE_GH_INTERRUPT", call):
         os.kill(os.getppid(), signal.SIGINT)
     status, data = handle(method, endpoint, body)
+    if status == 200 and isinstance(data, list) and data and once("FAKE_GH_LAG", call):
+        top = max(x["number"] for x in data)
+        data = [d for d in data if d["number"] != top and "pull_request" not in d]
     if once("FAKE_GH_LOSE", call):
         status, data = 502, {"message": "Server Error"}
 lines = [("Content-Type", "application/json; charset=utf-8"), *headers]
@@ -958,6 +964,15 @@ replay "$T/gh-a" ada-example/tool-new --pace 0 --state "$T/other.state.json" "$T
 status_other=$?
 check "run-replay.py checks a finished replay again without writing, and refuses a target that is not empty" \
   '[ "$status_again$status_other" = 01 ] && grep -q "^All 23 events of the replay .* are done" "$T/again-out" && grep -q "ada-example/tool-new is not empty: it has 8 refs and items up to #6" "$T/other-out" && [ "$(writes "$T/gh-a" | wc -l)" -eq "$writes_a" ] || { cat "$T/again-out" "$T/other-out"; exit 1; }'
+
+reads_2=$(grep -c " GET repos/ada-example/tool-new/issues/2$" "$T/gh-a/calls")
+reads_6=$(grep -c " GET repos/ada-example/tool-new/issues/6$" "$T/gh-a/calls")
+(FAKE_GH_LAG="GET repos/ada-example/tool-new/issues?state=all&per_page=100&page=1" && export FAKE_GH_LAG &&
+  replay "$T/gh-a" ada-example/tool-new --pace 0 --state "$T/a.state.json" "$T/run.jsonl" "$mirror" ada-example/tool-new) \
+  >"$T/lag-out" 2>&1
+status_lag=$?
+check "run-replay.py reads by its number an issue or pull request the target's list lacks, before it calls the item missing" \
+  '[ "$status_lag" = 0 ] && [ "$(grep -c " GET repos/ada-example/tool-new/issues/2$" "$T/gh-a/calls")" -gt "$reads_2" ] && [ "$(grep -c " GET repos/ada-example/tool-new/issues/6$" "$T/gh-a/calls")" -gt "$reads_6" ] && [ "$(writes "$T/gh-a" | wc -l)" -eq "$writes_a" ] || { cat "$T/lag-out"; exit 1; }'
 
 # C: a replay into a target where someone else creates an issue, with the
 # default state file and --with-times.
