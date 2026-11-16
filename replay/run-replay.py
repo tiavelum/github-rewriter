@@ -961,6 +961,10 @@ class Replay:
         for n, e in sorted(self.creates.items()):
             item = found.get(n)
             if item is None:
+                # GitHub's list can lag behind an item created a moment ago.
+                status, data = self.api.call("GET", f"repos/{self.slug}/issues/{n}")
+                item = data if status == 200 else None
+            if item is None:
                 problems.append(f"#{n} is missing")
                 continue
             merged = (item.get("pull_request") or {}).get("merged_at")
