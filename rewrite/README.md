@@ -13,16 +13,16 @@ Ada Example <ada@example.com> <old@example.com>
 Ada Example <ada@example.com> <ada@example.com>
 ```
 
-The steps, for `tiavelum/claude-setup` with the mailmap in `~/rewrite-mailmap`:
+The steps, for an invented repository `ada-example/tool` with the mailmap in `~/rewrite-mailmap`:
 
 ```sh
 cd ~/vc/github-rewriter/rewrite
-./backup-mirror.sh tiavelum/claude-setup                    # mirror in ~/vc-backup
-dir=$(./rewrite-identities.sh tiavelum/claude-setup ~/rewrite-mailmap | tee /dev/stderr | tail -n 1)
+./backup-mirror.sh ada-example/tool                         # mirror in ~/vc-backup
+dir=$(./rewrite-identities.sh ada-example/tool ~/rewrite-mailmap | tee /dev/stderr | tail -n 1)
 ./sign-commits.sh "$dir" ada@example.com                    # your own commits, signed again
 ./compare-rewrite.sh "$dir"                                 # same commits, dates and tree
 ./force-push-rewrite.sh "$dir"                              # asks for the name, then pushes
-./reset-clone.sh ~/vc/claude-setup                          # your clone onto the new history
+./reset-clone.sh ~/vc/tool                                  # your clone onto the new history
 ```
 
 `rewrite-identities.sh` prints how often each identity occurs after the rewrite; check it before pushing. It drops every signature, and `sign-commits.sh` signs the commits of the default branch again whose committer has the address you give, with the signing key of your git configuration, before anything is pushed. It leaves the other commits unsigned: a commit that GitHub or someone else committed, signed with your key, would show as unverified rather than unsigned. Given a repository instead of a folder, it signs a fresh clone, for a history that was pushed unsigned. `force-push-rewrite.sh` overwrites the default branch on GitHub and turns off the rulesets that block that for the push only.

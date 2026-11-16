@@ -13,7 +13,7 @@ Write the run file first, outside any repository, since it holds the mailmap; `r
 ```json
 {
   "source": "tiavelum/github-rewriter",
-  "target": "tiavelum/github-rewriter-replay-20261116",
+  "target": "tiavelum/github-rewriter-replay-20261116-1215",
   "mailmap": [
     "Ada Example <ada@example.com> <old@example.com>",
     "Ada Example <ada@example.com> GitHub <noreply@github.com>"
@@ -29,7 +29,7 @@ Write the run file first, outside any repository, since it holds the mailmap; `r
 | Field | Holds | Default |
 |---|---|---|
 | `source` | The source, as `owner/repo` | Required |
-| `target` | The target's temporary name: the repository name of `final_name` with `-replay-` and the day of the replay as `YYYYMMDD`, under the owner of `final_name`, so that the rename at the end keeps its owner and no earlier replay has used the name | Required |
+| `target` | The target's temporary name: the repository name of `final_name` with `-replay-` and the day and time of the replay as `YYYYMMDD-HHMM`, under the owner of `final_name`, so that the rename at the end keeps its owner and no earlier replay has used the name | Required |
 | `mailmap` | The lines of the mailmap that [Planning a replay](#planning-a-replay) describes | Required |
 | `final_name` | The name the replay takes over at the end, which `run-replay.py` gets as `--final-name` | `source` |
 | `types` | The lines of the file of `--types`: types and `summary` lines | None |
@@ -61,8 +61,8 @@ It announces each of its eight steps as `Step <n> of 8`:
 Before the first step it checks that the target does not exist yet. Between the plan and the creation it reads the sub-issue links, and stops where one crosses owners; then it lists what it will do, with each repository other than the target that a link is written in, and asks for the target's `owner/repo`; anything else stops it without a write to GitHub. This is the middle and the end of its output for the test's source, `ada-example/tool`, with a sub-issue link to an invented `ada-example/plans`; the answer stands after the prompt, since the test pipes it in:
 
 ```
-Replay ada-example/tool into ada-example/tool-replay-20261116, to be renamed ada-example/tool:
-  3. create ada-example/tool-replay-20261116, private and empty
+Replay ada-example/tool into ada-example/tool-replay-20261116-1215, to be renamed ada-example/tool:
+  3. create ada-example/tool-replay-20261116-1215, private and empty
   4. turn Actions off in it and the deletion of head branches on, as the source has it
   5. run run-replay.py --pace 0 --final-name ada-example/tool, and make main the default branch where GitHub names another
   6. compare the replay with the source with compare-replay.py
@@ -72,13 +72,13 @@ Replay ada-example/tool into ada-example/tool-replay-20261116, to be renamed ada
        the replay's #4 gets the sub-issues of the source's: #6
        the replay's #6 gets the sub-issues of the source's: ada-example/plans#11, taken from the source's #6 with replace_parent (writes in ada-example/plans and in the source)
   8. print the commands that archive the source and rename the replay
-Type ada-example/tool-replay-20261116 to confirm: ada-example/tool-replay-20261116
-Step 3 of 8, create: create ada-example/tool-replay-20261116, private and empty
-  https://github.com/ada-example/tool-replay-20261116
+Type ada-example/tool-replay-20261116-1215 to confirm: ada-example/tool-replay-20261116-1215
+Step 3 of 8, create: create ada-example/tool-replay-20261116-1215, private and empty
+  https://github.com/ada-example/tool-replay-20261116-1215
 Step 4 of 8, settings: turn Actions off until the replay is checked
   Actions off
   deletion of head branches on, as the source has it
-Step 5 of 8, replay: run-replay.py into ada-example/tool-replay-20261116
+Step 5 of 8, replay: run-replay.py into ada-example/tool-replay-20261116-1215
 ```
 
 ```
@@ -93,7 +93,7 @@ Step 8 of 8, commands: what is left to you
 
 gh api -X PATCH repos/ada-example/tool -f name=tool-archive
 gh api -X PATCH repos/ada-example/tool-archive -F archived=true
-gh api -X PATCH repos/ada-example/tool-replay-20261116 -f name=tool
+gh api -X PATCH repos/ada-example/tool-replay-20261116-1215 -f name=tool
 gh api -X PUT repos/ada-example/tool/actions/permissions -F enabled=true
 gh api -X PATCH repos/ada-example/tool -F allow_merge_commit=false -F allow_squash_merge=true -F allow_rebase_merge=false -F delete_branch_on_merge=true -f 'description=A small tool'
 gh api -X DELETE repos/ada-example/tool/git/refs/heads/docs/5-notes
@@ -225,7 +225,7 @@ gh api -X PATCH repos/tiavelum/github-rewriter-trial -f default_branch=main
 It checks that the mirror holds every tree of the event file, that GitHub answers for the target under the name you gave (a renamed repository stops it), and that the target is empty, prints what it will do in totals, with the labels the target already has, and asks for the target's `owner/repo`; anything else stops it without a write. It then prints one line per event, and at the end what it did and the target's URL. This is the output of a run of the test's source, `ada-example/tool`, into a fake target, as `test-replay.sh` makes it; the answer typed at the prompt does not show, since the test pipes it in:
 
 ```
-Replay ada-example/tool into ada-example/tool-new: 23 events
+Replay ada-example/tool into ada-example/tool-replay-20261116-1215: 23 events
   labels                        2
   commits                      10
   issues                        3
@@ -233,17 +233,17 @@ Replay ada-example/tool into ada-example/tool-new: 23 events
   comments                      4
   merges                        2
   closes                        3
-  {pr_url} in 1 squash message: https://github.com/ada-example/tool-new/pull/<number>
+  {pr_url} in 1 squash message: https://github.com/ada-example/tool-replay-20261116-1215/pull/<number>
   labels the target has and the replay updates: bug
   labels the target has and the replay deletes: enhancement
-Type ada-example/tool-new to confirm:   label enhancement deleted
+Type ada-example/tool-replay-20261116-1215 to confirm:   label enhancement deleted
  1/23  create-label  bug updated
  2/23  create-label  docs created
  3/23  push-commits  1 commit to main, now at 16679a1
  4/23  create-issue  #1 issue
  5/23  push-branch   #2 branch feat/2-thing, 2 commits, at 6920445
  6/23  create-pull   #2 pull request feat/2-thing into main
-      rate limited on POST repos/ada-example/tool-new/issues/1/comments; waiting 1 s before retry 1 of 5
+      rate limited on POST repos/ada-example/tool-replay-20261116-1215/issues/1/comments; waiting 1 s before retry 1 of 5
  7/23  add-comment   #1 comment
  8/23  merge-pull    #2 squash-merged into main as c0c4c38
  9/23  close-item    #1 already closed as completed
@@ -270,7 +270,7 @@ Done in this run:
   add-comment                   4
   merge-pull                    2
   close-item                    3
-https://github.com/ada-example/tool-new
+https://github.com/ada-example/tool-replay-20261116-1215
 ```
 
 Six options, given before the event file:
@@ -291,7 +291,7 @@ python3 replay/run-replay.py --sign ada@example.com --final-name tiavelum/github
 Before the confirmation, the totals then also say how many commits it signs, with which key, and what `{pr_url}` becomes; each push says how many of its commits it signed. These are the first lines of a signed run of the test, with the path of its throwaway key replaced by `~/.ssh/id_ed25519.pub`:
 
 ```
-Replay ada-example/tool into ada-example/tool-new: 23 events
+Replay ada-example/tool into ada-example/tool-replay-20261116-1215: 23 events
   labels                        2
   commits                      10
   issues                        3
@@ -301,10 +301,10 @@ Replay ada-example/tool into ada-example/tool-new: 23 events
   closes                        3
   commits to sign               9
   signed: the commits committed by ada@example.com, with the SSH key ~/.ssh/id_ed25519.pub (ssh-ed25519)
-  {pr_url} in 1 squash message: https://github.com/ada-example/tool-new/pull/<number>
+  {pr_url} in 1 squash message: https://github.com/ada-example/tool-replay-20261116-1215/pull/<number>
   labels the target has and the replay updates: bug
   labels the target has and the replay deletes: enhancement
-Type ada-example/tool-new to confirm:   label enhancement deleted
+Type ada-example/tool-replay-20261116-1215 to confirm:   label enhancement deleted
  1/23  create-label  bug updated
  2/23  create-label  docs created
  3/23  push-commits  1 commit to main, 1 signed, now at d1d4d85
@@ -366,7 +366,7 @@ It needs `gh` signed in with read access to the source and the target, reads Git
 It prints the totals, then notes, which are no differences: who authored the merges, and each branch the target keeps that the source no longer has, which [Taking over the source's name](#taking-over-the-sources-name) deletes. This is its output for the test's replay of `ada-example/tool`:
 
 ```
-Compared ada-example/tool with ada-example/tool-new:
+Compared ada-example/tool with ada-example/tool-replay-20261116-1215:
   items                           6
   labels                          2
   comments                        4

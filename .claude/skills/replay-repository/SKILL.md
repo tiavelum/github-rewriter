@@ -28,7 +28,7 @@ Ask these in one round, each with your recommendation, before planning, and reco
 3. **Merge commits**, for `keep_merges`: squash merges, or merge commits kept.
 4. **Types**, for `no_types` and `types`: typed titles, or titles as they are; with types, the owner confirms the types table and the squash summaries of the Plan section.
 5. **Signing**, for `sign`: whether the owner's recreated commits are signed, with the requirements "Running a replay" names.
-6. **Names**, for `source`, `final_name` and `target`: the source, the name the replay takes over at the end, and the day of the run, which gives the target's temporary name.
+6. **Names**, for `source`, `final_name` and `target`: the source, the name the replay takes over at the end, and the day and time of the run, which give the target's temporary name.
 7. **Times**, for `with_times`: whether each body and comment keeps its original creation time.
 8. **Pace and places**, for `pace`, `backup` and `clone_url`: the seconds between two writes, the folder of the mirror and the run's files, and the URL the mirror is cloned from; recommend the defaults of "Replaying with one command", and a URL of the protocol the owner's git uses where that is not SSH.
 9. **Trial**: recommend a trial into a throwaway private repository first where the run uses an option, such as `sign` or `keep_merges`, that no earlier run's issue in tiavelum/github-rewriter records. For it, give `final_name` a throwaway name under the owner, such as `<repo>-trial`, and have the owner run none of the commands `replay.py` prints at its end; the owner deletes the target once its check holds.

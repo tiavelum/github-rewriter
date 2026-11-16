@@ -1334,7 +1334,7 @@ for f in "$T/work/tool.run.json" "$T/runs-v/colour.run.json" "$T/runs-v/name.run
   echo $? >>"$T/rv-status"
 done
 check "replay.py refuses a run file in a git work tree, with an unknown field, or with a target not named for the day of the replay" \
-  '[ "$(tr "\n" " " <"$T/rv-status")" = "1 1 1 " ] && grep -q "tool.run.json lies in a git work tree; keep it outside any repository, since it holds the mailmap$" "$T/rv-out" && grep -q "colour.run.json has fields replay.py does not know: colour$" "$T/rv-out" && grep -q "name.run.json: target must be ada-example/tool-replay-<YYYYMMDD>" "$T/rv-out" && ! writes "$T/rw" || { cat "$T/rv-status" "$T/rv-out"; exit 1; }'
+  '[ "$(tr "\n" " " <"$T/rv-status")" = "1 1 1 " ] && grep -q "tool.run.json lies in a git work tree; keep it outside any repository, since it holds the mailmap$" "$T/rv-out" && grep -q "colour.run.json has fields replay.py does not know: colour$" "$T/rv-out" && grep -q "name.run.json: target must be ada-example/tool-replay-<YYYYMMDD-HHMM>" "$T/rv-out" && ! writes "$T/rw" || { cat "$T/rv-status" "$T/rv-out"; exit 1; }'
 
 # RB: a run stopped by a Ctrl-C in the replay, resumed into a difference the
 # comparison finds, since the source's label changed meanwhile, and resumed
@@ -1414,9 +1414,9 @@ check "replay.py stops in step 4 where GitHub refuses a setting, and resumes the
 
 # RO: a replay under another owner than that of the repository of a parent
 # and of a sub-issue from elsewhere.
-replay_setup "$T/ro" bob-example/tool-replay-20261116
-run_file "$T/runs-o/tool.run.json" "$T/backup-ro" 'target="bob-example/tool-replay-20261116"' 'final_name="bob-example/tool"'
-one "$T/ro" bob-example/tool-replay-20261116 "$T/runs-o/tool.run.json" >"$T/ro-out" 2>&1
+replay_setup "$T/ro" bob-example/tool-replay-20261116-1215
+run_file "$T/runs-o/tool.run.json" "$T/backup-ro" 'target="bob-example/tool-replay-20261116-1215"' 'final_name="bob-example/tool"'
+one "$T/ro" bob-example/tool-replay-20261116-1215 "$T/runs-o/tool.run.json" >"$T/ro-out" 2>&1
 status_ro=$?
 check "replay.py stops before the confirmation, without a write, where a sub-issue link would cross owners" \
   '[ "$status_ro" = 1 ] && grep -Fqx "replay.py: GitHub links a sub-issue only to a parent of the same owner, and the target'"'"'s owner is bob-example: #1 under ada-example/plans#9; #4 under ada-example/plans#9; ada-example/plans#11 under #6. GitHub refuses such a link whoever makes it, so replay.py cannot carry it. Move or remove these links in the source first, or replay with plan-replay.py and run-replay.py alone, which leave links alone, and leave these links out of the first move in the README'"'"'s Taking over the source'"'"'s name" "$T/ro-out" && grep -q "^replay.py: stopped in the survey of the sub-issue links, before any write to GitHub in this run" "$T/ro-out" && ! grep -q "to confirm" "$T/ro-out" && ! writes "$T/ro" && [ -e "$T/ro/absent" ] && [ ! -e "$T/runs-o/tool.progress.json" ] || { cat "$T/ro-out"; writes "$T/ro"; exit 1; }'
