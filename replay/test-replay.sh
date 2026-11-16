@@ -1327,6 +1327,9 @@ check "replay.py moves a link after the sub-issue before the source's, or before
 check "replay.py prints, without running them, the commands that archive the source, rename the replay and restore its settings" \
   'for line in "gh api -X PATCH repos/ada-example/tool -f name=tool-archive" "gh api -X PATCH repos/ada-example/tool-archive -F archived=true" "gh api -X PATCH repos/ada-example/tool-replay-20261116 -f name=tool" "gh api -X PUT repos/ada-example/tool/actions/permissions -F enabled=true" "gh api -X PATCH repos/ada-example/tool -F allow_merge_commit=false -F allow_squash_merge=true -F allow_rebase_merge=false -F delete_branch_on_merge=true -f '"'"'description=A small tool'"'"'" "gh api -X DELETE repos/ada-example/tool/git/refs/heads/docs/5-notes"; do grep -Fqx "$line" "$T/ra-out" || { echo "no line: $line"; exit 1; }; done && ! grep -q "archived\|name=tool" "$T/ra/calls" || { cat "$T/ra-out"; exit 1; }'
 
+check "replay.py prints the reads of what the comparison cannot see in the source before the archive, and after it the commands that replace the local clone" \
+  'for line in "gh api repos/ada-example/tool/actions/secrets --jq .total_count" "gh api repos/ada-example/tool/actions/variables --jq .total_count" "gh api repos/ada-example/tool/hooks --jq length" "gh api repos/ada-example/tool/keys --jq length" "gh api repos/ada-example/tool/collaborators --jq '"'"'.[].login'"'"'" "test ! -d ~/vc/tool || { git -C ~/vc/tool status --short; mv ~/vc/tool ~/vc/tool-old; }" "gh repo clone ada-example/tool ~/vc/tool"; do grep -Fqx "$line" "$T/ra-out" || { echo "no line: $line"; exit 1; }; done && ! grep -q "secret_scanning\|has_wiki" "$T/ra-out" && [ "$(grep -e "/actions/secrets --jq" -e "archived=true$" -e "^gh repo clone " "$T/ra-out" | sed -e "s/.*secrets.*/reads/" -e "s/.*archived.*/archive/" -e "s/^gh repo clone.*/clone/" | tr "\n" " ")" = "reads archive clone " ] || { cat "$T/ra-out"; exit 1; }'
+
 # RG, a run file that leaves a type to guess; RW, a wrong confirmation.
 replay_setup "$T/rg"
 run_file "$T/runs-g/tool.run.json" "$T/backup-rg" "types=[\"$(echo "$C4" | cut -c1-9) chore\", \"$(echo "$C1" | cut -c1-7) docs\", \"$(echo "$C3" | cut -c1-7) test\"]"
@@ -1395,7 +1398,10 @@ replay_setup "$T/rn"
 python3 - "$T/rn-api/repos_ada-example_tool.json" <<'EOF'
 import json, sys
 info = json.load(open(sys.argv[1]))
-info.update(private=False, visibility="public")
+info.update(private=False, visibility="public", has_wiki=True, has_projects=True, has_discussions=False,
+            security_and_analysis={"secret_scanning": {"status": "enabled"},
+                                   "secret_scanning_push_protection": {"status": "enabled"},
+                                   "dependabot_security_updates": {"status": "disabled"}})
 json.dump(info, open(sys.argv[1], "w"))
 EOF
 run_file "$T/runs-n/tool.run.json" "$T/backup-rn"
@@ -1404,6 +1410,8 @@ check "replay.py gives the target the source's default branch after an uninterru
   'grep -qx "  default branch main, where GitHub had named it master" "$T/rn-out" && [ ! -e "$T/rn/rejected" ] || { cat "$T/rn-out"; exit 1; }'
 check "replay.py creates the target of a public source private, and prints the command that makes the renamed replay public, after the rename, only for such a source" \
   'python3 -c "import json, sys; s = json.load(open(sys.argv[1])); sys.exit(not s[\"private\"] or \"visibility\" in s)" "$T/rn/settings.json" && grep -Fqx "gh api -X PATCH repos/ada-example/tool -f visibility=public" "$T/rn-out" && [ "$(grep -n -e "-f name=tool$" -e "visibility=public$" "$T/rn-out" | cut -d: -f1 | sort -n | tr "\n" " " | awk "{print (\$1 < \$2)}")" = 1 ] && ! grep -q "visibility=" "$T/ra-out" || { cat "$T/rn-out"; exit 1; }'
+check "replay.py prints the source's wiki, projects and discussions with its settings, and its secret scanning after the visibility" \
+  'grep -Fqx "gh api -X PATCH repos/ada-example/tool -F allow_merge_commit=false -F allow_squash_merge=true -F allow_rebase_merge=false -F delete_branch_on_merge=true -F has_wiki=true -F has_projects=true -F has_discussions=false -f '"'"'description=A small tool'"'"'" "$T/rn-out" && [ "$(grep -e "visibility=public$" -e "security_and_analysis" "$T/rn-out" | sed -e "s/.*visibility=public$/visibility/" -e "s/.*security_and_analysis.*/security/" | tr "\n" " ")" = "visibility security " ] && grep -Fqx "gh api -X PATCH repos/ada-example/tool -f '"'"'security_and_analysis[secret_scanning][status]=enabled'"'"' -f '"'"'security_and_analysis[secret_scanning_push_protection][status]=enabled'"'"'" "$T/rn-out" && ! grep -q dependabot "$T/rn-out" || { cat "$T/rn-out"; exit 1; }'
 
 check "replay.py reads the parent only of an issue whose parent_issue_url names one, and skips the move of an only sub-issue" \
   'grep -q " GET repos/ada-example/tool/issues/1/parent$" "$T/rm/calls" && ! grep -q " GET repos/ada-example/tool/issues/[46]/parent$" "$T/rm/calls" && [ ! -e "$T/rm/priorities" ] || { grep parent "$T/rm/calls"; cat "$T/rm/priorities"; exit 1; }'

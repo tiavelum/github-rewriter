@@ -55,7 +55,13 @@ SETTINGS = (
     "allow_squash_merge",
     "allow_rebase_merge",
     "delete_branch_on_merge",
+    "has_wiki",
+    "has_projects",
+    "has_discussions",
 )
+# Only the parts #42 names; GitHub reports them only for a repository that
+# has them, so a source without them prints no line.
+SECURITY = ("secret_scanning", "secret_scanning_push_protection")
 RETRIES = 5
 # GitHub's guidance for a secondary rate limit without retry-after: wait at
 # least a minute, longer with each retry.
@@ -621,6 +627,19 @@ class OneCommand:
         visibility = self.info.get("visibility") or ("private" if private else "public")
         if visibility != "private":
             lines.append(f"gh api -X PATCH repos/{self.final} -f visibility={visibility}")
+        # After the visibility, since a private repository on a free account has neither.
+        security = self.info.get("security_and_analysis") or {}
+        statuses = [
+            (key, (security.get(key) or {}).get("status"))
+            for key in SECURITY
+            if (security.get(key) or {}).get("status") in ("enabled", "disabled")
+        ]
+        if statuses:
+            fields = [
+                "-f " + shlex.quote(f"security_and_analysis[{key}][status]={status}")
+                for key, status in statuses
+            ]
+            lines.append(f"gh api -X PATCH repos/{self.final} {' '.join(fields)}")
         lines += [
             f"gh api -X DELETE repos/{self.final}/git/refs/heads/{branch}"
             for branch in self.extra_branches()
@@ -629,12 +648,23 @@ class OneCommand:
         state, work = (self.events.with_name(stem + x) for x in (".state.json", ".work.git"))
         print(
             "1. Check what compare-replay.py cannot see in the source: its secrets, variables,"
-            " webhooks, deploy keys and collaborators."
+            " webhooks, deploy keys and collaborators. Where a count is not 0, or a collaborator"
+            " other than you shows, carry it over to the replay by hand:"
         )
+        print()
+        for read in (
+            "actions/secrets --jq .total_count",
+            "actions/variables --jq .total_count",
+            "hooks --jq length",
+            "keys --jq length",
+            "collaborators --jq '.[].login'",
+        ):
+            print(f"gh api repos/{self.source}/{read}")
+        print()
         print(
             "2. Archive the source under a new name, give the replay its name, Actions,"
-            " settings and, where the source is not private, visibility, and delete the"
-            " branches the source no longer has:"
+            " settings and, where the source is not private, visibility and secret scanning,"
+            " and delete the branches the source no longer has:"
         )
         for note in notes:
             print(f"   note: {note}")
@@ -642,7 +672,17 @@ class OneCommand:
         for line in lines:
             print(line)
         print()
-        print(f"3. Replace each local clone of {self.source} with a fresh clone of the replay.")
+        old, clone = f"~/vc/{name}", f"~/vc/{final_repo}"
+        print(
+            f"3. Replace your clone of {self.source} at {old} with a fresh clone of the replay"
+            f" at {clone}; these commands show what the old one holds uncommitted and keep it"
+            f" in {old}-old for you to delete. Where {old}-old exists already, remove or rename"
+            " it first, since mv would move the old clone into it:"
+        )
+        print()
+        print(f"test ! -d {old} || {{ git -C {old} status --short; mv {old} {old}-old; }}")
+        print(f"gh repo clone {self.final} {clone}")
+        print()
         print(f"4. Delete {self.progress_path}, {state} and {work}.")
 
     def target_branches(self, info):
