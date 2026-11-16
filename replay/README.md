@@ -88,8 +88,15 @@ Step 7 of 8, links: move the sub-issue links of the source's issues to the repla
   #6 under the replay's #4
   ada-example/plans#11 under the replay's #6
 Step 8 of 8, commands: what is left to you
-1. Check what compare-replay.py cannot see in the source: its secrets, variables, webhooks, deploy keys and collaborators.
-2. Archive the source under a new name, give the replay its name, Actions, settings and, where the source is not private, visibility, and delete the branches the source no longer has:
+1. Check what compare-replay.py cannot see in the source: its secrets, variables, webhooks, deploy keys and collaborators. Where a count is not 0, or a collaborator other than you shows, carry it over to the replay by hand:
+
+gh api repos/ada-example/tool/actions/secrets --jq .total_count
+gh api repos/ada-example/tool/actions/variables --jq .total_count
+gh api repos/ada-example/tool/hooks --jq length
+gh api repos/ada-example/tool/keys --jq length
+gh api repos/ada-example/tool/collaborators --jq '.[].login'
+
+2. Archive the source under a new name, give the replay its name, Actions, settings and, where the source is not private, visibility and secret scanning, and delete the branches the source no longer has:
 
 gh api -X PATCH repos/ada-example/tool -f name=tool-archive
 gh api -X PATCH repos/ada-example/tool-archive -F archived=true
@@ -98,11 +105,15 @@ gh api -X PUT repos/ada-example/tool/actions/permissions -F enabled=true
 gh api -X PATCH repos/ada-example/tool -F allow_merge_commit=false -F allow_squash_merge=true -F allow_rebase_merge=false -F delete_branch_on_merge=true -f 'description=A small tool'
 gh api -X DELETE repos/ada-example/tool/git/refs/heads/docs/5-notes
 
-3. Replace each local clone of ada-example/tool with a fresh clone of the replay.
+3. Replace your clone of ada-example/tool with a fresh clone of the replay; these commands take it at ~/vc/tool and keep the old one, after showing what it holds uncommitted, in ~/vc/tool-old for you to delete:
+
+test ! -d ~/vc/tool || { git -C ~/vc/tool status --short; mv ~/vc/tool ~/vc/tool-old; }
+gh repo clone ada-example/tool ~/vc/tool
+
 4. Delete ~/tool.progress.json, ~/vc-backup/tool-2026-11-16-033713.state.json and ~/vc-backup/tool-2026-11-16-033713.work.git.
 ```
 
-The paths of the last line stand for those of a run file `~/tool.run.json` and a mirror made in `~/vc-backup`. What is left to you is what these lines say: check the source's secrets, variables, webhooks, deploy keys and collaborators, which neither script reads; run the commands of step 2 in their order, which give the replay the source's Actions setting, merge methods, deletion of head branches and description and, where the source is not private, its visibility, which the replay gets only after its rename, since it is created private; replace your clones; and delete the run's files. The commands name the archive `<repository>-archive`, and a note above them says so where a repository of that name exists already: give the archive another name in the first two then. Where `final_name` is not the source, the first command only archives the source.
+The paths of the last line stand for those of a run file `~/tool.run.json` and a mirror made in `~/vc-backup`. What is left to you is what these lines say: run the reads of step 1, since neither script reads the source's secrets, variables, webhooks, deploy keys and collaborators; run the commands of step 2 in their order, which give the replay the source's Actions setting, merge methods, deletion of head branches, wiki, projects, discussions and description and, where the source is not private, its visibility, which the replay gets only after its rename, since it is created private, and after it the secret scanning and push protection GitHub reports for the source; replace your clone with the commands of step 3, which keep the old one for you to delete; and delete the run's files. Step 8 prints the secret scanning line only where GitHub reports it for the source, which it does not for a private repository on a free account; this sample is of a private source. The commands name the archive `<repository>-archive`, and a note above them says so where a repository of that name exists already: give the archive another name in the first two then. Where `final_name` is not the source, the first command only archives the source.
 
 Where it stops, it names the step and says how to go on. A stop before the confirmation writes nothing to GitHub, and the next run starts over with a new mirror and event file; the stopped run's stay in `backup`. After the confirmation it keeps its progress in the progress file next to the run file, `~/github-rewriter.progress.json` for the run file above: the mirror, the event file and the steps done. Once you have removed the cause of the stop, run the same command again: it asks you to confirm again, skips the creation and the settings where they are done, lets `run-replay.py` resume where [Stopping and resuming](#stopping-and-resuming) says, compares again, and moves the links that are not moved yet. Ctrl-C reaches the script that runs, so in the replay step it stops `run-replay.py` after the event in progress. A run file that changed after the confirmation stops it; undo the change to resume. Where the comparison finds a difference that you accept, take the remaining steps by hand, as the sections below describe them.
 
@@ -425,6 +436,16 @@ gh api -X PATCH repos/owner/other/issues/P/sub_issues/priority -F sub_issue_id=$
 
 List the parent's sub-issues again with the first command: the replayed item stands where the source's item stood. [GitHub's REST API for sub-issues](https://docs.github.com/en/rest/issues/sub-issues) names `after_id` and `before_id` for the place and asks for the Issues repository permission with write access in the parent's repository for the three changing calls.
 
+Before the archive and rename, read what neither script reads in the source, and carry over by hand what these show: a count other than 0, or a collaborator other than you:
+
+```sh
+gh api repos/tiavelum/git-alias-map/actions/secrets --jq .total_count
+gh api repos/tiavelum/git-alias-map/actions/variables --jq .total_count
+gh api repos/tiavelum/git-alias-map/hooks --jq length
+gh api repos/tiavelum/git-alias-map/keys --jq length
+gh api repos/tiavelum/git-alias-map/collaborators --jq '.[].login'
+```
+
 Then archive the source under a new name first, since its issues, pull requests and comments exist nowhere else, then rename the replay; for `tiavelum/mac-config` replayed into `tiavelum/mac-config-new`:
 
 ```sh
@@ -435,10 +456,10 @@ gh api -X PATCH repos/tiavelum/mac-config-new -f name=mac-config
 
 [GitHub redirects a renamed repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/renaming-a-repository) until another repository takes its old name, so the third command ends the redirect from `mac-config` to the archive. For the same reason, run such a replay with `--final-name tiavelum/mac-config`, so that the links its squash messages end in name the repository the replay becomes, not `mac-config-new`.
 
-Then give the replay the settings of the source, such as its merge methods and description, and turn Actions on again. These commands show the source's settings, then turn Actions on, merge commits off and the description empty, as for `tiavelum/mac-config`, whose source allowed no merge commits and had no description:
+Then give the replay the settings of the source, such as its merge methods, wiki and description, and turn Actions on again. These commands show the source's settings, then turn Actions on, merge commits off and the description empty, as for `tiavelum/mac-config`, whose source allowed no merge commits and had no description:
 
 ```sh
-gh api repos/tiavelum/mac-config-archive --jq '{description, allow_merge_commit, allow_squash_merge, allow_rebase_merge, delete_branch_on_merge, visibility}'
+gh api repos/tiavelum/mac-config-archive --jq '{description, allow_merge_commit, allow_squash_merge, allow_rebase_merge, delete_branch_on_merge, has_wiki, has_projects, has_discussions, visibility, security_and_analysis}'
 gh api -X PUT repos/tiavelum/mac-config/actions/permissions -F enabled=true
 gh api -X PATCH repos/tiavelum/mac-config -F allow_merge_commit=false -f description=
 ```
@@ -449,13 +470,24 @@ Where the source is public and you created the replay private, so that nobody se
 gh api -X PATCH repos/tiavelum/git-alias-map -f visibility=public
 ```
 
+Then, where the source has secret scanning and push protection on, as its `security_and_analysis` shows, turn them on in the replay:
+
+```sh
+gh api -X PATCH repos/tiavelum/git-alias-map -f 'security_and_analysis[secret_scanning][status]=enabled' -f 'security_and_analysis[secret_scanning_push_protection][status]=enabled'
+```
+
 Delete each branch of the replay that the source no longer has, such as the branch of a pull request the source closed unmerged and whose branch it deleted:
 
 ```sh
 gh api -X DELETE repos/tiavelum/mac-config/git/refs/heads/feat/192-log-date
 ```
 
-Then replace each local clone of the source with a fresh clone of the replay at the same path, since their histories differ.
+Then replace your local clone of the source with a fresh clone of the replay at the same path, since their histories differ; these show what the old clone holds uncommitted, keep it in `~/vc/git-alias-map-old` for you to delete, and clone the replay:
+
+```sh
+test ! -d ~/vc/git-alias-map || { git -C ~/vc/git-alias-map status --short; mv ~/vc/git-alias-map ~/vc/git-alias-map-old; }
+gh repo clone tiavelum/git-alias-map ~/vc/git-alias-map
+```
 
 ## How a title gets its type
 
