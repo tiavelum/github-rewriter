@@ -464,6 +464,8 @@ gh api -X PUT repos/tiavelum/mac-config/actions/permissions -F enabled=true
 gh api -X PATCH repos/tiavelum/mac-config -F allow_merge_commit=false -f description=
 ```
 
+[Update a repository](https://docs.github.com/en/rest/repos/repos#update-a-repository) does not list `has_discussions` among its body parameters, so check after the command that the replay has the source's, with `gh api repos/tiavelum/mac-config --jq .has_discussions`.
+
 Where the source is public and you created the replay private, so that nobody sees it before it is checked, make it public; for `tiavelum/git-alias-map`:
 
 ```sh
@@ -482,7 +484,7 @@ Delete each branch of the replay that the source no longer has, such as the bran
 gh api -X DELETE repos/tiavelum/mac-config/git/refs/heads/feat/192-log-date
 ```
 
-Then replace your local clone of the source with a fresh clone of the replay at the same path, since their histories differ; these show what the old clone holds uncommitted, keep it in `~/vc/git-alias-map-old` for you to delete, and clone the replay:
+Then replace your local clone of the source with a fresh clone of the replay at the same path, since their histories differ; these show what the old clone holds uncommitted, keep it in `~/vc/git-alias-map-old` for you to delete, and clone the replay; where `~/vc/git-alias-map-old` exists already, remove or rename it first, since `mv` would move the old clone into it:
 
 ```sh
 test ! -d ~/vc/git-alias-map || { git -C ~/vc/git-alias-map status --short; mv ~/vc/git-alias-map ~/vc/git-alias-map-old; }
