@@ -142,7 +142,9 @@ def without_added_trailers(message, planned):
 def peeled_refs(repo, *prefixes):
     """The refs under the prefixes, each with the object it peels to through
     every tag."""
-    names = git(repo, "for-each-ref", "--format=%(refname)", *prefixes).split()
+    # Only a newline ends a name: git allows other Unicode blanks in one.
+    out = git(repo, "for-each-ref", "--format=%(refname)", *prefixes)
+    names = [name for name in out.split("\n") if name]
     # A tag of a tag peels one level in %(*objectname), so peel with ^{}.
     peeled = git(
         repo,
@@ -495,7 +497,7 @@ class Comparison:
         for name in sorted(set(found) - expected):
             self.differ(f"branch {name} is in the target, but in no event")
         source = git(self.mirror, "for-each-ref", "--format=%(refname:short)", "refs/heads/")
-        for name in sorted(set(found) - set(source.split())):
+        for name in sorted(set(found) - set(source.split("\n"))):
             self.notes.append(f"branch {name} stays in the target; the source no longer has it")
         self.totals.append(("branches", len(found)))
 

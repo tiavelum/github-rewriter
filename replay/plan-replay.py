@@ -202,12 +202,11 @@ class Mirror:
         """The refs under prefix by their short names, each with the object
         it names, whether that is a tag object, and the object it peels to
         through every tag, with that object's type."""
-        listed = [
-            line.split("\t")
-            for line in self.git(
-                "for-each-ref", "--format=%(refname)%09%(objectname)%09%(objecttype)", prefix
-            ).splitlines()
-        ]
+        out = self.git(
+            "for-each-ref", "--format=%(refname)%09%(objectname)%09%(objecttype)", prefix
+        )
+        # Only a newline ends a line: git allows other Unicode breaks in a name.
+        listed = [line.split("\t") for line in out.split("\n") if line]
         # A tag of a tag peels one level in %(*objectname), so peel with ^{}.
         peeled = self.git(
             "cat-file",
@@ -311,10 +310,10 @@ class LeaveBehind:
             text = path.read_text(encoding="utf-8")
         except OSError as error:
             die(f"cannot read {path}: {error.strerror}")
-        for count, line in enumerate(text.splitlines(), 1):
-            # Only spaces and tabs part the fields: git allows other Unicode
-            # blanks, such as a no-break space, in the name of a ref.
-            fields = [f for f in re.split(r"[ \t]+", line) if f]
+        for count, line in enumerate(text.split("\n"), 1):
+            # Only spaces and tabs part the fields, and only a newline ends a
+            # line: git allows other Unicode blanks and breaks in a ref's name.
+            fields = [f for f in re.split(r"[ \t]+", line.rstrip("\r")) if f]
             if not fields or fields[0].startswith("#"):
                 continue
             # A name holds no space, so a "#" after one starts a comment, as in

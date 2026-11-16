@@ -404,7 +404,7 @@ It needs `gh` signed in with read access to the source and the target, reads Git
 - **Pull request heads**: the head of each pull request, `refs/pull/<number>/head`, at the head the state file records, also where its branch is deleted.
 - **Tags, releases and branches of the source**: each branch and tag of the mirror in the target at the commit recreated from the one it names, and each release of the source in the target, read from the mirror and from GitHub rather than from the plan; one the target lacks, or holds at another commit, is a note where the event file's header lists it as left behind, as [What a replay leaves behind](#what-a-replay-leaves-behind) describes, and a difference otherwise. A tag or release of the target that the source lacks is a difference.
 
-It prints the totals, then notes, which are no differences: who authored the merges, each branch the target keeps that the source no longer has, which [Taking over the source's name](#taking-over-the-sources-name) deletes, and each tag, release and branch the plan left behind, as `tag v0.1 of the source is left behind, as planned`. This is its output for the test's replay of `ada-example/tool`:
+It prints the totals, then notes, which are no differences: who authored the merges, each branch the target keeps that the source no longer has, which [Taking over the source's name](#taking-over-the-sources-name) deletes, each tag, release and branch the plan left behind, as `tag v0.1 of the source is left behind, as planned`, and, for an event file planned before the header recorded what a plan leaves behind, that it accepts nothing as left behind. This is its output for the test's replay of `ada-example/tool`:
 
 ```
 Compared ada-example/tool with ada-example/tool-replay-20261116-1215:

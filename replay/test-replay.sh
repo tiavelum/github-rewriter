@@ -1180,6 +1180,7 @@ cp -R "$T/gh-a" "$T/gh-a-tags"
 recreated() { python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["hashes"][sys.argv[2]])' "$T/a.state.json" "$1"; }
 git --git-dir="$T/gh-a-tags/repo.git" tag v0.1 "$(recreated "$M2")"
 git --git-dir="$T/gh-a-tags/repo.git" tag -a v0.2 -m "Second" "$(recreated "$C5")"
+git -c advice.nestedTag=false --git-dir="$T/gh-a-tags/repo.git" tag -a -f v0.2 -m "Outer" v0.2 >/dev/null
 compare_extra "$T/gh-a-tags" --state "$T/a.state.json" "$T/run.jsonl" "$mirror_extra" ada-example/tool-new >"$T/cmp-a-tags-out" 2>&1
 status_cmp_a_tags=$?
 # A copy of X without the branch of #3, which the replay pushed.
@@ -1202,6 +1203,20 @@ replay "$T/gh-y" ada-example/tool-y --pace 0 "$T/old.jsonl" "$mirror_extra" ada-
 status_y=$?
 compare_extra "$T/gh-y" "$T/old.jsonl" "$mirror_extra" ada-example/tool-y >"$T/cmp-y-out" 2>&1
 status_cmp_y=$?
+# Z: the plan of the source that deletes head branches on merge, which leaves
+# behind the branches of #2 and #3 as well, replayed into a target that
+# deletes them; and X compared with the source of the odd tags.
+printf '%s\n' 'branch feat/2-thing' 'branch fix/3-parser' >"$T/leave-del"
+cat "$T/leave" >>"$T/leave-del"
+plan_extra "$T/api-extra-del" "$T/extra-del-ok.jsonl" --leave-behind "$T/leave-del" >/dev/null 2>&1
+target "$T/gh-z" ada-example/tool-z
+echo '{"delete_branch_on_merge": true}' >"$T/gh-z/settings.json"
+replay "$T/gh-z" ada-example/tool-z --pace 0 "$T/extra-del-ok.jsonl" "$mirror_extra" ada-example/tool-z >"$T/z-out" 2>&1
+status_z=$?
+(FAKE_GITHUB=$T/gh-z FAKE_GH_API=$T/api-extra-del PATH=$target_path python3 "$here/compare-replay.py" "$T/extra-del-ok.jsonl" "$mirror_extra" ada-example/tool-z) >"$T/cmp-z-out" 2>&1
+status_cmp_z=$?
+compare_extra "$T/gh-x" "$T/extra.jsonl" "$mirror_odd" ada-example/tool-x >"$T/cmp-x-odd-out" 2>&1
+status_cmp_x_odd=$?
 check "compare-replay.py notes each tag, release and branch of the source that the plan left behind, and finds no difference" \
   '[ "$status_x$status_cmp_x" = 00 ] && grep -qx "No differences" "$T/cmp-x-out" && for line in "branch docs/5-notes" "branch wip/idea" "tag v0.1" "tag v0.2" "release v0.2" "release v0.3"; do grep -Fqx "  $line of the source is left behind, as planned" "$T/cmp-x-out" || { echo "no note for $line"; exit 1; }; done && grep -Eqx "  tags +0" "$T/cmp-x-out" && grep -Eqx "  releases +0" "$T/cmp-x-out" && ! grep -q "feat/2-thing of\|fix/3-parser of" "$T/cmp-x-out" || { cat "$T/x-out" "$T/cmp-x-out"; exit 1; }'
 check "compare-replay.py names a tag and a release of the target that the source lacks as differences" \
@@ -1214,6 +1229,10 @@ check "compare-replay.py names a pushed branch the target lacks once, as a branc
   '[ "$status_cmp_x_lost" = 1 ] && grep -qx "Differences: 1" "$T/cmp-x-lost-out" && grep -Fqx "  branch fix/3-parser is missing in the target" "$T/cmp-x-lost-out" || { cat "$T/cmp-x-lost-out"; exit 1; }'
 check "compare-replay.py notes an event file that predates left_behind, and takes the branches the target deleted on merge as carried" \
   '[ "$status_y$status_cmp_y" = 01 ] && grep -Fqx "  the event file predates left_behind: it accepts nothing as left behind" "$T/cmp-y-out" && grep -qx "Differences: 6" "$T/cmp-y-out" && ! grep -q "feat/2-thing of\|fix/3-parser of" "$T/cmp-y-out" || { cat "$T/y-out" "$T/cmp-y-out"; exit 1; }'
+check "compare-replay.py notes as left behind a pushed branch that the plan left behind, since the target deletes it on merge" \
+  '[ "$status_z$status_cmp_z" = 00 ] && grep -qx "No differences" "$T/cmp-z-out" && grep -Fqx "  branch feat/2-thing of the source is left behind, as planned" "$T/cmp-z-out" && grep -Fqx "  branch fix/3-parser of the source is left behind, as planned" "$T/cmp-z-out" || { cat "$T/z-out" "$T/cmp-z-out"; exit 1; }'
+check "compare-replay.py names a tag of a tag, a tag of a tree and a tag whose name holds a no-break space, without a traceback" \
+  '[ "$status_cmp_x_odd" = 1 ] && grep -qx "Differences: 3" "$T/cmp-x-odd-out" && for name in v0.3 tree-tag "$nbsp"; do grep -Fqx "  tag $name of the source is missing in the target" "$T/cmp-x-odd-out" || { echo "no line for $name"; exit 1; }; done && ! grep -q Traceback "$T/cmp-x-odd-out" || { cat "$T/cmp-x-odd-out"; exit 1; }'
 
 # --sign: the checks before the confirmation, which stop a run before it
 # writes anything. nothing_written <folder> <state file>: no write, no ref,
