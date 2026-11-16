@@ -246,7 +246,7 @@ First move what a replay does not carry and an archive no longer lets you change
 gh api --paginate repos/owner/other/issues/P/sub_issues --jq '.[] | "\(.id) \(.title)"'
 ```
 
-Note the id of the sub-issue just before the source's item. A new link lands at the end of the parent's list, so link the replayed item, move it after that sub-issue, and unlink the source's item, with the id you noted in place of `3512345678`:
+Find the source's item in that list and note the id of the sub-issue just before it. If it is the first, note the id of the one after it; if it is the only one, skip the move. A new link lands at the end of the parent's list, so link the replayed item, move it, and unlink the source's item, with the id you noted in place of `3512345678`:
 
 ```sh
 prev=3512345678
@@ -257,7 +257,14 @@ gh api -X PATCH repos/owner/other/issues/P/sub_issues/priority -F sub_issue_id=$
 gh api -X DELETE repos/owner/other/issues/P/sub_issue -F sub_issue_id=$old
 ```
 
-Where the source's item is the first sub-issue, note the id of the one after it instead, and give `-F before_id=` with it in place of `-F after_id=$prev`. [GitHub's REST API for sub-issues](https://docs.github.com/en/rest/issues/sub-issues) describes these calls, which need the permission to write issues in the parent's repository.
+For a first place, put the id of the following sub-issue in `next` and replace the PATCH line with:
+
+```sh
+next=3512345678
+gh api -X PATCH repos/owner/other/issues/P/sub_issues/priority -F sub_issue_id=$id -F before_id=$next
+```
+
+List the parent's sub-issues again with the first command: the replayed item stands where the source's item stood. [GitHub's REST API for sub-issues](https://docs.github.com/en/rest/issues/sub-issues) names `after_id` and `before_id` for the place and asks for the Issues repository permission with write access in the parent's repository for the three changing calls.
 
 Then archive the source under a new name first, since its issues, pull requests and comments exist nowhere else, then rename the replay; for `tiavelum/mac-config` replayed into `tiavelum/mac-config-new`:
 
