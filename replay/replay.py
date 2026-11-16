@@ -375,14 +375,8 @@ class OneCommand:
             if "pull_request" in issue:
                 continue
             n = issue["number"]
-            # The issue object names its parent; GitHub documents no answer of
-            # .../parent for an issue without one.
-            if "parent_issue_url" not in issue:
-                raise ReplayError(
-                    f"GitHub's issue #{n} of {self.source} has no field parent_issue_url, so"
-                    " replay.py cannot tell whether it is a sub-issue"
-                )
-            if issue["parent_issue_url"]:
+            # GitHub's issue object has parent_issue_url only for a sub-issue.
+            if issue.get("parent_issue_url"):
                 parent = self.api.expect("GET", f"repos/{self.source}/issues/{n}/parent")
                 if repo_of(parent).lower() != self.source.lower():
                     self.outside.append((n, issue["id"], repo_of(parent), parent["number"]))
@@ -410,8 +404,10 @@ class OneCommand:
         if crossing:
             raise ReplayError(
                 f"GitHub links a sub-issue only to a parent of the same owner, and the target's"
-                f" owner is {owner}: {'; '.join(crossing)}. Move or remove these links in the"
-                " source first, or take this step by hand after the replay"
+                f" owner is {owner}: {'; '.join(crossing)}. GitHub refuses such a link whoever"
+                " makes it, so replay.py cannot carry it. Move or remove these links in the"
+                " source first, or replay with plan-replay.py and run-replay.py alone, which"
+                " leave links alone"
             )
 
     def describe_links(self):
