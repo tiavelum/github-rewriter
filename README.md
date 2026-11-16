@@ -29,7 +29,19 @@ The second ends with:
 65 passed, 0 failed
 ```
 
-To rewrite a repository, follow the steps in [rewrite/README.md](rewrite/README.md); to replay it into a new one, those in [replay/README.md](replay/README.md).
+To rewrite a repository, follow the steps in [rewrite/README.md](rewrite/README.md); to replay it into a new one, those in [replay/README.md](replay/README.md). To have Claude prepare, plan and check a replay with you, ask it to replay the repository: Claude Code finds the skill in `.claude/skills/` of a clone of this repository, and the Claude app once it is uploaded as below.
+
+## After changing the skill
+
+Package the skill as a ZIP that holds its folder:
+
+```bash
+cd ~/vc/github-rewriter/.claude/skills
+rm -f ~/Downloads/replay-repository.zip
+zip -q -r ~/Downloads/replay-repository.zip replay-repository -x '*.DS_Store'
+```
+
+Then upload `~/Downloads/replay-repository.zip` in the Claude app under Customize > Skills: +, Create skill, Upload a skill.
 
 ## Content and structure
 
@@ -37,6 +49,7 @@ To rewrite a repository, follow the steps in [rewrite/README.md](rewrite/README.
 |---|---|
 | [`rewrite/`](rewrite/README.md) | The scripts that rewrite the identities of a repository's history in place, one step each, and their test |
 | [`replay/`](replay/README.md) | The scripts that plan the replay of a repository into a new one, with its issues and pull requests under the same numbers, as an event file, and apply that file to an empty repository, with their test |
+| `.claude/skills/` | The skill `replay-repository`, with which Claude takes a replay from the owner's first answers to the replay holding the source's name, using the scripts of [`replay/`](replay/README.md) |
 | `docs/decisions/` | The decisions that constrain every run, such as why a repository is replayed into a new one rather than rewritten or forked |
 | `.github/workflows/` | The workflow that runs the tests on macOS and Linux, and the formatter and linter on the Python files, for every pull request and every push to `main` |
 | `project-instructions.md`, `CLAUDE.md` | The rules for Claude working in this repository |

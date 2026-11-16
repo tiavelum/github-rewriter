@@ -101,7 +101,14 @@ With a classic or OAuth token, `gh` lists [SSH signing keys only with the scope 
 gh auth refresh -s read:ssh_signing_key
 ```
 
-First create the target on GitHub, empty: without a README, license or ignore file, with the default branch named as the source's, and with no ruleset or branch protection on it yet, since the direct commits are pushed to it. Then, with the mirror and the event file of [Planning a replay](#planning-a-replay):
+First create the target on GitHub, empty: without a README, license or ignore file, with the default branch named as the source's, and with no ruleset or branch protection on it yet, since the direct commits are pushed to it. Turn off Actions in it until the replay is checked, since every pushed branch and every merge would otherwise start the source's workflows; and where the source has deleted the branches of its merged pull requests, turn on the deletion of head branches, so that the replay's are deleted on merge too:
+
+```sh
+gh api -X PUT repos/tiavelum/github-rewriter-trial/actions/permissions -F enabled=false
+gh api -X PATCH repos/tiavelum/github-rewriter-trial -F delete_branch_on_merge=true
+```
+
+Then, with the mirror and the event file of [Planning a replay](#planning-a-replay):
 
 ```sh
 python3 replay/run-replay.py "${mirror%.git}-typed.jsonl" "$mirror" tiavelum/github-rewriter-trial
@@ -250,7 +257,23 @@ gh api -X PATCH repos/tiavelum/mac-config-archive -F archived=true
 gh api -X PATCH repos/tiavelum/mac-config-new -f name=mac-config
 ```
 
-[GitHub redirects a renamed repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/renaming-a-repository) until another repository takes its old name, so the third command ends the redirect from `mac-config` to the archive. For the same reason, run such a replay with `--final-name tiavelum/mac-config`, so that the links its squash messages end in name the repository the replay becomes, not `mac-config-new`. Then replace each local clone of the source with a fresh clone of the replay at the same path, since their histories differ.
+[GitHub redirects a renamed repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/renaming-a-repository) until another repository takes its old name, so the third command ends the redirect from `mac-config` to the archive. For the same reason, run such a replay with `--final-name tiavelum/mac-config`, so that the links its squash messages end in name the repository the replay becomes, not `mac-config-new`.
+
+Then give the replay the settings of the source, such as its merge methods and description, and turn Actions on again. These commands show the source's settings, then turn Actions on, merge commits off and the description empty, as for `tiavelum/mac-config`, whose source allowed no merge commits and had no description:
+
+```sh
+gh api repos/tiavelum/mac-config-archive --jq '{description, allow_merge_commit, allow_squash_merge, allow_rebase_merge, delete_branch_on_merge}'
+gh api -X PUT repos/tiavelum/mac-config/actions/permissions -F enabled=true
+gh api -X PATCH repos/tiavelum/mac-config -F allow_merge_commit=false -f description=
+```
+
+Delete each branch of the replay that the source no longer has, such as the branch of a pull request the source closed unmerged and whose branch it deleted:
+
+```sh
+gh api -X DELETE repos/tiavelum/mac-config/git/refs/heads/feat/192-log-date
+```
+
+Then replace each local clone of the source with a fresh clone of the replay at the same path, since their histories differ.
 
 ## How a title gets its type
 
