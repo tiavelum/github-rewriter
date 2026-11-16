@@ -5,7 +5,7 @@ requests, comments and commits under the same numbers.
 
   run-replay.py [--state <file>] [--with-times] [--pace <seconds>]
                 [--sign <address>] [--final-name <owner/repo>]
-                <event file> <mirror> <owner/repo>
+                [--confirmed <owner/repo>] <event file> <mirror> <owner/repo>
 
 <mirror> is the mirror the event file was planned from; <owner/repo> is the
 target. The target must exist and be empty, without commits, issues or pull
@@ -16,13 +16,15 @@ the work repository that holds the recreated commits lies next to it, with
 .work.git for .state.json.
 
 Prints the totals and asks for <owner/repo> to be typed before the first
-write; anything else stops without writing. Writes to GitHub through gh api
-and git push only, at least --pace seconds apart (default 1), and waits out
-GitHub's rate limits. --with-times appends the original creation time to
-each body and comment. --sign signs each recreated commit whose committer
-has <address> with the signing key of your git configuration, after checking
-that GitHub knows the key as a signing key. --final-name fills {pr_url} in
-squash messages with the URL under the name the target will finally carry.
+write; anything else stops without writing. --confirmed gives that answer
+instead, for replay.py, which asked for it before it started this run.
+Writes to GitHub through gh api and git push only, at least --pace seconds
+apart (default 1), and waits out GitHub's rate limits. --with-times appends
+the original creation time to each body and comment. --sign signs each
+recreated commit whose committer has <address> with the signing key of your
+git configuration, after checking that GitHub knows the key as a signing
+key. --final-name fills {pr_url} in squash messages with the URL under the
+name the target will finally carry.
 """
 
 import bisect
@@ -300,7 +302,8 @@ def utc_text(stamp):
 
 
 class Replay:
-    def __init__(self, events_path, mirror, slug, state_path, with_times, pace, sign, final_name):
+    def __init__(self, events_path, mirror, slug, state_path, options):
+        with_times, pace, sign, final_name, self.confirmed = options
         self.events_path, self.mirror, self.slug = events_path, mirror, slug
         self.state_path, self.work = state_path, work_path(state_path)
         self.with_times = with_times
@@ -996,10 +999,14 @@ class Replay:
         updated, removed = self.label_changes() if self.done == 0 else ([], [])
         self.summary(resumed, updated, removed)
         print(f"Type {self.slug} to confirm: ", end="", flush=True)
-        try:
-            answer = sys.stdin.readline().strip()
-        except KeyboardInterrupt:
-            answer = ""
+        if self.confirmed is not None:
+            answer = self.confirmed
+            print(f"{answer}, as --confirmed gives it", flush=True)
+        else:
+            try:
+                answer = sys.stdin.readline().strip()
+            except KeyboardInterrupt:
+                answer = ""
         if answer != self.slug:
             raise ReplayError("not confirmed; nothing changed")
 
@@ -1042,7 +1049,7 @@ class Replay:
 def main(argv):
     if argv[:1] in (["-h"], ["--help"]):
         usage(0)
-    state, with_times, pace, sign, final_name = None, False, 1.0, None, None
+    state, with_times, pace, sign, final_name, confirmed = None, False, 1.0, None, None, None
     while argv[:1] and argv[0].startswith("--"):
         option, argv = argv[0], argv[1:]
         if option == "--state" and argv:
@@ -1055,6 +1062,8 @@ def main(argv):
             sign, argv = argv[0], argv[1:]
         elif option == "--final-name" and argv and SLUG.fullmatch(argv[0]):
             final_name, argv = argv[0], argv[1:]
+        elif option == "--confirmed" and argv:
+            confirmed, argv = argv[0], argv[1:]
         else:
             usage()
     if len(argv) != 3 or argv[0].startswith("-"):
@@ -1071,7 +1080,8 @@ def main(argv):
         state = state or default_state_path(events_path)
         if not state.parent.is_dir():
             raise ReplayError(f"no folder {state.parent} for the state file")
-        replay = Replay(events_path, mirror, slug, state, with_times, pace, sign, final_name)
+        options = (with_times, pace, sign, final_name, confirmed)
+        replay = Replay(events_path, mirror, slug, state, options)
         return replay.main()
     except ReplayError as stop:
         print(f"{PROG}: {stop}", file=sys.stderr)

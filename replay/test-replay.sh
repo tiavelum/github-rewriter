@@ -430,7 +430,8 @@ status_run_plan=$?
 # requests in one sequence, merges as GitHub does, with GitHub as committer
 # and fixed dates, and closes the issues a merged pull request names with a
 # closing keyword. It logs every call, with its time, in $FAKE_GITHUB/calls
-# and every closing in closes.json. It answers a GET of another repository
+# and every closing in closes.json; a pull request gets refs/pull/<number>/head,
+# as on GitHub. It answers a GET of another repository
 # from the files in $FAKE_GH_API, as the fake gh of the source does, and a
 # call without --include with the body alone, as gh does. Each FAKE_GH_* variable names a call
 # "<method> <endpoint>" and acts on its first occurrence: RATE_LIMIT answers
@@ -439,7 +440,14 @@ status_run_plan=$?
 # gives its number to an issue someone else creates. It lists the signing keys
 # of the account from ssh_signing_keys.json and gpg_keys.json, none where a
 # file is missing; with FAKE_GH_NO_SCOPE, it refuses those lists as GitHub
-# refuses a token without the scope they need.
+# refuses a token without the scope they need. Where $FAKE_GITHUB/absent
+# exists, the target does not exist until a POST user/repos or orgs/*/repos
+# creates it, private where asked; PUT actions/permissions keeps Actions in
+# actions.json, a PATCH of the repository keeps its settings in settings.json,
+# and a merge deletes the head branch where delete_branch_on_merge is on. It
+# keeps the sub-issue links of every repository in links.json, by parent, as
+# lists of issue ids, with the ids of the target's items 7000 plus the number
+# and those of other repositories from their issues in $FAKE_GH_API.
 mkdir "$T/bin-target"
 cat >"$T/bin-target/gh" <<'EOF'
 #!/usr/bin/env python3
@@ -494,6 +502,7 @@ def invalid(text):
 
 def issue_view(it):
     view = {k: it[k] for k in ("number", "title", "body", "state", "state_reason")}
+    view["id"] = 7000 + it["number"]
     view.update(labels=[{"name": x} for x in it["labels"]],
                 assignees=[{"login": x} for x in it["assignees"]],
                 html_url=f"https://github.com/{slug}/{'pull' if it['kind'] == 'pull' else 'issues'}/{it['number']}")
@@ -548,6 +557,8 @@ def merge(it, body, items, closes):
                GIT_COMMITTER_EMAIL="noreply@github.com", GIT_COMMITTER_DATE=date)
     sha = git("commit-tree", tree, *parents, env=env, stdin=message).stdout.strip()
     git("update-ref", f"refs/heads/{it['base']}", sha, base)
+    if load("settings", {}).get("delete_branch_on_merge"):
+        git("update-ref", "-d", f"refs/heads/{it['head']}")
     it.update(state="closed", merged_at="2026-11-01T00:00:00Z", merge_commit_sha=sha)
     closes.append([it["number"], None])
     for n in CLOSING.findall(it["body"] + "\n" + message):
@@ -561,18 +572,101 @@ def from_files(path, q):
     name = Path(os.environ["FAKE_GH_API"]) / path.replace("/", "_")
     if "page" in q:
         page = name.with_name(f"{name.name}-{q['page']}.json")
-        return 200, json.loads(page.read_text()) if page.exists() else []
+        entries = json.loads(page.read_text()) if page.exists() else []
+        if path.endswith("/issues"):
+            links, repo = load("links", {}), path[len("repos/"):-len("/issues")]
+            for it in entries:
+                it["sub_issues_summary"] = {"total": len(links.get(f"{repo}#{it['number']}", []))}
+        return 200, entries
     found = name.with_name(name.name + ".json")
     return (200, json.loads(found.read_text())) if found.exists() else (404, {"message": "Not Found"})
+
+
+def known_issues():
+    """Every issue the fake knows, by repository and number, with its repository_url."""
+    found = {}
+    for f in Path(os.environ.get("FAKE_GH_API", "/nonexistent")).glob("repos_*_issues-*.json"):
+        owner, repo = re.fullmatch(r"repos_(.+?)_(.+)_issues-\d+\.json", f.name).groups()
+        for it in json.loads(f.read_text()):
+            found[(f"{owner}/{repo}", it["number"])] = it
+    if not (root / "absent").exists():
+        for it in load("items", {}).values():
+            found[(slug, it["number"])] = issue_view(it)
+    for (repo, _), it in found.items():
+        it["repository_url"] = f"https://api.github.com/repos/{repo}"
+    return found
+
+
+def sub_issues(method, repo, n, what, body, q):
+    issues = known_issues()
+    by_id = {it["id"]: it for it in issues.values() if "id" in it}
+    links, key = load("links", {}), f"{repo}#{n}"
+    if (repo, n) not in issues:
+        return 404, {"message": "Not Found"}
+    children = links.setdefault(key, [])
+    result = 404, {"message": "Not Found"}
+    if method == "GET" and what == "parent":
+        me = issues[(repo, n)].get("id")
+        parent = next((k for k, ids in links.items() if me in ids), None)
+        if parent:
+            prepo, pn = parent.split("#")
+            result = 200, issues[(prepo, int(pn))]
+    elif method == "GET" and what == "sub_issues":
+        per, number = int(q.get("per_page", 30)), int(q.get("page", 1))
+        result = 200, [by_id[i] for i in children][(number - 1) * per:number * per]
+    elif method == "POST" and what == "sub_issues":
+        child = body["sub_issue_id"]
+        held = next((k for k, ids in links.items() if child in ids), None)
+        if child not in by_id or held == key or (held and not body.get("replace_parent")):
+            result = invalid("the issue cannot be added as a sub-issue")
+        else:
+            if held:
+                links[held].remove(child)
+            children.append(child)
+            result = 201, issues[(repo, n)]
+    elif method == "PATCH" and what == "sub_issues/priority":
+        child, other = body["sub_issue_id"], body.get("before_id") or body.get("after_id")
+        if child not in children or other not in children or child == other:
+            result = invalid("sub_issue_id, before_id or after_id is not a sub-issue")
+        else:
+            children.remove(child)
+            children.insert(children.index(other) + ("after_id" in body), child)
+            result = 200, issues[(repo, n)]
+    elif method == "DELETE" and what == "sub_issue" and body.get("sub_issue_id") in children:
+        children.remove(body["sub_issue_id"])
+        result = 200, issues[(repo, n)]
+    save("links", links)
+    return result
+
+
+def create_repo(owner, body):
+    if not (root / "absent").exists() or f"{owner}/{body['name']}" != slug:
+        return invalid("name already exists on this account")
+    (root / "absent").unlink()
+    save("settings", {"private": bool(body.get("private")), "default_branch": "main"})
+    return 201, {"full_name": slug, "html_url": f"https://github.com/{slug}", "default_branch": "main",
+                 "private": bool(body.get("private"))}
 
 
 def handle(method, endpoint, body):
     path, _, query = endpoint.partition("?")
     q = {k: v[-1] for k, v in parse_qs(query).items()}
+    login = os.environ.get("FAKE_GH_LOGIN", "ada-example")
+    if method == "GET" and path == "user":
+        return 200, {"login": login}
+    if method == "POST" and path == "user/repos":
+        return create_repo(login, body)
+    if method == "POST" and re.fullmatch(r"orgs/[^/]+/repos", path):
+        return create_repo(path.split("/")[1], body)
+    sub = re.fullmatch(r"repos/([^/]+/[^/]+)/issues/(\d+)/(parent|sub_issues|sub_issues/priority|sub_issue)", path)
+    if sub:
+        return sub_issues(method, sub[1], int(sub[2]), sub[3], body, q)
     if method == "GET" and path in ("user/ssh_signing_keys", "user/gpg_keys"):
         per, number = int(q.get("per_page", 30)), int(q.get("page", 1))
         return 200, load(path[len("user/"):], [])[(number - 1) * per:number * per]
     prefix = f"repos/{slug}"
+    if (root / "absent").exists() and (path == prefix or path.startswith(prefix + "/")):
+        return 404, {"message": "Not Found"}
     if path != prefix and not path.startswith(prefix + "/"):
         if method == "GET" and path.startswith("repos/") and os.environ.get("FAKE_GH_API"):
             return from_files(path, q)
@@ -596,6 +690,12 @@ def handle(method, endpoint, body):
         result = 200, {"full_name": slug, "default_branch": "main", "clone_url": str(repo),
                        "ssh_url": str(repo), "html_url": f"https://github.com/{slug}",
                        "permissions": {"admin": True, "push": True}, **load("settings", {})}
+    elif route == ("PATCH",):
+        save("settings", {**load("settings", {}), **body})
+        result = 200, {"full_name": slug, **load("settings", {})}
+    elif route == ("PUT", "actions", "permissions"):
+        save("actions", {"enabled": body["enabled"]})
+        result = 204, None
     elif route == ("GET", "labels"):
         result = page(labels)
     elif route == ("POST", "labels"):
@@ -631,6 +731,7 @@ def handle(method, endpoint, body):
             if route[1] == "pulls":
                 it.update(kind="pull", head=body["head"], base=body["base"], draft=body.get("draft", False),
                           merged_at=None, merge_commit_sha=None)
+                git("update-ref", f"refs/pull/{n}/head", rev(f"refs/heads/{body['head']}"))
             else:
                 it["kind"] = "issue"
             items[str(n)] = it
@@ -838,7 +939,7 @@ replay "$T/gh-a" ada-example/tool-new --pace 0 --state "$T/other.state.json" "$T
   >"$T/other-out" 2>&1
 status_other=$?
 check "run-replay.py checks a finished replay again without writing, and refuses a target that is not empty" \
-  '[ "$status_again$status_other" = 01 ] && grep -q "^All 23 events of the replay .* are done" "$T/again-out" && grep -q "ada-example/tool-new is not empty: it has 5 refs and items up to #6" "$T/other-out" && [ "$(writes "$T/gh-a" | wc -l)" -eq "$writes_a" ] || { cat "$T/again-out" "$T/other-out"; exit 1; }'
+  '[ "$status_again$status_other" = 01 ] && grep -q "^All 23 events of the replay .* are done" "$T/again-out" && grep -q "ada-example/tool-new is not empty: it has 8 refs and items up to #6" "$T/other-out" && [ "$(writes "$T/gh-a" | wc -l)" -eq "$writes_a" ] || { cat "$T/again-out" "$T/other-out"; exit 1; }'
 
 # C: a replay into a target where someone else creates an issue, with the
 # default state file and --with-times.
@@ -1097,6 +1198,140 @@ EOF
 else
   echo "ssh-keygen is missing; run-replay.py --sign with an SSH key not tested"
 fi
+
+# replay.py, from a run file, into a target that does not exist yet, with
+# sub-issue links: #1 and #4 of the source under ada-example/plans#9, #6 under
+# #4, and ada-example/plans#11 under #6. replay_setup <folder>: that target,
+# and next to it <folder>-api, the source's API of the run's plan with issue
+# ids, settings, Actions and the issues of ada-example/plans.
+replay_setup() {
+  target "$1" ada-example/tool-replay-20261116 && touch "$1/absent" &&
+    echo '{"ada-example/plans#9": [9001, 8010, 9004], "ada-example/tool#4": [9006], "ada-example/tool#6": [8011]}' >"$1/links.json" &&
+    cp -R "$T/api-run" "$1-api" && python3 - "$1-api" <<'EOF'
+import json, sys
+from pathlib import Path
+api = Path(sys.argv[1])
+for page in api.glob("repos_ada-example_tool_issues-*.json"):
+    issues = json.loads(page.read_text())
+    for it in issues:
+        it["id"] = 9000 + it["number"]
+    page.write_text(json.dumps(issues))
+(api / "repos_ada-example_tool.json").write_text(json.dumps({
+    "default_branch": "main", "delete_branch_on_merge": True, "allow_merge_commit": False,
+    "allow_squash_merge": True, "allow_rebase_merge": False, "description": "A small tool"}))
+(api / "repos_ada-example_tool_actions_permissions.json").write_text('{"enabled": true}')
+(api / "repos_ada-example_plans_issues-1.json").write_text(json.dumps(
+    [{"id": 8000 + n, "number": n, "title": f"Plan {n}", "state": "open"} for n in (9, 10, 11)]))
+EOF
+}
+# run_file <file> <backup folder> [<field>=<JSON value>]...: a run file for the
+# replay of ada-example/tool that sets every type the plan would guess; a
+# field with an empty value is left out.
+run_file() {
+  mkdir -p "$(dirname "$1")" && python3 - "$T" "$@" <<'EOF'
+import json, os, sys
+T, path, backup, *changes = sys.argv[1:]
+S = os.environ
+fields = {
+    "source": "ada-example/tool",
+    "target": "ada-example/tool-replay-20261116",
+    "mailmap": ["Ada Example <ada@example.com> <ada.old@example.com>",
+                "Ada Example <ada@example.com> GitHub <noreply@github.com>"],
+    "types": [f"{S['C1'][:7]} docs", f"{S['C3'][:7]} test", f"{S['C4'][:9]} chore",
+              f"{S['C5'][:7]} feat"],
+    "pace": 0,
+    "backup": backup,
+    "clone_url": f"{T}/source.git",
+}
+for change in changes:
+    key, _, value = change.partition("=")
+    if value:
+        fields[key] = json.loads(value)
+    else:
+        del fields[key]
+with open(path, "w", encoding="utf-8") as f:
+    json.dump(fields, f, indent=1)
+EOF
+}
+# one <folder> <answer> <run file>: replay.py against the target in that
+# folder, with the answer typed at the confirmation.
+one() {
+  printf '%s\n' "$2" | FAKE_GITHUB=$1 FAKE_GH_API=$1-api PATH=$target_path python3 "$here/replay.py" "$3"
+}
+# links_hold <folder>: the sub-issue links as the replay leaves them, each
+# replayed item in the place of the source's.
+links_hold() {
+  python3 - "$1/links.json" <<'EOF'
+import json, sys
+links = {k: v for k, v in json.load(open(sys.argv[1])).items() if v}
+expected = {"ada-example/plans#9": [7001, 8010, 7004], "ada-example/tool#4": [9006],
+            "ada-example/tool-replay-20261116#4": [7006], "ada-example/tool-replay-20261116#6": [8011]}
+sys.exit(0 if links == expected else f"links {links}, expected {expected}")
+EOF
+}
+S6=$(echo "$C5" | cut -c1-7)
+export S6
+
+# RA: one uninterrupted run.
+replay_setup "$T/ra"
+run_file "$T/runs-a/tool.run.json" "$T/backup-ra"
+one "$T/ra" ada-example/tool-replay-20261116 "$T/runs-a/tool.run.json" >"$T/ra-out" 2>"$T/ra-err"
+status_ra=$?
+check "replay.py runs every step from a run file after one confirmation, and the comparison finds no difference" \
+  '[ "$status_ra" = 0 ] && [ ! -s "$T/ra-err" ] && for n in "1 of 8, mirror" "2 of 8, plan" "3 of 8, create" "4 of 8, settings" "5 of 8, replay" "6 of 8, compare" "7 of 8, links" "8 of 8, commands"; do grep -q "^Step $n: " "$T/ra-out" || { echo "no step $n"; exit 1; }; done && [ "$(grep -c "to confirm: " "$T/ra-out")" = 2 ] && grep -qx "Type ada-example/tool-replay-20261116 to confirm: ada-example/tool-replay-20261116, as --confirmed gives it" "$T/ra-out" && grep -qx "No differences" "$T/ra-out" && grep -Eqx "  guessed types +0" "$T/ra-out" && [ ! -e "$T/ra/refused" ] || { cat "$T/ra-err" "$T/ra-out" "$T/ra/refused" 2>&1; exit 1; }'
+check "replay.py creates the target private after the confirmation, with Actions off and head branches deleted on merge as in the source" \
+  '[ "$(writes "$T/ra" | head -n 1 | cut -d" " -f2-)" = "POST user/repos" ] && [ ! -e "$T/ra/absent" ] && python3 -c "import json, sys; s, a = (json.load(open(sys.argv[1] + f)) for f in (\"/settings.json\", \"/actions.json\")); sys.exit(not (s[\"private\"] and s[\"delete_branch_on_merge\"] and a == {\"enabled\": False}))" "$T/ra" && [ "$(git --git-dir="$T/ra/repo.git" for-each-ref --format="%(refname:short)" refs/heads/ | tr "\n" " ")" = "docs/5-notes main " ] || { writes "$T/ra"; cat "$T/ra/settings.json" "$T/ra/actions.json"; exit 1; }'
+check "replay.py moves each sub-issue link into the place of the source's item, and links the sub-issues of the source's items" \
+  'links_hold "$T/ra" && grep -qx "  #1 under ada-example/plans#9, in the place of the source'"'"'s" "$T/ra-out" && grep -qx "  ada-example/plans#11 under the replay'"'"'s #6" "$T/ra-out"'
+check "replay.py prints, without running them, the commands that archive the source, rename the replay and restore its settings" \
+  'for line in "gh api -X PATCH repos/ada-example/tool -f name=tool-archive" "gh api -X PATCH repos/ada-example/tool-archive -F archived=true" "gh api -X PATCH repos/ada-example/tool-replay-20261116 -f name=tool" "gh api -X PUT repos/ada-example/tool/actions/permissions -F enabled=true" "gh api -X PATCH repos/ada-example/tool -F allow_merge_commit=false -F allow_squash_merge=true -F allow_rebase_merge=false -F delete_branch_on_merge=true -f '"'"'description=A small tool'"'"'" "gh api -X DELETE repos/ada-example/tool/git/refs/heads/docs/5-notes"; do grep -Fqx "$line" "$T/ra-out" || { echo "no line: $line"; exit 1; }; done && ! grep -q "archived\|name=tool" "$T/ra/calls" || { cat "$T/ra-out"; exit 1; }'
+
+# RG, a run file that leaves a type to guess; RW, a wrong confirmation.
+replay_setup "$T/rg"
+run_file "$T/runs-g/tool.run.json" "$T/backup-rg" "types=[\"$(echo "$C4" | cut -c1-9) chore\", \"$(echo "$C1" | cut -c1-7) docs\", \"$(echo "$C3" | cut -c1-7) test\"]"
+one "$T/rg" ada-example/tool-replay-20261116 "$T/runs-g/tool.run.json" >"$T/rg-out" 2>&1
+status_rg=$?
+check "replay.py stops after the plan, before any write and before the confirmation, where a type would be guessed" \
+  '[ "$status_rg" = 1 ] && grep -q "^replay.py: 1 title would get a guessed type, marked guessed above; give each its type in types of " "$T/rg-out" && grep -q "^  $S6  guessed  " "$T/rg-out" && grep -q "^replay.py: stopped in step 2 of 8, plan, before any write to GitHub in this run" "$T/rg-out" && ! grep -q "to confirm" "$T/rg-out" && ! writes "$T/rg" && [ -e "$T/rg/absent" ] && [ ! -e "$T/runs-g/tool.progress.json" ] || { cat "$T/rg-out"; exit 1; }'
+replay_setup "$T/rw"
+run_file "$T/runs-w/tool.run.json" "$T/backup-rw"
+one "$T/rw" tool-replay-20261116 "$T/runs-w/tool.run.json" >"$T/rw-out" 2>&1
+status_rw=$?
+check "replay.py lists what it will do, sub-issue links included, and writes nothing on a wrong confirmation" \
+  '[ "$status_rw" = 1 ] && grep -q "replay.py: not confirmed; nothing changed on GitHub$" "$T/rw-out" && grep -qx "  7. move sub-issue links: 4" "$T/rw-out" && grep -qx "       the replay'"'"'s #6 gets the sub-issues of the source'"'"'s: ada-example/plans#11, moved from #6" "$T/rw-out" && grep -qx "  3. create ada-example/tool-replay-20261116, private and empty, default branch main" "$T/rw-out" && ! writes "$T/rw" && [ -e "$T/rw/absent" ] && [ ! -e "$T/runs-w/tool.progress.json" ] || { cat "$T/rw-out"; writes "$T/rw"; exit 1; }'
+mkdir -p "$T/runs-v"
+run_file "$T/work/tool.run.json" "$T/backup-rv"
+run_file "$T/runs-v/colour.run.json" "$T/backup-rv" 'colour="blue"'
+run_file "$T/runs-v/name.run.json" "$T/backup-rv" 'target="ada-example/tool-new"'
+for f in "$T/work/tool.run.json" "$T/runs-v/colour.run.json" "$T/runs-v/name.run.json"; do
+  one "$T/rw" ada-example/tool-replay-20261116 "$f" >>"$T/rv-out" 2>&1
+  echo $? >>"$T/rv-status"
+done
+check "replay.py refuses a run file in a git work tree, with an unknown field, or with a target not named for the day of the replay" \
+  '[ "$(tr "\n" " " <"$T/rv-status")" = "1 1 1 " ] && grep -q "tool.run.json lies in a git work tree; keep it outside any repository, since it holds the mailmap$" "$T/rv-out" && grep -q "colour.run.json has fields replay.py does not know: colour$" "$T/rv-out" && grep -q "name.run.json: target must be ada-example/tool-replay-<YYYYMMDD>" "$T/rv-out" && ! writes "$T/rw" || { cat "$T/rv-status" "$T/rv-out"; exit 1; }'
+
+# RB: a run stopped by a Ctrl-C in the replay, resumed into a difference the
+# comparison finds, since the source's label changed meanwhile, and resumed
+# once more after the label is back.
+replay_setup "$T/rb"
+run_file "$T/runs-b/tool.run.json" "$T/backup-rb"
+labels_b=$T/rb-api/repos_ada-example_tool_labels-1.json
+(FAKE_GH_INTERRUPT="POST repos/ada-example/tool-replay-20261116/issues" && export FAKE_GH_INTERRUPT &&
+  one "$T/rb" ada-example/tool-replay-20261116 "$T/runs-b/tool.run.json") >"$T/rb-out" 2>&1
+echo $? >"$T/rb-status"
+cp "$labels_b" "$T/rb-labels"
+sed 's/0075ca/123456/' "$T/rb-labels" >"$labels_b"
+one "$T/rb" ada-example/tool-replay-20261116 "$T/runs-b/tool.run.json" >>"$T/rb-out" 2>&1
+echo $? >>"$T/rb-status"
+cp "$T/rb-labels" "$labels_b"
+one "$T/rb" ada-example/tool-replay-20261116 "$T/runs-b/tool.run.json" >>"$T/rb-out" 2>&1
+echo $? >>"$T/rb-status"
+check "replay.py stops where run-replay.py stops, and the same command resumes there after a new confirmation" \
+  '[ "$(tr "\n" " " <"$T/rb-status")" = "1 1 0 " ] && grep -q "^run-replay.py: stopped after event [0-9]* of 23; run the same command again to resume$" "$T/rb-out" && grep -q "^replay.py: stopped in step 5 of 8, replay; run the same command again to resume there once the cause is removed$" "$T/rb-out" && grep -q "^Resume the replay of ada-example/tool into ada-example/tool-replay-20261116 at step 5, replay, from .*tool.progress.json:$" "$T/rb-out" && grep -q "^Resume the replay of ada-example/tool into ada-example/tool-replay-20261116 at event [0-9]* of 23" "$T/rb-out" && [ "$(grep -c " POST user/repos$" "$T/rb/calls")" = 1 ] || { cat "$T/rb-status" "$T/rb-out"; exit 1; }'
+check "replay.py stops at a difference the comparison finds, before it moves a sub-issue link" \
+  'grep -Fqx "  label docs: colour 0075ca, the source'"'"'s 123456" "$T/rb-out" && grep -q "^replay.py: stopped in step 6 of 8, compare; run the same command again to resume there" "$T/rb-out" && [ "$(grep -c "^Step 7 of 8, links" "$T/rb-out")" = 1 ]'
+check "replay.py ends a stopped and resumed run with the links and the target of an uninterrupted one" \
+  'links_hold "$T/rb" && grep -qx "No differences" "$T/rb-out" && dump "$T/ra" >"$T/ra-dump" && dump "$T/rb" >"$T/rb-dump" && diff "$T/ra-dump" "$T/rb-dump"'
 
 printf '\n%s passed, %s failed\n' "$passed" "$failed"
 [ "$failed" = 0 ]
