@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Compares a finished replay with its source, read-only: the items, labels,
-bodies, comments, the default branch and the branches of the target against
-those of the source, the event file and the state file of run-replay.py.
+bodies, comments, the default branch, the branches, tags and releases of the
+target against those of the source, the event file and the state file of
+run-replay.py. A branch, tag or release of the source that the target lacks
+is a note where the event file's header lists it as left behind, and a
+difference otherwise.
 
   compare-replay.py [--with-times] [--state <file>] <event file> <mirror> <owner/repo>
 
@@ -134,6 +137,17 @@ def without_added_trailers(message, planned):
     while lines and (lines[-1] == "" or (CO_AUTHOR.match(lines[-1]) and lines[-1] not in known)):
         lines.pop()
     return "\n".join(lines)
+
+
+def peeled_refs(repo, *prefixes):
+    """The refs under the prefixes, each with the object it names or, for an
+    annotated tag, the object the tag points to."""
+    out = git(repo, "for-each-ref", "--format=%(refname) %(objectname) %(*objectname)", *prefixes)
+    found = {}
+    for line in out.splitlines():
+        name, sha, *peeled = line.split()
+        found[name] = peeled[0] if peeled else sha
+    return found
 
 
 def read_commits(repo, shas):
@@ -347,14 +361,13 @@ class Comparison:
             work,
             "fetch",
             "-q",
+            "--no-tags",
             remote,
             "+refs/heads/*:refs/heads/*",
             "+refs/pull/*/head:refs/pull/*/head",
+            "+refs/tags/*:refs/tags/*",
         )
-        refs = git(
-            work, "for-each-ref", "--format=%(refname) %(objectname)", "refs/heads/", "refs/pull/"
-        )
-        return dict(line.split() for line in refs.splitlines())
+        return peeled_refs(work, "refs/heads/", "refs/pull/", "refs/tags/")
 
     def pull_heads(self, refs):
         """The head of each pull request, which stays where its branch is deleted."""
@@ -483,6 +496,42 @@ class Comparison:
             self.notes.append(f"branch {name} stays in the target; the source no longer has it")
         self.totals.append(("branches", len(found)))
 
+    def left_behind(self, refs, source_releases, target_releases):
+        """Each branch, tag and release of the source in the target, a branch
+        or tag at the commit recreated from the source's; a note where the
+        target lacks one that the header lists as left behind."""
+        left = {(x["kind"], x["name"]) for x in self.header.get("left_behind", [])}
+
+        def lacks(kind, name, what):
+            if (kind, name) in left:
+                self.notes.append(f"{kind} {name} of the source is left behind, as planned")
+            else:
+                self.differ(f"{kind} {name} of the source {what}")
+
+        source = peeled_refs(self.mirror, "refs/heads/", "refs/tags/")
+        for ref, sha in sorted(source.items()):
+            kind = "branch" if ref.startswith("refs/heads/") else "tag"
+            name = ref.split("/", 2)[2]
+            if kind == "branch" and name == self.default:
+                continue
+            found, want = refs.get(ref), self.hashes.get(sha)
+            if found is None:
+                lacks(kind, name, "is missing in the target")
+            elif found != want:
+                recreated = f"the recreated {want[:7]}" if want else "a recreated commit"
+                lacks(kind, name, f"is at {found[:7]} in the target, not at {recreated}")
+        tags = sorted(r for r in refs if r.startswith("refs/tags/"))
+        for ref in tags:
+            if ref not in source:
+                self.differ(f"tag {ref[len('refs/tags/') :]} is in the target, not in the source")
+        source_names = {r["tag_name"] for r in source_releases}
+        target_names = {r["tag_name"] for r in target_releases}
+        for name in sorted(source_names - target_names):
+            lacks("release", name, "is missing in the target")
+        for name in sorted(target_names - source_names):
+            self.differ(f"release {name} is in the target, not in the source")
+        self.totals += [("tags", len(tags)), ("releases", len(target_releases))]
+
     def compare(self):
         target_info = gh_get(f"repos/{self.slug}")
         if str(target_info.get("full_name", "")).lower() != self.slug.lower():
@@ -506,6 +555,11 @@ class Comparison:
             self.recreated(work)
             self.branches(refs, target_info)
             self.pull_heads(refs)
+            self.left_behind(
+                refs,
+                gh_pages(f"repos/{self.source}/releases"),
+                gh_pages(f"repos/{self.slug}/releases"),
+            )
 
         print(f"Compared {self.source} with {self.slug}:")
         for name, value in self.totals:

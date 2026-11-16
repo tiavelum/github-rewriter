@@ -10,7 +10,9 @@ source's name, which stay yours to run.
 The run file holds JSON with the fields that replay/README.md lists; keep it
 outside any repository, since it holds the mailmap. Before the confirmation
 replay.py writes nothing on GitHub, and it stops where a title would get a
-guessed type or the target exists already. It runs backup-mirror.sh,
+guessed type, where the plan leaves behind a tag, release or branch that
+leave_behind does not accept, or where the target exists already. It runs
+backup-mirror.sh,
 plan-replay.py, run-replay.py and compare-replay.py as processes, writes to
 GitHub through gh api and run-replay.py only, and keeps its progress in
 <name>.progress.json next to the run file, so that the same command resumes
@@ -41,6 +43,7 @@ REQUIRED = ("source", "target", "mailmap")
 DEFAULTS = {
     "final_name": None,
     "types": [],
+    "leave_behind": [],
     "sign": None,
     "keep_merges": False,
     "with_times": False,
@@ -221,7 +224,7 @@ def read_run_file(path):
 
     for field in ("source", "final_name", "target"):
         check(field, lambda v: isinstance(v, str) and SLUG.fullmatch(v), "owner/repo")
-    for field in ("mailmap", "types"):
+    for field in ("mailmap", "types", "leave_behind"):
         check(
             field,
             lambda v: isinstance(v, list) and all(isinstance(x, str) and "\n" not in x for x in v),
@@ -350,11 +353,16 @@ class OneCommand:
         self.begin("plan", f"plan the replay into {self.events}")
         with tempfile.TemporaryDirectory(prefix="replay-") as folder:
             mailmap, types = Path(folder) / "mailmap", Path(folder) / "types"
+            leave = Path(folder) / "leave-behind"
             mailmap.write_text("".join(f"{x}\n" for x in self.cfg["mailmap"]), encoding="utf-8")
             args = [sys.executable, HERE / "plan-replay.py"]
             if self.cfg["types"]:
                 types.write_text("".join(f"{x}\n" for x in self.cfg["types"]), encoding="utf-8")
                 args += ["--types", types]
+            if self.cfg["leave_behind"]:
+                lines = "".join(f"{x}\n" for x in self.cfg["leave_behind"])
+                leave.write_text(lines, encoding="utf-8")
+                args += ["--leave-behind", leave]
             args += ["--no-types"] * self.cfg["no_types"] + ["--keep-merges"] * self.cfg[
                 "keep_merges"
             ]
@@ -644,6 +652,9 @@ class OneCommand:
             f"gh api -X DELETE repos/{self.final}/git/refs/heads/{branch}"
             for branch in self.extra_branches()
         ]
+        left = self.left_behind()
+        if left:
+            notes.append(f"only the archive keeps what the plan left behind: {', '.join(left)}")
         stem = self.events.name[: -len(".jsonl")]
         state, work = (self.events.with_name(stem + x) for x in (".state.json", ".work.git"))
         print(
@@ -693,6 +704,12 @@ class OneCommand:
         if listed.returncode:
             raise ReplayError(f"git ls-remote of {self.target} failed: {listed.stderr.strip()}")
         return {line.split("\trefs/heads/", 1)[1] for line in listed.stdout.splitlines()}
+
+    def left_behind(self):
+        """What the event file's header lists as left behind, as kind and name."""
+        with self.events.open(encoding="utf-8") as file:
+            header = json.loads(file.readline())
+        return [f"{x['kind']} {x['name']}" for x in header.get("left_behind", [])]
 
     def extra_branches(self):
         """The branches of the target that the mirror of the source lacks."""

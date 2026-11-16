@@ -33,6 +33,7 @@ Write the run file first, outside any repository, since it holds the mailmap; `r
 | `mailmap` | The lines of the mailmap that [Planning a replay](#planning-a-replay) describes | Required |
 | `final_name` | The name the replay takes over at the end, which `run-replay.py` gets as `--final-name` | `source` |
 | `types` | The lines of the file of `--types`: types and `summary` lines | None |
+| `leave_behind` | The lines of the file of `--leave-behind`: the tags, releases and branches the replay may leave behind, as [What a replay leaves behind](#what-a-replay-leaves-behind) describes | None |
 | `sign` | The address of `--sign` | `null`, nothing signed |
 | `keep_merges` | Whether the plan has `--keep-merges` | `false` |
 | `no_types` | Whether the plan has `--no-types` | `false` |
@@ -50,7 +51,7 @@ python3 ~/vc/github-rewriter/replay/replay.py ~/github-rewriter.run.json
 It announces each of its eight steps as `Step <n> of 8`:
 
 1. **mirror**: makes the mirror with `backup-mirror.sh` in `backup`.
-2. **plan**: plans into the event file next to the mirror, with the mailmap and the types written into a temporary folder that it deletes afterwards, and prints every changed title and the totals, as [Planning a replay](#planning-a-replay) shows. It stops where a title would get a guessed type; give that title's commit or pull request its type in `types` and run again.
+2. **plan**: plans into the event file next to the mirror, with the mailmap and the types written into a temporary folder that it deletes afterwards, and prints every changed title and the totals, as [Planning a replay](#planning-a-replay) shows. It stops where a title would get a guessed type; give that title's commit or pull request its type in `types` and run again. It also stops where the plan leaves behind a tag, release or branch that `leave_behind` does not accept; add the line of each you accept to `leave_behind` and run again.
 3. **create**: creates the target, private and empty, for your account or for the organisation that owns it.
 4. **settings**: turns Actions off in the target, and the deletion of head branches on where the source has it on.
 5. **replay**: runs `run-replay.py` with `--pace`, `--final-name`, and `--sign` and `--with-times` where the run file sets them, and gives it your confirmation with `--confirmed`. Where GitHub has named the target's default branch other than the source's, it then makes the source's the default branch, once the replay has pushed it, and before `run-replay.py` where a stopped replay pushed it already.
@@ -113,7 +114,7 @@ gh repo clone ada-example/tool ~/vc/tool
 4. Delete ~/tool.progress.json, ~/vc-backup/tool-2026-11-16-033713.state.json and ~/vc-backup/tool-2026-11-16-033713.work.git.
 ```
 
-The paths of the last line stand for those of a run file `~/tool.run.json` and a mirror made in `~/vc-backup`. What is left to you is what these lines say: run the reads of step 1, since neither script reads the source's secrets, variables, webhooks, deploy keys and collaborators; run the commands of step 2 in their order, which give the replay the source's Actions setting, merge methods, deletion of head branches, wiki, projects, discussions and description and, where the source is not private, its visibility, which the replay gets only after its rename, since it is created private, and after it the secret scanning and push protection GitHub reports for the source; replace your clone with the commands of step 3, which keep the old one for you to delete; and delete the run's files. Step 8 prints the secret scanning line only where GitHub reports it for the source, which it does not for a private repository without [GitHub Secret Protection](https://docs.github.com/en/code-security/secret-scanning/introduction/about-secret-scanning); this sample is of a private source whose information gives no wiki, projects or discussions setting, so its settings line carries none of them. [Update a repository](https://docs.github.com/en/rest/repos/repos#update-a-repository) does not list `has_discussions` among its body parameters, so check after the command that the replay has the source's, with `gh api repos/<owner>/<repo> --jq .has_discussions`. The commands name the archive `<repository>-archive`, and a note above them says so where a repository of that name exists already: give the archive another name in the first two then. Where `final_name` is not the source, the first command only archives the source.
+The paths of the last line stand for those of a run file `~/tool.run.json` and a mirror made in `~/vc-backup`. What is left to you is what these lines say: run the reads of step 1, since neither script reads the source's secrets, variables, webhooks, deploy keys and collaborators; run the commands of step 2 in their order, which give the replay the source's Actions setting, merge methods, deletion of head branches, wiki, projects, discussions and description and, where the source is not private, its visibility, which the replay gets only after its rename, since it is created private, and after it the secret scanning and push protection GitHub reports for the source; replace your clone with the commands of step 3, which keep the old one for you to delete; and delete the run's files. Step 8 prints the secret scanning line only where GitHub reports it for the source, which it does not for a private repository without [GitHub Secret Protection](https://docs.github.com/en/code-security/secret-scanning/introduction/about-secret-scanning); this sample is of a private source whose information gives no wiki, projects or discussions setting, so its settings line carries none of them. [Update a repository](https://docs.github.com/en/rest/repos/repos#update-a-repository) does not list `has_discussions` among its body parameters, so check after the command that the replay has the source's, with `gh api repos/<owner>/<repo> --jq .has_discussions`. The commands name the archive `<repository>-archive`, and a note above them says so where a repository of that name exists already: give the archive another name in the first two then. Another note names the tags, releases and branches the plan left behind, which only the archive keeps, as [What a replay leaves behind](#what-a-replay-leaves-behind) describes. Where `final_name` is not the source, the first command only archives the source.
 
 Where it stops, it names the step and says how to go on. A stop before the confirmation writes nothing to GitHub, and the next run starts over with a new mirror and event file; the stopped run's stay in `backup`. After the confirmation it keeps its progress in the progress file next to the run file, `~/github-rewriter.progress.json` for the run file above: the mirror, the event file and the steps done. Once you have removed the cause of the stop, run the same command again: it asks you to confirm again, skips the creation and the settings where they are done, lets `run-replay.py` resume where [Stopping and resuming](#stopping-and-resuming) says, compares again, and moves the links that are not moved yet. Ctrl-C reaches the script that runs, so in the replay step it stops `run-replay.py` after the event in progress. A run file that changed after the confirmation stops it; undo the change to resume. Where the comparison finds a difference that you accept, take the remaining steps by hand, as the sections below describe them.
 
@@ -136,25 +137,34 @@ mirror=$(rewrite/backup-mirror.sh tiavelum/github-rewriter)   # mirror in ~/vc-b
 python3 replay/plan-replay.py "$mirror" tiavelum/github-rewriter ~/rewrite-mailmap "${mirror%.git}.jsonl"
 ```
 
-It prints every title it changed, with `guessed` where it guessed the type, every squash message it wrote for a pull request merged with a merge commit, then the totals and the event file. The counts are those of the repository on the day the step was run; yours differ.
+It prints every title it changed, with `guessed` where it guessed the type, every squash message it wrote for a pull request merged with a merge commit, what it leaves behind, as [What a replay leaves behind](#what-a-replay-leaves-behind) describes, then the totals and the event file. The counts are those of the repository on the day the step was run; yours differ. This output is shortened where `…` stands:
 
 ```
-Changed titles: 1
+Changed titles: 7
   c1e8a97           Set up the repository: README, license, ignore list and project instructions  ->  feat: set up the repository: README, license, ignore list and project instructions
-Squash messages written for merge commits: 0
+  c420a3b           Merge pull request #32 from tiavelum/feat/24-skill-run-file  ->  feat: adapt the skill replay-repository to the run file of replay.py (#32)
+  …
+Squash messages written for merge commits: 5
+  #32  feat: adapt the skill replay-repository to the run file of replay.py (#32)
+      Adapts the skill `replay-repository` to the run file of `replay/replay.py`, merged with #30 (feat: replay a repository with one command from a run file): it asks the owner every question of the run file in one round, has the owner run `replay.py`, and checks the comparison's output before its own check and a checker's.
+
+      {pr_url}
+  …
+Left behind: 0
 Totals:
-  items                        13
-  issues                       11
-  pull requests                 2
-  comments                     12
+  items                        56
+  issues                       33
+  pull requests                23
+  comments                     95
   labels                       13
-  commits                      11
-  squash merges                 1
+  commits                      62
+  squash merges                23
   merge commits                 0
-  events                       43
+  events                      241
   guessed types                 0
-  events out of time order      0
-~/vc-backup/github-rewriter-2026-11-15-220456.jsonl
+  events out of time order      3
+  left behind                   0
+~/vc-backup/github-rewriter-2026-11-16-173524.jsonl
 ```
 
 Check every changed title, the guessed ones above all, and every squash message. To set a type yourself, write it into a file, one line per pull request number or commit hash of at least 7 characters, and plan again into a new event file:
@@ -164,23 +174,13 @@ printf '%s\n' 'c1e8a97 chore' >~/replay-types
 python3 replay/plan-replay.py --types ~/replay-types "$mirror" tiavelum/github-rewriter ~/rewrite-mailmap "${mirror%.git}-typed.jsonl"
 ```
 
+It prints the same as before, with the type set, and the new event file:
+
 ```
-Changed titles: 1
+Changed titles: 7
   c1e8a97           Set up the repository: README, license, ignore list and project instructions  ->  chore: set up the repository: README, license, ignore list and project instructions
-Squash messages written for merge commits: 0
-Totals:
-  items                        13
-  issues                       11
-  pull requests                 2
-  comments                     12
-  labels                       13
-  commits                      11
-  squash merges                 1
-  merge commits                 0
-  events                       43
-  guessed types                 0
-  events out of time order      0
-~/vc-backup/github-rewriter-2026-11-15-220456-typed.jsonl
+  …
+~/vc-backup/github-rewriter-2026-11-16-173524-typed.jsonl
 ```
 
 In the same file, a line of a pull request number, `summary` and a text sets the summary of the squash message that [How pull requests are merged](#how-pull-requests-are-merged) describes, such as `10 summary Signs commits and tags with the SSH key.`
@@ -190,7 +190,36 @@ Two options, given before the mirror, turn off what the replay changes; without 
 - `--no-types` keeps every title as it is, instead of giving it a type as [How a title gets its type](#how-a-title-gets-its-type) describes.
 - `--keep-merges` keeps the merge commits, as [How pull requests are merged](#how-pull-requests-are-merged) describes.
 
-`plan-replay.py` stops, and writes no event file, when a merged pull request was merged into a branch other than the default branch, when the mirror lacks a pull request's head, when a pull request's branch merges a commit that is neither on the first-parent line of the default branch nor on the branch of a pull request, or when the number order and the order of the default branch cannot both hold, as when a pull request's branch starts on a commit that only a later item brings.
+`plan-replay.py` stops, and writes no event file, when it leaves behind a tag, release or branch that `--leave-behind` does not accept, as [What a replay leaves behind](#what-a-replay-leaves-behind) describes, when a merged pull request was merged into a branch other than the default branch, when the mirror lacks a pull request's head, when a pull request's branch merges a commit that is neither on the first-parent line of the default branch nor on the branch of a pull request, or when the number order and the order of the default branch cannot both hold, as when a pull request's branch starts on a commit that only a later item brings.
+
+## What a replay leaves behind
+
+The replay carries the default branch and the branch of each pull request, at the head the pull request ends with; it pushes no tag and creates no release, so of these only the archive of the source keeps a copy. `plan-replay.py` lists under `Left behind`, each with the reason, what of the source the replay does not carry:
+
+- Each tag, lightweight or annotated.
+- Each release, published, pre-release or draft; GitHub [lists draft releases only to users with push access](https://docs.github.com/en/rest/releases/releases#list-releases), so plan with that access to see them.
+- Each branch other than the default branch that is the head of no pull request, that stands at another commit than the head its pull request ends with, or that is the head of a merged pull request in a source that deletes head branches on merge, since `replay.py` turns that deletion on in the target.
+
+It stops, and writes no event file, unless a file given to `--leave-behind` accepts each of them with a line of its kind and its name; a `#` after the name starts a comment. In a run file of `replay.py`, the same lines stand in `leave_behind`. The message it stops with gives each line to accept, with its reason as such a comment, so that you can copy the lines you accept into the file. This is the message for the test's source with two tags, two releases and two branches the replay does not carry:
+
+```
+plan-replay.py: the replay leaves behind 6 of the source's tags, releases and branches that --leave-behind does not accept (leave_behind, in a run file of replay.py). Accept each with its line, so that only the archive of the source keeps it:
+  branch   docs/5-notes  # at c06a6b4; the replay pushes the head of #5, 59b6f32, under its name
+  branch   wip/idea      # at bee64c6, the head of no pull request
+  tag      v0.1          # lightweight, at 91dcb27; the replay pushes no tags
+  tag      v0.2          # annotated, at bee64c6; the replay pushes no tags
+  release  v0.2          # published, named 'Second'; the replay creates no releases
+  release  v0.3          # draft, named 'Next'; the replay creates no releases
+```
+
+To accept, say, the tag `v0.1` and the branch `wip/idea`, plan again with them in a file:
+
+```sh
+printf '%s\n' 'tag v0.1' 'branch wip/idea' >~/replay-leave-behind
+python3 replay/plan-replay.py --leave-behind ~/replay-leave-behind "$mirror" tiavelum/github-rewriter ~/rewrite-mailmap "${mirror%.git}-left.jsonl"
+```
+
+It warns of a line that names nothing it leaves behind. The event file's header records what it left behind, so that [Comparing the replay with its source](#comparing-the-replay-with-its-source) notes each as left behind rather than naming it a difference, and step 8 of `replay.py` names them beside the commands that archive the source.
 
 ## Running a replay
 
@@ -354,7 +383,7 @@ Next to it lies the work repository, with `.work.git` for `.state.json`: a bare 
 - **Hashes**: in every title, body, comment and commit message, a hash of 7 to 40 lowercase hexadecimal characters that is the prefix of exactly one source commit already recreated becomes the prefix of the same length of the new hash.
 - **Branches**: each pull request's branch stays, also after its merge, unless the target deletes head branches on merge.
 
-The target does not get the original times and authors: every item, comment and merge is by the account that runs the replay, at the time of the replay; `--with-times` keeps the creation time in the text. Nor does it get reactions, reviews, review comments, milestones or projects, which the plan does not read, or an item's history between its creation and its final state. References to items, in this repository or another, and `@` mentions act again: GitHub adds them to the timeline of the item named, and notifies the person mentioned.
+The target does not get the original times and authors: every item, comment and merge is by the account that runs the replay, at the time of the replay; `--with-times` keeps the creation time in the text. Nor does it get reactions, reviews, review comments, milestones or projects, which the plan does not read, an item's history between its creation and its final state, or the tags, releases and branches [What a replay leaves behind](#what-a-replay-leaves-behind) lists. References to items, in this repository or another, and `@` mentions act again: GitHub adds them to the timeline of the item named, and notifies the person mentioned.
 
 ## Comparing the replay with its source
 
@@ -373,8 +402,9 @@ It needs `gh` signed in with read access to the source and the target, reads Git
 - **Recreated commits**: each commit the state file records, in the target and with the tree of its source commit.
 - **Branches**: the default branch and each pull request's branch, at the head the state file records, without those of merged pull requests where the target deletes head branches on merge.
 - **Pull request heads**: the head of each pull request, `refs/pull/<number>/head`, at the head the state file records, also where its branch is deleted.
+- **Tags, releases and branches of the source**: each branch and tag of the mirror in the target at the commit recreated from the one it names, and each release of the source in the target, read from the mirror and from GitHub rather than from the plan; one the target lacks, or holds at another commit, is a note where the event file's header lists it as left behind, as [What a replay leaves behind](#what-a-replay-leaves-behind) describes, and a difference otherwise. A tag or release of the target that the source lacks is a difference.
 
-It prints the totals, then notes, which are no differences: who authored the merges, and each branch the target keeps that the source no longer has, which [Taking over the source's name](#taking-over-the-sources-name) deletes. This is its output for the test's replay of `ada-example/tool`:
+It prints the totals, then notes, which are no differences: who authored the merges, each branch the target keeps that the source no longer has, which [Taking over the source's name](#taking-over-the-sources-name) deletes, and each tag, release and branch the plan left behind, as `tag v0.1 of the source is left behind, as planned`. This is its output for the test's replay of `ada-example/tool`:
 
 ```
 Compared ada-example/tool with ada-example/tool-replay-20261116-1215:
@@ -386,6 +416,8 @@ Compared ada-example/tool with ada-example/tool-replay-20261116-1215:
   recreated commits              12
   branches                        4
   pull request heads              3
+  tags                            0
+  releases                        0
 Notes:
   merges authored by Ada Example <ada@example.com>
   branch docs/5-notes stays in the target; the source no longer has it
@@ -402,6 +434,12 @@ It exits with 0 where it finds no difference. Otherwise it ends with `Difference
   #6, comment 1: the body differs; it has a footer the source lacks
   branch fix/3-parser is missing in the target
   #3: the pull request head is bac0273, the state file's 8ad4614
+```
+
+And this is one of the lines for the same target compared with a source that also has a tag `v0.1`, which the plan did not leave behind:
+
+```
+  tag v0.1 of the source is missing in the target
 ```
 
 Where the state file records the replay unfinished, or belongs to another event file or target, it compares nothing and exits with 2. It cannot see the source's secrets, variables, webhooks, deploy keys and collaborators; check those yourself before the source is archived.
@@ -518,7 +556,7 @@ The event file holds JSON Lines: the header on the first line, then one event pe
 
 | `kind` | Means | Fields |
 |---|---|---|
-| `header` | The first line, no event | `format` (1), `source`, `default_branch`, and `source_commits`: the hash of every source commit the replay recreates, so that later text can be pointed at the new hashes |
+| `header` | The first line, no event | `format` (1), `source`, `default_branch`, and `source_commits`: the hash of every source commit the replay recreates, so that later text can be pointed at the new hashes; and `left_behind`: each tag, release and branch the replay leaves behind, with its `kind`, `name`, `sha`, the commit it names or `null` for a release, and `reason` |
 | `create-label` | Create a label | `name`, `color`, `description` |
 | `push-commits` | Push commits directly to the default branch | `branch`, `commits` |
 | `push-branch` | Push the branch of pull request `number` | `number`, `branch`, `source_branch`, `base_commit`, the source commit it starts on, `commits` |
@@ -535,6 +573,7 @@ Events follow the original times, with these constraints: items are created stri
 ## Known limits
 
 - Review comments, reviews, reactions, milestones and projects are not read.
+- Tags, releases and branches without a pull request are not carried; the plan stops at each until it is accepted as left behind, as [What a replay leaves behind](#what-a-replay-leaves-behind) describes.
 - An item is replayed in its final state: one reopened and closed again is closed once, with its labels and assignees as they are now.
 - A pull request without commits of its own, or one whose base is not the default branch, is planned with a warning, since GitHub may refuse to create it; the run then stops at it.
 - A Ctrl-C reaches a running `git` too; the run then stops in the middle of the event, which the next run checks and finishes.
