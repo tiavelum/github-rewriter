@@ -287,14 +287,31 @@ Where the state file records the replay unfinished, or belongs to another event 
 
 Once the replay is checked, give it the source's name, so that links to the source's items reach the replayed ones under the same numbers.
 
-First move what a replay does not carry and an archive no longer lets you change: where an item of the source is a sub-issue of an issue elsewhere, link the replayed item and unlink the source's, since GitHub refuses to remove a sub-issue of an archived repository. For an item `N` of the source whose parent is `owner/other#P`:
+First move what a replay does not carry and an archive no longer lets you change: where an item of the source is a sub-issue of an issue elsewhere, link the replayed item in its place and unlink the source's, since GitHub refuses to remove a sub-issue of an archived repository. For an item `N` of the source whose parent is `owner/other#P`, list the parent's sub-issues in their order, each with its id:
 
 ```sh
+gh api --paginate repos/owner/other/issues/P/sub_issues --jq '.[] | "\(.id) \(.title)"'
+```
+
+Find the source's item in that list and note the id of the sub-issue just before it. If it is the first, note the id of the one after it; if it is the only one, skip the move. A new link lands at the end of the parent's list, so link the replayed item, move it, and unlink the source's item, with the id you noted in place of `3512345678`:
+
+```sh
+prev=3512345678
 id=$(gh api repos/tiavelum/mac-config-new/issues/N --jq .id)
 old=$(gh api repos/tiavelum/mac-config/issues/N --jq .id)
 gh api -X POST repos/owner/other/issues/P/sub_issues -F sub_issue_id=$id
+gh api -X PATCH repos/owner/other/issues/P/sub_issues/priority -F sub_issue_id=$id -F after_id=$prev
 gh api -X DELETE repos/owner/other/issues/P/sub_issue -F sub_issue_id=$old
 ```
+
+For a first place, put the id of the following sub-issue in `next` and replace the PATCH line with:
+
+```sh
+next=3512345678
+gh api -X PATCH repos/owner/other/issues/P/sub_issues/priority -F sub_issue_id=$id -F before_id=$next
+```
+
+List the parent's sub-issues again with the first command: the replayed item stands where the source's item stood. [GitHub's REST API for sub-issues](https://docs.github.com/en/rest/issues/sub-issues) names `after_id` and `before_id` for the place and asks for the Issues repository permission with write access in the parent's repository for the three changing calls.
 
 Then archive the source under a new name first, since its issues, pull requests and comments exist nowhere else, then rename the replay; for `tiavelum/mac-config` replayed into `tiavelum/mac-config-new`:
 
