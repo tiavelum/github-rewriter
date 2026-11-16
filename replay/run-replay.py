@@ -122,6 +122,27 @@ def git_date(stamp):
     return f"{int(moment.timestamp())} {sign}{abs(minutes) // 60:02}{abs(minutes) % 60:02}"
 
 
+def now_date():
+    """The time of a recreation as git's raw date, in the machine's offset:
+    SOURCE_DATE_EPOCH where it is set, as reproducible builds set a fixed
+    time, else the clock. A value that is no whole number of seconds, an empty
+    one included, stops the run, as the specification of SOURCE_DATE_EPOCH
+    advises."""
+    fixed = os.environ.get("SOURCE_DATE_EPOCH")
+    seconds = int(time.time())
+    if fixed is not None:
+        if not re.fullmatch(r"[0-9]+", fixed.strip()):
+            raise ReplayError(f"SOURCE_DATE_EPOCH is {fixed!r}, not a whole number of seconds")
+        seconds = int(fixed)
+    try:
+        offset = datetime.fromtimestamp(seconds).astimezone().utcoffset()
+    except (OverflowError, OSError, ValueError):
+        raise ReplayError(f"SOURCE_DATE_EPOCH {fixed!r} is no time this machine can date") from None
+    minutes = int(offset.total_seconds()) // 60
+    sign = "-" if minutes < 0 else "+"
+    return seconds, f"{sign}{abs(minutes) // 60:02}{abs(minutes) % 60:02}"
+
+
 def parse_response(out):
     """Status, headers and JSON body of what gh api --include printed."""
     if not out.startswith("HTTP/"):
@@ -319,6 +340,10 @@ class Replay:
         }
         self.done, self.highest, self.head = 0, 0, None
         self.hashes, self.numbers, self.heads, self.urls = {}, {}, {}, {}
+        # The committer date each recreated commit got, by source commit; None
+        # for a run started before committer dates were the time of the replay,
+        # which keeps the original ones so that it resumes.
+        self.committer_dates = {}
         self.finished, self.resumed_at, self.closing = False, None, (0.0, set())
         self.stopping, self.current = False, None
         self.counts = {}
@@ -348,6 +373,7 @@ class Replay:
                 )
         self.done, self.highest, self.head = state["done"], state["highest"], state["head"]
         self.hashes = state["hashes"]
+        self.committer_dates = state.get("committer_dates")
         self.numbers = {int(k): v for k, v in state["numbers"].items()}
         self.heads = {int(k): v for k, v in state["heads"].items()}
         self.urls = {int(k): v for k, v in state["urls"].items()}
@@ -372,6 +398,8 @@ class Replay:
             "urls": {str(k): v for k, v in sorted(self.urls.items())},
             "hashes": self.hashes,
         }
+        if self.committer_dates is not None:
+            state["committer_dates"] = self.committer_dates
         partial = self.state_path.with_name(self.state_path.name + ".partial")
         with partial.open("w", encoding="utf-8") as file:
             json.dump(state, file, indent=1)
@@ -705,7 +733,7 @@ class Replay:
             GIT_AUTHOR_DATE=git_date(a["date"]),
             GIT_COMMITTER_NAME=c["name"],
             GIT_COMMITTER_EMAIL=c["email"],
-            GIT_COMMITTER_DATE=git_date(c["date"]),
+            GIT_COMMITTER_DATE=self.committer_date(commit, parents),
         )
         signed = self.sign is not None and c["email"] == self.sign
         args = ["commit-tree", commit["tree"]]
@@ -729,6 +757,24 @@ class Replay:
             )
         self.hashes[commit["sha"]] = sha
         return sha, signed
+
+    def committer_date(self, commit, parents):
+        """The committer date of a recreated commit, as after a rebase: the time
+        of its recreation, but no earlier than the committer date of a parent,
+        since GitHub's clock dates the merges; the one the state file records,
+        where an earlier run recreated the commit; the original one in a run
+        whose state file predates such dates."""
+        if self.committer_dates is None:
+            return git_date(commit["committer"]["date"])
+        recorded = self.committer_dates.get(commit["sha"])
+        if recorded:
+            return recorded
+        seconds, offset = now_date()
+        for parent in parents:
+            seconds = max(seconds, int(git(self.work, "show", "-s", "--format=%ct", parent)))
+        date = f"{seconds} {offset}"
+        self.committer_dates[commit["sha"]] = date
+        return date
 
     def recreate_all(self, e):
         """Recreates the commits of a push event and records their hashes before
@@ -1003,6 +1049,10 @@ class Replay:
         resumed = self.load_state()
         if self.sign:
             self.check_signing()
+        if self.committer_dates is not None:
+            # A SOURCE_DATE_EPOCH the run cannot use stops it here, before the
+            # confirmation, not in the middle of an event.
+            now_date()
         highest, refs = self.read_target()
         self.check_target(resumed, highest, refs)
         # Labels the target has, such as GitHub's defaults, are changed only before the first event.

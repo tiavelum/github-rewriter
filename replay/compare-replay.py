@@ -223,6 +223,9 @@ class Comparison:
                 f" {len(self.events)}; finish it with run-replay.py first"
             )
         self.hashes, self.final_name = state["hashes"], state.get("final_name")
+        # None for a run started before committer dates were the time of the
+        # replay, whose commits keep their original committer dates.
+        self.committer_dates = state.get("committer_dates")
         self.heads = {int(k): v for k, v in state["heads"].items()}
         self.urls = {int(k): v for k, v in state["urls"].items()}
         self.sources = sorted(set(self.header["source_commits"]))
@@ -434,7 +437,10 @@ class Comparison:
                     )
                 for role in ("author", "committer"):
                     p, got = step[role], tgt[t][role]
-                    want = {"name": p["name"], "email": p["email"], "date": git_date(p["date"])}
+                    date = git_date(p["date"])
+                    if role == "committer" and self.committer_dates is not None:
+                        date = self.committer_dates.get(s, "no date in the state file")
+                    want = {"name": p["name"], "email": p["email"], "date": date}
                     if got != want:
                         self.differ(
                             f"{at}: {role} {got['name']} <{got.get('email')}> {got.get('date')},"
@@ -470,6 +476,31 @@ class Comparison:
             if sha not in self.hashes:
                 self.differ(f"the state file records no recreated commit for {sha[:7]}")
         self.totals.append(("recreated commits", len(pairs)))
+        if self.committer_dates is not None:
+            self.committed_in_order(
+                work, [c["sha"] for e in self.events for c in e.get("commits", [])]
+            )
+
+    def committed_in_order(self, work, sources):
+        """No commit the replay recreated is committed before one of its parents,
+        as after a rebase."""
+        pairs = [(s, self.hashes[s]) for s in sources if s in self.hashes]
+        found = read_commits(work, [sha for _, sha in pairs])
+        parents = sorted({p for _, sha in pairs if sha in found for p in found[sha]["parents"]})
+        dates = {**found, **read_commits(work, parents)}
+
+        def seconds(sha):
+            return int(dates[sha]["committer"]["date"].split()[0])
+
+        for source, sha in pairs:
+            if sha not in found:
+                continue
+            for parent in found[sha]["parents"]:
+                if parent in dates and seconds(sha) < seconds(parent):
+                    self.differ(
+                        f"the recreated commit {sha[:7]} of {source[:7]} is committed before its"
+                        f" parent {parent[:7]}"
+                    )
 
     def branches(self, refs, info):
         """The default branch and each pull request's branch, except the merged
