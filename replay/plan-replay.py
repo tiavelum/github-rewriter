@@ -4,15 +4,25 @@ commits from a mirror and the issues, pull requests, comments and labels from
 GitHub, and writes the ordered events that run-replay.py applies.
 
   plan-replay.py [--types <file>] [--no-types] [--keep-merges]
+                 [--leave-behind <file>]
                  <mirror> <owner/repo> <mailmap> <event file>
 
 <mirror> is a bare clone with refs/pull/*/head, as backup-mirror.sh makes.
 <mailmap> maps the author and committer of every commit, in git's mailmap
 format. <event file> must not exist yet; it gets JSON Lines: a header that
-lists every source commit the replay recreates, then one event per line, in
-the order run-replay.py applies them. Reads GitHub through gh api with GET
-requests only. Prints every title it changed, every squash message it
-wrote, and the totals.
+lists every source commit the replay recreates and what it leaves behind,
+then one event per line, in the order run-replay.py applies them. Reads
+GitHub through gh api with GET requests only. Prints every title it
+changed, every squash message it wrote, what it leaves behind, and the
+totals.
+
+The replay carries no tag and no release, and no branch other than the
+default branch and those it pushes for pull requests at their source tips.
+The plan stops, and writes no event file, unless the <file> of
+--leave-behind accepts each of them with a line of its kind and name:
+  tag      v1.0
+  release  v1.0
+  branch   wip/idea  # a "#" after the name starts a comment
 
 Each commit title and pull request title without a type gets one: from
 --types, else from the prefix of the pull request's branch, else guessed
@@ -188,6 +198,32 @@ class Mirror:
     def diff_files(self, base, head):
         return self.lines("diff", "--name-only", base, head)
 
+    def refs(self, prefix):
+        """The refs under prefix by their short names, each with the object
+        it names, whether that is a tag object, and the object it peels to
+        through every tag, with that object's type."""
+        out = self.git(
+            "for-each-ref", "--format=%(refname)%09%(objectname)%09%(objecttype)", prefix
+        )
+        # Only a newline ends a line: git allows other Unicode breaks in a name.
+        listed = [line.split("\t") for line in out.split("\n") if line]
+        # A tag of a tag peels one level in %(*objectname), so peel with ^{}.
+        peeled = self.git(
+            "cat-file",
+            "--batch-check=%(objectname) %(objecttype)",
+            stdin="".join(f"{name}^{{}}\n" for name, _, _ in listed),
+        ).splitlines()
+        found = {}
+        for (name, sha, kind), line in zip(listed, peeled, strict=True):
+            target, target_type = line.split()
+            found[name[len(prefix) :]] = {
+                "sha": sha,
+                "annotated": kind == "tag",
+                "peeled": target,
+                "type": target_type,
+            }
+        return found
+
 
 class Overrides:
     """The types --types sets, by pull request number and by commit hash
@@ -258,6 +294,97 @@ class Overrides:
                 if ("summary", n) not in self.used
             ),
         ]
+
+
+class LeaveBehind:
+    """The tags, releases and branches --leave-behind accepts the replay
+    leaves behind, as (kind, name)."""
+
+    KINDS = ("tag", "release", "branch")
+
+    def __init__(self, path):
+        self.path, self.accepted = path, set()
+        if path is None:
+            return
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError as error:
+            die(f"cannot read {path}: {error.strerror}")
+        for count, line in enumerate(text.split("\n"), 1):
+            # Only spaces and tabs part the fields, and only a newline ends a
+            # line: git allows other Unicode blanks and breaks in a ref's name.
+            fields = [f for f in re.split(r"[ \t]+", line.rstrip("\r")) if f]
+            if not fields or fields[0].startswith("#"):
+                continue
+            # A name holds no space, so a "#" after one starts a comment, as in
+            # the lines the plan prints where it stops.
+            if len(fields) > 2 and fields[2].startswith("#"):
+                fields = fields[:2]
+            if len(fields) != 2 or fields[0] not in self.KINDS:
+                die(f"{path}:{count}: expected one of {', '.join(self.KINDS)} and a name")
+            self.accepted.add((fields[0], fields[1]))
+
+    def check(self, left):
+        """Stops at what the replay leaves behind and the file does not
+        accept; warns of what the file accepts and the replay carries or
+        the source lacks."""
+        found = {(x["kind"], x["name"]) for x in left}
+        for kind, name in sorted(self.accepted - found):
+            warn(f"{self.path} accepts {kind} {name}, which the replay does not leave behind")
+        missing = [x for x in left if (x["kind"], x["name"]) not in self.accepted]
+        if missing:
+            width = max(len(x["name"]) for x in missing)
+            lines = "\n".join(
+                f"  {x['kind']:<8} {x['name']:<{width}}  # {x['reason']}" for x in missing
+            )
+            die(
+                f"the replay leaves behind {len(missing)} of the source's tags, releases and"
+                " branches that --leave-behind does not accept (leave_behind, in a run file of"
+                " replay.py). Accept each with its line, so that only the archive of the source"
+                f" keeps it:\n{lines}"
+            )
+
+
+def left_behind(mirror, info, releases, events):
+    """The tags, releases and branches of the source that the replay does not
+    carry, each with its kind, name, the commit it names and why."""
+    default = info["default_branch"]
+    deletes = bool(info.get("delete_branch_on_merge"))
+    merged = {e["number"] for e in events if e["kind"] == "merge-pull"}
+    pushed = {}
+    for e in events:
+        if e["kind"] == "push-branch":
+            head = e["commits"][-1]["sha"] if e["commits"] else e["base_commit"]
+            pushed[e["branch"]] = (e["number"], head)
+    left = []
+    for name, ref in sorted(mirror.refs("refs/heads/").items()):
+        tip = ref["sha"]
+        if name == default:
+            continue
+        if name not in pushed:
+            reason = f"at {tip[:7]}, the head of no pull request"
+        elif pushed[name][1] != tip:
+            n, head = pushed[name]
+            reason = f"at {tip[:7]}; the replay pushes the head of #{n}, {head[:7]}, under its name"
+        elif deletes and pushed[name][0] in merged:
+            reason = (
+                f"the head of #{pushed[name][0]}, which the replay deletes on its merge, as the"
+                " source deletes head branches"
+            )
+        else:
+            continue
+        left.append({"kind": "branch", "name": name, "sha": tip, "reason": reason})
+    for name, ref in sorted(mirror.refs("refs/tags/").items()):
+        sha = ref["peeled"]
+        kind = "annotated" if ref["annotated"] else "lightweight"
+        at = sha[:7] if ref["type"] == "commit" else f"the {ref['type']} {sha[:7]}"
+        reason = f"{kind}, at {at}; the replay pushes no tags"
+        left.append({"kind": "tag", "name": name, "sha": sha, "reason": reason})
+    for r in sorted(releases, key=lambda r: r["tag_name"]):
+        what = "draft" if r.get("draft") else "pre-release" if r.get("prerelease") else "published"
+        reason = f"{what}, named {r.get('name') or r['tag_name']!r}; the replay creates no releases"
+        left.append({"kind": "release", "name": r["tag_name"], "sha": None, "reason": reason})
+    return left
 
 
 def branch_type(ref):
@@ -381,7 +508,8 @@ def join_direct_pushes(events):
 
 
 def plan(mirror, repo, overrides, typed=True, keep_merges=False):
-    default = gh_get(f"repos/{repo}")["default_branch"]
+    info = gh_get(f"repos/{repo}")
+    default = info["default_branch"]
     labels = gh_pages(f"repos/{repo}/labels")
     items = {i["number"]: i for i in gh_pages(f"repos/{repo}/issues?state=all")}
     pulls = {p["number"]: p for p in gh_pages(f"repos/{repo}/pulls?state=all")}
@@ -685,7 +813,8 @@ def plan(mirror, repo, overrides, typed=True, keep_merges=False):
             source_id=c["id"],
         )
 
-    return default, events
+    left = left_behind(mirror, info, gh_pages(f"repos/{repo}/releases"), events)
+    return default, events, left
 
 
 def review(events):
@@ -716,7 +845,7 @@ def written_messages(events):
 def main(argv):
     if argv[:1] in (["-h"], ["--help"]):
         usage(0)
-    types, typed, keep_merges = None, True, False
+    types, typed, keep_merges, leave = None, True, False, None
     while argv[:1] and argv[0].startswith("--"):
         option, argv = argv[0], argv[1:]
         if option == "--types" and argv:
@@ -725,6 +854,8 @@ def main(argv):
             typed = False
         elif option == "--keep-merges":
             keep_merges = True
+        elif option == "--leave-behind" and argv:
+            leave, argv = Path(argv[0]), argv[1:]
         else:
             usage()
     if len(argv) != 4 or argv[0].startswith("-"):
@@ -741,9 +872,11 @@ def main(argv):
     if not output.parent.is_dir():
         die(f"no folder {output.parent} for the event file")
     overrides = Overrides(types)
+    accepted = LeaveBehind(leave)
 
     mirror = Mirror(mirror_path, mailmap.resolve())
-    default, events = plan(mirror, repo, overrides, typed, keep_merges)
+    default, events, left = plan(mirror, repo, overrides, typed, keep_merges)
+    accepted.check(left)
     events = join_direct_pushes(order(events))
     for unused in overrides.unused(typed):
         warn(f"{types} sets {unused}")
@@ -765,6 +898,7 @@ def main(argv):
         "source": repo,
         "default_branch": default,
         "source_commits": source_commits,
+        "left_behind": left,
     }
     partial = output.with_name(output.name + ".partial")
     with partial.open("w", encoding="utf-8") as file:
@@ -783,6 +917,11 @@ def main(argv):
         print(f"  {ref}  {first}")
         for line in body.split("\n"):
             print(f"      {line}" if line else "")
+
+    print(f"Left behind: {len(left)}")
+    width = max((len(x["name"]) for x in left), default=0)
+    for x in left:
+        print(f"  {x['kind']:<8} {x['name']:<{width}}  {x['reason']}")
 
     def count(*kinds):
         return sum(e["kind"] in kinds for e in events)
@@ -803,6 +942,7 @@ def main(argv):
         ("events", len(events)),
         ("guessed types", sum(r[3] for r in rows)),
         ("events out of time order", late),
+        ("left behind", len(left)),
     ]
     print("Totals:")
     for name, value in totals:
