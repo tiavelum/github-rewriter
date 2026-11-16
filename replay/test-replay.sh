@@ -464,14 +464,14 @@ pcheck "plan-replay.py records what --leave-behind accepts in the header, and pl
   '[(x["kind"], x["name"]) for x in H["left_behind"]] == [("branch", "docs/5-notes"), ("branch", "wip/idea"), ("tag", "v0.1"), ("tag", "v0.2"), ("release", "v0.2"), ("release", "v0.3")] and [x["sha"] for x in H["left_behind"]] == [S["N1"], S["C5"], S["M2"], S["C5"], None, None] and E == [json.loads(line) for line in open(os.path.join(os.path.dirname(sys.argv[1]), "run.jsonl"), encoding="utf-8").read().splitlines()[1:]]'
 plan_file=$T/events.jsonl
 check "plan-replay.py prints what it leaves behind, counts it, and warns of an accepted line that names nothing it leaves behind" \
-  '[ "$status_extra" = 0 ] && grep -qx "Left behind: 6" "$T/extra-out" && grep -Eqx "  left behind +6" "$T/extra-out" && grep -Eqx "  tag      v0.1          lightweight, at [0-9a-f]{7}; the replay pushes no tags" "$T/extra-out" && grep -qx "plan-replay.py: warning: $T/leave accepts tag v9, which the replay does not leave behind" "$T/extra-err" && [ "$(wc -l <"$T/extra-err")" = 1 ] && grep -qx "Left behind: 0" "$T/plan-out" && grep -Eqx "  left behind +0" "$T/plan-out" || { cat "$T/extra-err" "$T/extra-out"; exit 1; }'
+  '[ "$status_extra" = 0 ] && grep -qx "Left behind: 6" "$T/extra-out" && grep -Eqx "  left behind +6" "$T/extra-out" && grep -Eqx "  tag      v0.1          lightweight, at [0-9a-f]{7}; the replay pushes no tags" "$T/extra-out" && grep -qx "plan-replay.py: warning: .*/leave accepts tag v9, which the replay does not leave behind" "$T/extra-err" && [ "$(wc -l <"$T/extra-err")" -eq 1 ] && grep -qx "Left behind: 0" "$T/plan-out" && grep -Eqx "  left behind +0" "$T/plan-out" || { cat "$T/extra-err" "$T/extra-out"; exit 1; }'
 check "plan-replay.py leaves behind the branch of a merged pull request where the source deletes head branches on merge" \
   '[ "$status_extra_del" = 1 ] && grep -q "^plan-replay.py: the replay leaves behind 8 of" "$T/extra-del-err" && grep -Fqx "  branch   feat/2-thing  # the head of #2, which the replay deletes on its merge, as the source deletes head branches" "$T/extra-del-err" && grep -Fqx "  branch   fix/3-parser  # the head of #3, which the replay deletes on its merge, as the source deletes head branches" "$T/extra-del-err" || { cat "$T/extra-del-err"; exit 1; }'
 grep '^  [a-z]* ' "$T/extra-stop-err" >"$T/leave-pasted"
 plan_extra "$T/api-extra" "$T/extra-pasted.jsonl" --leave-behind "$T/leave-pasted" >"$T/extra-pasted-out" 2>&1
 status_extra_pasted=$?
 check "plan-replay.py takes the lines it prints where it stops, with their comments, as lines of --leave-behind" \
-  '[ "$status_extra_pasted" = 0 ] && [ "$(wc -l <"$T/leave-pasted")" = 6 ] && grep -qx "Left behind: 6" "$T/extra-pasted-out" || { cat "$T/leave-pasted" "$T/extra-pasted-out"; exit 1; }'
+  '[ "$status_extra_pasted" = 0 ] && [ "$(wc -l <"$T/leave-pasted")" -eq 6 ] && grep -qx "Left behind: 6" "$T/extra-pasted-out" || { cat "$T/leave-pasted" "$T/extra-pasted-out"; exit 1; }'
 # A tag of the annotated tag v0.2, a tag of a tree, and a tag whose name holds
 # a no-break space, which git allows.
 mirror_odd=$T/mirror-odd.git
@@ -498,7 +498,7 @@ pcheck "plan-replay.py records the commit a tag of a tag peels to in the header"
   '[x["sha"] for x in H["left_behind"] if (x["kind"], x["name"]) == ("tag", "v0.3")] == [S["C5"]]'
 plan_file=$T/events.jsonl
 check "plan-replay.py refuses a line of --leave-behind other than a kind and a name" \
-  'printf "%s\n" "tags v0.1" >"$T/bad-leave" && ! plan_extra "$T/api-extra" "$T/bad-leave.jsonl" --leave-behind "$T/bad-leave" 2>"$T/bad-leave-err" && grep -qx "plan-replay.py: $T/bad-leave:1: expected one of tag, release, branch and a name" "$T/bad-leave-err" && [ ! -e "$T/bad-leave.jsonl" ] || { cat "$T/bad-leave-err"; exit 1; }'
+  'printf "%s\n" "tags v0.1" >"$T/bad-leave" && ! plan_extra "$T/api-extra" "$T/bad-leave.jsonl" --leave-behind "$T/bad-leave" 2>"$T/bad-leave-err" && grep -qx "plan-replay.py: .*/bad-leave:1: expected one of tag, release, branch and a name" "$T/bad-leave-err" && [ ! -e "$T/bad-leave.jsonl" ] || { cat "$T/bad-leave-err"; exit 1; }'
 
 # The fake gh of the targets: "gh api --include --method M <endpoint>
 # [--input -]" against the target named in $FAKE_GITHUB/name, whose items,
