@@ -2,7 +2,7 @@
 
 How to replay a GitHub repository into a new, empty one with the scripts of this folder, for the owner of both: every commit, issue, pull request, comment and label of the source, so that the target gets them under the same numbers, with mapped identities and typed titles.
 
-Planning reads the source and writes the replay as an event file; it changes nothing on GitHub. Running applies the event file to the target, after you confirm it, and can stop and resume. Each script takes its inputs as arguments; run without arguments, it prints its usage.
+Planning reads the source and writes the replay as an event file; it changes nothing on GitHub. Running applies the event file to the target, after you confirm it, and can stop and resume. Comparing reads the source and the target and names every difference between them; it changes nothing either. Each script takes its inputs as arguments; run without arguments, it prints its usage.
 
 ## Planning a replay
 
@@ -236,6 +236,53 @@ Next to it lies the work repository, with `.work.git` for `.state.json`: a bare 
 
 The target does not get the original times and authors: every item, comment and merge is by the account that runs the replay, at the time of the replay; `--with-times` keeps the creation time in the text. Nor does it get reactions, reviews, review comments, milestones or projects, which the plan does not read, or an item's history between its creation and its final state. References to items, in this repository or another, and `@` mentions act again: GitHub adds them to the timeline of the item named, and notifies the person mentioned.
 
+## Comparing the replay with its source
+
+Once the run has printed the target's URL, compare the target with the source, with the event file, the mirror and the state file of the run; give `--with-times` where the run had it, and `--state` where it had one:
+
+```sh
+python3 replay/compare-replay.py "${mirror%.git}-typed.jsonl" "$mirror" tiavelum/github-rewriter-trial
+```
+
+It needs `gh` signed in with read access to the source and the target, reads GitHub with GET requests only, and fetches the target's commits into a temporary repository, over the protocol `gh config get git_protocol` names, which it deletes at the end. It compares:
+
+- **Items**: each issue and pull request under its number, with its kind, the title the event file plans, its state, its state reason where it is a closed issue, its labels and assignees, and whether it is merged; a number the source lacks has to hold a closed placeholder.
+- **Labels**: each with its colour and description.
+- **Texts**: every body and comment equal to the source's, with each hash of a recreated commit replaced as [What the target ends with](#what-the-target-ends-with) says, and with the original time where `--with-times` is given; where a text ends in a footer the source lacks, it says so.
+- **The default branch**: as many first-parent commits as the source's and as the event file plans, each with the source's tree at the same step and the hash the state file records; each direct commit with its planned message, author and committer and their dates; each merge with its planned message, `{pr_url}` filled as the run filled it, and GitHub as committer. A `Co-authored-by` line that GitHub appends to a merge's message passes; one that stands twice does not.
+- **Recreated commits**: each commit the state file records, in the target and with the tree of its source commit.
+- **Branches**: the default branch and each pull request's branch, at the head the state file records, without those of merged pull requests where the target deletes head branches on merge.
+
+It prints the totals, then notes, which are no differences: who authored the merges, and each branch the target keeps that the source no longer has, which [Taking over the source's name](#taking-over-the-sources-name) deletes. This is its output for the test's replay of `ada-example/tool`:
+
+```
+Compared ada-example/tool with ada-example/tool-new:
+  items                           6
+  labels                          2
+  comments                        4
+  texts with a replaced hash      1
+  commits on main                 7
+  recreated commits              12
+  branches                        4
+Notes:
+  merges authored by Ada Example <ada@example.com>
+  branch docs/5-notes stays in the target; the source no longer has it
+  branch feat/2-thing stays in the target; the source no longer has it
+  branch fix/3-parser stays in the target; the source no longer has it
+No differences
+```
+
+It exits with 0 where it finds no difference. Otherwise it ends with `Differences:` and their number, then one line per difference, and exits with 1; these are four of the lines for a copy of that target with changed data:
+
+```
+  #4 is closed as completed, the source's not_planned
+  label bug: colour ee0701, the source's d73a4a
+  #6, comment 1: the body differs; it has a footer the source lacks
+  branch fix/3-parser is missing in the target
+```
+
+Where the state file records the replay unfinished, or belongs to another event file or target, it compares nothing and exits with 2. It cannot see the source's secrets, variables, webhooks, deploy keys and collaborators; check those yourself before the source is archived.
+
 ## Taking over the source's name
 
 Once the replay is checked, give it the source's name, so that links to the source's items reach the replayed ones under the same numbers.
@@ -329,4 +376,5 @@ Events follow the original times, with these constraints: items are created stri
 |---|---|
 | `plan-replay.py` | Reads the source from a mirror and from GitHub and writes the event file |
 | `run-replay.py` | Applies the event file to an empty target and keeps the state file, so that a stopped run resumes |
+| `compare-replay.py` | Compares the finished target with the source, the event file and the state file, read-only, and names every difference |
 | `test-replay.sh` | Tests the scripts of this folder against a source built in a temporary folder and fake GitHub targets, without contacting GitHub |

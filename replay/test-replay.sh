@@ -430,7 +430,9 @@ status_run_plan=$?
 # requests in one sequence, merges as GitHub does, with GitHub as committer
 # and fixed dates, and closes the issues a merged pull request names with a
 # closing keyword. It logs every call, with its time, in $FAKE_GITHUB/calls
-# and every closing in closes.json. Each FAKE_GH_* variable names a call
+# and every closing in closes.json. It answers a GET of another repository
+# from the files in $FAKE_GH_API, as the fake gh of the source does, and a
+# call without --include with the body alone, as gh does. Each FAKE_GH_* variable names a call
 # "<method> <endpoint>" and acts on its first occurrence: RATE_LIMIT answers
 # 403 with Retry-After: 1 and does nothing, INTERRUPT sends the caller a
 # SIGINT, as a Ctrl-C does, LOSE does the call and answers 502; FAKE_GH_SKIP
@@ -555,6 +557,15 @@ def merge(it, body, items, closes):
     return 200, {"sha": sha, "merged": True, "message": "Pull Request successfully merged"}
 
 
+def from_files(path, q):
+    name = Path(os.environ["FAKE_GH_API"]) / path.replace("/", "_")
+    if "page" in q:
+        page = name.with_name(f"{name.name}-{q['page']}.json")
+        return 200, json.loads(page.read_text()) if page.exists() else []
+    found = name.with_name(name.name + ".json")
+    return (200, json.loads(found.read_text())) if found.exists() else (404, {"message": "Not Found"})
+
+
 def handle(method, endpoint, body):
     path, _, query = endpoint.partition("?")
     q = {k: v[-1] for k, v in parse_qs(query).items()}
@@ -563,6 +574,8 @@ def handle(method, endpoint, body):
         return 200, load(path[len("user/"):], [])[(number - 1) * per:number * per]
     prefix = f"repos/{slug}"
     if path != prefix and not path.startswith(prefix + "/"):
+        if method == "GET" and path.startswith("repos/") and os.environ.get("FAKE_GH_API"):
+            return from_files(path, q)
         return 404, {"message": "Not Found"}
     parts = [unquote(p) for p in path[len(prefix):].split("/") if p]
     items, comments = load("items", {}), load("comments", [])
@@ -582,7 +595,7 @@ def handle(method, endpoint, body):
     if route == ("GET",):
         result = 200, {"full_name": slug, "default_branch": "main", "clone_url": str(repo),
                        "ssh_url": str(repo), "html_url": f"https://github.com/{slug}",
-                       "permissions": {"admin": True, "push": True}}
+                       "permissions": {"admin": True, "push": True}, **load("settings", {})}
     elif route == ("GET", "labels"):
         result = page(labels)
     elif route == ("POST", "labels"):
@@ -635,6 +648,9 @@ def handle(method, endpoint, body):
             if "state" in body:
                 set_state(it, body["state"], body.get("state_reason"), closes)
             result = 200, (issue_view(it) if parts[0] == "issues" else pull_view(it))
+    elif route == ("GET", "issues", "comments"):
+        result = page([{**c, "issue_url": f"https://api.github.com/{prefix}/issues/{c['number']}"}
+                       for c in comments])
     elif route == ("GET", "issues", "N", "comments") and item():
         result = page([c for c in comments if c["number"] == int(parts[1])])
     elif route == ("POST", "issues", "N", "comments") and item():
@@ -669,8 +685,8 @@ while rest:
         refuse(f"argument {arg}")
     else:
         endpoint = arg
-if not include or not endpoint:
-    refuse("a call without --include or an endpoint")
+if not endpoint:
+    refuse("a call without an endpoint")
 body = json.loads(sys.stdin.read()) if has_input else {}
 call = f"{method} {endpoint}"
 with (root / "calls").open("a") as f:
@@ -691,13 +707,16 @@ else:
     if once("FAKE_GH_LOSE", call):
         status, data = 502, {"message": "Server Error"}
 lines = [("Content-Type", "application/json; charset=utf-8"), *headers]
-sys.stdout.write(f"HTTP/1.1 {status} {REASONS[status]}\n" + "".join(f"{k}: {v}\r\n" for k, v in lines) + "\r\n")
+if include:
+    sys.stdout.write(f"HTTP/1.1 {status} {REASONS[status]}\n" + "".join(f"{k}: {v}\r\n" for k, v in lines) + "\r\n")
 if data is not None:
     sys.stdout.write(json.dumps(data))
 if status >= 400:
     sys.exit(f"gh: {data.get('message', '')} (HTTP {status})")
 EOF
 chmod +x "$T/bin-target/gh"
+# The PATH under which the scripts reach the fake gh of the targets.
+target_path=$T/bin-target:$PATH
 
 # target <folder> [<owner/repo>]: an empty target, ada-example/tool-new by
 # default, with two labels as GitHub gives a new repository.
@@ -872,6 +891,53 @@ replay "$T/gh-e" ada-example/tool-e --sign ada.example.com "$T/run.jsonl" "$mirr
 status_bad_sign=$?
 check "run-replay.py refuses a --final-name not of the form owner/repo, a --sign that is no address, and a resume with other options" \
   '[ "$status_bad_name$status_bad_sign$status_e_again" = 221 ] && grep -q "^run-replay.py: .*e.state.json records a run with --final-name ada-example/tool; resume with the same options$" "$T/e-again-out" || { echo "$status_bad_name$status_bad_sign$status_e_again"; cat "$T/e-again-out"; exit 1; }'
+
+# compare-replay.py, against the finished targets of A and E and against a
+# copy of A with five differences. compare <folder> <argument>...: runs it
+# against the target in that folder, with the source's API of the run's plan.
+compare() {
+  folder=$1
+  shift
+  FAKE_GITHUB=$folder FAKE_GH_API=$T/api-run PATH=$target_path python3 "$here/compare-replay.py" "$@"
+}
+writes_before=$(writes "$T/gh-a" | wc -l)
+compare "$T/gh-a" --state "$T/a.state.json" "$T/run.jsonl" "$mirror" ada-example/tool-new >"$T/cmp-a-out" 2>&1
+status_cmp_a=$?
+compare "$T/gh-e" --state "$T/e.state.json" "$T/run.jsonl" "$mirror" ada-example/tool-e >"$T/cmp-e-out" 2>&1
+status_cmp_e=$?
+check "compare-replay.py finds no difference in a finished replay, with --final-name and without, and writes nothing" \
+  '[ "$status_cmp_a$status_cmp_e" = 00 ] && [ "$(tail -n 1 "$T/cmp-a-out")" = "No differences" ] && grep -qx "No differences" "$T/cmp-e-out" && for t in "items +6" "labels +2" "comments +4" "texts with a replaced hash +1" "commits on main +7" "recreated commits +12" "branches +4"; do grep -Eqx "  $t" "$T/cmp-a-out" || { echo "no line \"$t\""; exit 1; }; done && [ "$(writes "$T/gh-a" | wc -l)" -eq "$writes_before" ] && [ ! -e "$T/gh-a/refused" ] || { cat "$T/cmp-a-out" "$T/cmp-e-out"; exit 1; }'
+check "compare-replay.py notes each branch the target keeps and the source no longer has, and who authored the merges" \
+  'for b in docs/5-notes feat/2-thing fix/3-parser; do grep -qx "  branch $b stays in the target; the source no longer has it" "$T/cmp-a-out" || exit 1; done && grep -qx "  merges authored by Ada Example <ada@example.com>" "$T/cmp-a-out" || { cat "$T/cmp-a-out"; exit 1; }'
+
+# The copy of A: #4 closed as completed, a footer on the last comment, the
+# colour of a label, a missing branch, and a last commit on main with the
+# tree of the one before.
+cp -R "$T/gh-a" "$T/gh-diff"
+python3 - "$T/gh-diff" <<'EOF'
+import json, sys
+from pathlib import Path
+root = Path(sys.argv[1])
+def edit(name, change):
+    value = json.loads((root / f"{name}.json").read_text())
+    change(value)
+    (root / f"{name}.json").write_text(json.dumps(value))
+edit("items", lambda items: items["4"].update(state_reason="completed"))
+edit("comments", lambda comments: comments[-1].update(
+    body=comments[-1]["body"] + "\n\n---\n_Generated by [Claude Code](https://claude.ai/code)_"))
+edit("labels", lambda labels: [x.update(color="ee0701") for x in labels if x["name"] == "bug"])
+EOF
+d=$T/gh-diff/repo.git
+git --git-dir="$d" update-ref -d refs/heads/fix/3-parser
+git --git-dir="$d" update-ref refs/heads/main "$(echo "same tree" | git --git-dir="$d" commit-tree "main~1^{tree}" -p main~1)"
+compare "$T/gh-diff" --state "$T/a.state.json" "$T/run.jsonl" "$mirror" ada-example/tool-new >"$T/cmp-diff-out" 2>&1
+status_cmp_diff=$?
+check "compare-replay.py names every difference it finds and exits with 1" \
+  '[ "$status_cmp_diff" = 1 ] && for line in "#4 is closed as completed, the source'"'"'s not_planned" "#6, comment 1: the body differs; it has a footer the source lacks" "label bug: colour ee0701, the source'"'"'s d73a4a" "branch fix/3-parser is missing in the target"; do grep -Fqx "  $line" "$T/cmp-diff-out" || { echo "no line \"$line\""; exit 1; }; done && grep -q "^  main, step 7 ([0-9a-f]\{7\}): tree [0-9a-f]\{7\}, the source'"'"'s [0-9a-f]\{7\}$" "$T/cmp-diff-out" && grep -q "^Differences: [0-9]*$" "$T/cmp-diff-out" || { cat "$T/cmp-diff-out"; exit 1; }'
+compare "$T/gh-c" "$T/run.jsonl" "$mirror" ada-example/tool-c >"$T/cmp-c-out" 2>&1
+status_cmp_c=$?
+check "compare-replay.py refuses a replay that its state file records unfinished" \
+  '[ "$status_cmp_c" = 2 ] && grep -q "^compare-replay.py: .*run.state.json records the replay unfinished, at event [0-9]* of 23; finish it with run-replay.py first$" "$T/cmp-c-out" || { cat "$T/cmp-c-out"; exit 1; }'
 
 # --sign: the checks before the confirmation, which stop a run before it
 # writes anything. nothing_written <folder> <state file>: no write, no ref,
