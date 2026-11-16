@@ -125,10 +125,19 @@ def git_date(stamp):
 def now_date():
     """The time of a recreation as git's raw date, in the machine's offset:
     SOURCE_DATE_EPOCH where it is set, as reproducible builds set a fixed
-    time, else the clock."""
-    fixed = os.environ.get("SOURCE_DATE_EPOCH", "").strip()
-    seconds = int(fixed) if fixed.isdigit() else int(time.time())
-    offset = datetime.fromtimestamp(seconds).astimezone().utcoffset()
+    time, else the clock. A value that is no whole number of seconds, an empty
+    one included, stops the run, as the specification of SOURCE_DATE_EPOCH
+    advises."""
+    fixed = os.environ.get("SOURCE_DATE_EPOCH")
+    seconds = int(time.time())
+    if fixed is not None:
+        if not re.fullmatch(r"[0-9]+", fixed.strip()):
+            raise ReplayError(f"SOURCE_DATE_EPOCH is {fixed!r}, not a whole number of seconds")
+        seconds = int(fixed)
+    try:
+        offset = datetime.fromtimestamp(seconds).astimezone().utcoffset()
+    except (OverflowError, OSError, ValueError):
+        raise ReplayError(f"SOURCE_DATE_EPOCH {fixed!r} is no time this machine can date") from None
     minutes = int(offset.total_seconds()) // 60
     sign = "-" if minutes < 0 else "+"
     return seconds, f"{sign}{abs(minutes) // 60:02}{abs(minutes) % 60:02}"
@@ -1040,6 +1049,10 @@ class Replay:
         resumed = self.load_state()
         if self.sign:
             self.check_signing()
+        if self.committer_dates is not None:
+            # A SOURCE_DATE_EPOCH the run cannot use stops it here, before the
+            # confirmation, not in the middle of an event.
+            now_date()
         highest, refs = self.read_target()
         self.check_target(resumed, highest, refs)
         # Labels the target has, such as GitHub's defaults, are changed only before the first event.

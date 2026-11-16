@@ -1249,8 +1249,37 @@ status_cl=$?
 clock_to=$(date +%s)
 export clock_from clock_to
 target "$T/gh-ce" ada-example/tool-ce
-(SOURCE_DATE_EPOCH=1000000000 && export SOURCE_DATE_EPOCH && replay "$T/gh-ce" ada-example/tool-ce --pace 0 --state "$T/ce.state.json" "$T/run.jsonl" "$mirror" ada-example/tool-ce) >"$T/ce-out" 2>&1
+(SOURCE_DATE_EPOCH=1000000000 TZ=XXX-5:30 && export SOURCE_DATE_EPOCH TZ && replay "$T/gh-ce" ada-example/tool-ce --pace 0 --state "$T/ce.state.json" "$T/run.jsonl" "$mirror" ada-example/tool-ce) >"$T/ce-out" 2>&1
 status_ce=$?
+target "$T/gh-cb" ada-example/tool-cb
+for epoch in "" 1.5 "$(printf '\302\262')" 99999999999999999999; do
+  (SOURCE_DATE_EPOCH=$epoch && export SOURCE_DATE_EPOCH && replay "$T/gh-cb" ada-example/tool-cb --pace 0 --state "$T/cb.state.json" "$T/run.jsonl" "$mirror" ada-example/tool-cb) >>"$T/cb-out" 2>&1
+  echo $? >>"$T/cb-status"
+done
+# LS: a run that started before committer dates were the time of the replay,
+# made by refusing the first push to main once and removing from the state
+# file the dates it records; the resumed run keeps the original dates.
+target "$T/gh-ls" ada-example/tool-ls
+cat >"$T/gh-ls/repo.git/hooks/pre-receive" <<'EOF'
+#!/bin/sh
+grep -q ' refs/heads/main$' || exit 0
+[ ! -e ../refused-once ] || exit 0
+touch ../refused-once
+echo "refused once" >&2
+exit 1
+EOF
+chmod +x "$T/gh-ls/repo.git/hooks/pre-receive"
+replay "$T/gh-ls" ada-example/tool-ls --pace 0 --state "$T/ls.state.json" "$T/run.jsonl" "$mirror" ada-example/tool-ls >"$T/ls-out" 2>&1
+echo $? >"$T/ls-status"
+python3 - "$T/ls.state.json" <<'EOF'
+import json, sys
+state = json.load(open(sys.argv[1]))
+for sha in state.pop("committer_dates"):
+    state["hashes"].pop(sha, None)
+json.dump(state, open(sys.argv[1], "w"))
+EOF
+replay "$T/gh-ls" ada-example/tool-ls --pace 0 --state "$T/ls.state.json" "$T/run.jsonl" "$mirror" ada-example/tool-ls >>"$T/ls-out" 2>&1
+echo $? >>"$T/ls-status"
 python3 - "$T/a.state.json" "$T/old-dates.state.json" <<'EOF'
 import json, sys
 state = json.load(open(sys.argv[1]))
@@ -1307,7 +1336,11 @@ rcheck "run-replay.py gives each recreated commit the machine's time as committe
 check "run-replay.py's replay on the machine's clock passes the comparison" \
   '[ "$status_cl" = 0 ] && FAKE_GITHUB=$T/gh-cl FAKE_GH_API=$T/api-run PATH=$target_path python3 "$here/compare-replay.py" --state "$T/cl.state.json" "$T/run.jsonl" "$mirror" ada-example/tool-cl >"$T/cmp-cl-out" 2>&1 && grep -qx "No differences" "$T/cmp-cl-out" || { cat "$T/cl-out" "$T/cmp-cl-out"; exit 1; }'
 rcheck "run-replay.py commits no recreated commit before its parent, which GitHub's clock may date later" "$T/gh-ce" "$T/ce.state.json" \
-  'git("log", "-1", "--format=%ct", M[S["F1"]]) == git("log", "-1", "--format=%ct", M[S["M2"]]) != "1000000000" and git("log", "-1", "--format=%ct", M[S["C1"]]) == "1000000000"'
+  'git("log", "-1", "--format=%ct", M[S["F1"]]) == git("log", "-1", "--format=%ct", M[S["M2"]]) != "1000000000" and git("log", "-1", "--format=%cd", "--date=raw", M[S["C1"]]) == "1000000000 +0530"'
+check "run-replay.py stops before the confirmation, without a write, at a SOURCE_DATE_EPOCH that is no whole number of seconds" \
+  '[ "$(tr "\n" " " <"$T/cb-status")" = "1 1 1 1 " ] && [ "$(grep -c "^run-replay.py: SOURCE_DATE_EPOCH is .*, not a whole number of seconds$" "$T/cb-out")" = 3 ] && grep -q "^run-replay.py: SOURCE_DATE_EPOCH .* is no time this machine can date$" "$T/cb-out" && ! grep -q "Traceback\|to confirm" "$T/cb-out" && ! writes "$T/gh-cb" || { cat "$T/cb-out"; exit 1; }'
+rcheck "run-replay.py resumes a run started before committer dates were the time of the replay with the original ones, and records none" "$T/gh-ls" "$T/ls.state.json" \
+  'open(os.path.join(sys.argv[5], "ls-status")).read().split() == ["1", "0"] and "committer_dates" not in json.loads(open(sys.argv[2]).read()) and all(git("log", "-1", "--format=%cI", M[S[k]]) == next(c for e in E for c in e.get("commits", []) if c["sha"] == S[k])["committer"]["date"] for k in ("C1", "C3", "F1", "N2"))'
 check "compare-replay.py expects the original committer dates from a state file that predates committer dates at the time of the replay" \
   '[ "$status_cmp_old_dates" = 1 ] && grep -q "^  main, step 1 ([0-9a-f]\{7\}): committer Ada Example <ada@example.com> 1794000000 +0000, planned Ada Example <ada@example.com> 1772359200 +0000$" "$T/cmp-old-dates-out" && ! grep -q "committed before its" "$T/cmp-old-dates-out" || { cat "$T/cmp-old-dates-out"; exit 1; }'
 check "compare-replay.py names a recreated commit that is committed before its parent" \
