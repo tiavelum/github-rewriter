@@ -39,6 +39,10 @@ cat >"$T/global" <<EOF
 	detachedHead = false
 EOF
 export GIT_CONFIG_GLOBAL="$T/global" GIT_CONFIG_NOSYSTEM=1
+# The time run-replay.py gives each recreated commit as committer date, fixed
+# so that two runs build the same hashes; in UTC, so that its offset is +0000.
+SOURCE_DATE_EPOCH=1794000000 TZ=UTC
+export SOURCE_DATE_EPOCH TZ
 unset GIT_DIR GIT_WORK_TREE GIT_TERMINAL_PROMPT
 
 passed=0
@@ -995,8 +999,8 @@ rcheck "run-replay.py gives every issue and pull request the number and title of
   '[(n, it["kind"], it["title"]) for n, it in sorted(items.items())] == [(e["number"], "pull" if e["kind"] == "create-pull" else "issue", e["title"]) for e in E if e["kind"] in ("create-issue", "create-pull")] and sorted(items) == [1, 2, 3, 4, 5, 6]'
 check "run-replay.py leaves the target's default branch with the source's tree after each push and merge" \
   'git --git-dir="$mirror" rev-list --first-parent --reverse --format=%T main | grep -v "^commit" >"$T/trees-source" && git --git-dir="$T/gh-a/repo.git" rev-list --first-parent --reverse --format=%T main | grep -v "^commit" >"$T/trees-target" && [ "$(wc -l <"$T/trees-source")" -eq 7 ] && diff "$T/trees-source" "$T/trees-target"'
-rcheck "run-replay.py pushes commits with the mapped identities, the original dates and the typed messages" "$T/gh-a" "$T/a.state.json" \
-  'git("log", "-1", "--format=%an|%ae|%ad|%cn|%ce|%cd|%s", "--date=raw", M[S["C3"]]) == "Ada Example|ada@example.com|1772712000 +0200|Ada Example|ada@example.com|1772712000 +0200|test: update the tests" and git("log", "-1", "--format=%an|%ae|%cn|%ce|%s", M[S["F1"]]) == "Bob Example|bob@example.com|Bob Example|bob@example.com|fix: repair the parser" and git("rev-parse", "fix/3-parser") == M[S["F1"]] and git("rev-parse", "docs/5-notes^2") == M[S["C5"]] and git("log", "-1", "--format=%B", M[S["C4"]]) == "chore: tidy the scripts\n\nNo change in behaviour."'
+rcheck "run-replay.py pushes commits with the mapped identities, the original author dates, the time of the replay as committer date and the typed messages" "$T/gh-a" "$T/a.state.json" \
+  'git("log", "-1", "--format=%an|%ae|%ad|%cn|%ce|%cd|%s", "--date=raw", M[S["C3"]]) == "Ada Example|ada@example.com|1772712000 +0200|Ada Example|ada@example.com|1794000000 +0000|test: update the tests" and json.loads(open(sys.argv[2]).read())["committer_dates"][S["C3"]] == "1794000000 +0000" and git("log", "-1", "--format=%an|%ae|%cn|%ce|%s", M[S["F1"]]) == "Bob Example|bob@example.com|Bob Example|bob@example.com|fix: repair the parser" and git("rev-parse", "fix/3-parser") == M[S["F1"]] and git("rev-parse", "docs/5-notes^2") == M[S["C5"]] and git("log", "-1", "--format=%B", M[S["C4"]]) == "chore: tidy the scripts\n\nNo change in behaviour."'
 rcheck "run-replay.py squash-merges with the planned message and fills in {pr_url}" "$T/gh-a" "$T/a.state.json" \
   'git("log", "-1", "--format=%B", M[S["M3"]]) == "fix: repair the parser (#3)\n\nThe parser failed on empty input.\n\nhttps://github.com/ada-example/tool-new/pull/3" and git("log", "-1", "--format=%s|%cn", M[S["M2"]]) == "feat: add thing (#2)|GitHub"'
 rcheck "run-replay.py replaces a hash of a recreated commit in a later comment, and nothing else" "$T/gh-a" "$T/a.state.json" \
@@ -1233,6 +1237,81 @@ check "compare-replay.py notes as left behind a pushed branch that the plan left
   '[ "$status_z$status_cmp_z" = 00 ] && grep -qx "No differences" "$T/cmp-z-out" && grep -Fqx "  branch feat/2-thing of the source is left behind, as planned" "$T/cmp-z-out" && grep -Fqx "  branch fix/3-parser of the source is left behind, as planned" "$T/cmp-z-out" || { cat "$T/z-out" "$T/cmp-z-out"; exit 1; }'
 check "compare-replay.py names a tag of a tag, a tag of a tree and a tag whose name holds a no-break space, without a traceback" \
   '[ "$status_cmp_x_odd" = 1 ] && grep -qx "Differences: 3" "$T/cmp-x-odd-out" && for name in v0.3 tree-tag "$nbsp"; do grep -Fqx "  tag $name of the source is missing in the target" "$T/cmp-x-odd-out" || { echo "no line for $name"; exit 1; }; done && ! grep -q Traceback "$T/cmp-x-odd-out" || { cat "$T/cmp-x-odd-out"; exit 1; }'
+
+# Committer dates: CL, a replay on the machine's clock; CE, one whose fixed
+# time lies before the dates the fake gives its merges; and copies of A's
+# state file, one that predates committer dates and one that maps the source
+# commit of #3's branch to a commit made before its parent.
+target "$T/gh-cl" ada-example/tool-cl
+clock_from=$(date +%s)
+(unset SOURCE_DATE_EPOCH && replay "$T/gh-cl" ada-example/tool-cl --pace 0 --state "$T/cl.state.json" "$T/run.jsonl" "$mirror" ada-example/tool-cl) >"$T/cl-out" 2>&1
+status_cl=$?
+clock_to=$(date +%s)
+export clock_from clock_to
+target "$T/gh-ce" ada-example/tool-ce
+(SOURCE_DATE_EPOCH=1000000000 && export SOURCE_DATE_EPOCH && replay "$T/gh-ce" ada-example/tool-ce --pace 0 --state "$T/ce.state.json" "$T/run.jsonl" "$mirror" ada-example/tool-ce) >"$T/ce-out" 2>&1
+status_ce=$?
+python3 - "$T/a.state.json" "$T/old-dates.state.json" <<'EOF'
+import json, sys
+state = json.load(open(sys.argv[1]))
+del state["committer_dates"]
+json.dump(state, open(sys.argv[2], "w"))
+EOF
+compare "$T/gh-a" --state "$T/old-dates.state.json" "$T/run.jsonl" "$mirror" ada-example/tool-new >"$T/cmp-old-dates-out" 2>&1
+status_cmp_old_dates=$?
+cp -R "$T/gh-a" "$T/gh-order"
+early=$(echo "Repair the parser" | GIT_AUTHOR_NAME="Bob Example" GIT_AUTHOR_EMAIL=bob@example.com GIT_AUTHOR_DATE="1000000000 +0000" \
+  GIT_COMMITTER_NAME="Bob Example" GIT_COMMITTER_EMAIL=bob@example.com GIT_COMMITTER_DATE="1000000000 +0000" \
+  git --git-dir="$T/gh-order/repo.git" commit-tree "$(recreated "$F1")^{tree}" -p "$(recreated "$M2")")
+git --git-dir="$T/gh-order/repo.git" update-ref refs/heads/fix/3-parser "$early"
+python3 - "$T/a.state.json" "$T/order.state.json" "$F1" "$early" <<'EOF'
+import json, sys
+state = json.load(open(sys.argv[1]))
+state["hashes"][sys.argv[3]] = sys.argv[4]
+state["committer_dates"][sys.argv[3]] = "1000000000 +0000"
+json.dump(state, open(sys.argv[2], "w"))
+EOF
+compare "$T/gh-order" --state "$T/order.state.json" "$T/run.jsonl" "$mirror" ada-example/tool-new >"$T/cmp-order-out" 2>&1
+status_cmp_order=$?
+export early
+# CK: a replay killed after its push of feat/2-thing, by a hook of the
+# target's repository, and resumed at a later time, which has to rebuild the
+# pushed commits with the committer dates the state file records.
+target "$T/gh-ck" ada-example/tool-ck
+cat >"$T/gh-ck/repo.git/hooks/post-receive" <<'EOF'
+#!/bin/sh
+grep -q ' refs/heads/feat/2-thing$' || exit 0
+[ ! -e ../killed ] || exit 0
+touch ../killed
+pid=$PPID
+while [ "${pid:-1}" -gt 1 ]; do
+  case $(ps -o args= -p "$pid") in
+  *run-replay.py*)
+    kill -9 "$pid"
+    exit 0
+    ;;
+  esac
+  pid=$(ps -o ppid= -p "$pid" | tr -d ' ')
+done
+EOF
+chmod +x "$T/gh-ck/repo.git/hooks/post-receive"
+replay "$T/gh-ck" ada-example/tool-ck --pace 0 --state "$T/ck.state.json" "$T/run.jsonl" "$mirror" ada-example/tool-ck >"$T/ck-out" 2>&1
+echo $? >"$T/ck-status"
+sleep 1
+(SOURCE_DATE_EPOCH=1794009999 && export SOURCE_DATE_EPOCH && replay "$T/gh-ck" ada-example/tool-ck --pace 0 --state "$T/ck.state.json" "$T/run.jsonl" "$mirror" ada-example/tool-ck) >>"$T/ck-out" 2>&1
+echo $? >>"$T/ck-status"
+rcheck "run-replay.py resumes a push its kill interrupted with the committer dates the state file records, and dates the commits after it anew" "$T/gh-ck" "$T/ck.state.json" \
+  'open(os.path.join(sys.argv[5], "ck-status")).read().split() == ["137", "0"] and git("log", "-1", "--format=%ct", M[S["B2"]]) == "1794000000" and git("rev-parse", "feat/2-thing") == M[S["B2"]] and git("log", "-1", "--format=%ct", M[S["C5"]]) == "1794009999"'
+rcheck "run-replay.py gives each recreated commit the machine's time as committer date where SOURCE_DATE_EPOCH is not set" "$T/gh-cl" "$T/cl.state.json" \
+  'int(os.environ["clock_from"]) <= int(git("log", "-1", "--format=%ct", M[S["C3"]])) <= int(os.environ["clock_to"]) and git("log", "-1", "--format=%ad", "--date=raw", M[S["C3"]]) == "1772712000 +0200"'
+check "run-replay.py's replay on the machine's clock passes the comparison" \
+  '[ "$status_cl" = 0 ] && FAKE_GITHUB=$T/gh-cl FAKE_GH_API=$T/api-run PATH=$target_path python3 "$here/compare-replay.py" --state "$T/cl.state.json" "$T/run.jsonl" "$mirror" ada-example/tool-cl >"$T/cmp-cl-out" 2>&1 && grep -qx "No differences" "$T/cmp-cl-out" || { cat "$T/cl-out" "$T/cmp-cl-out"; exit 1; }'
+rcheck "run-replay.py commits no recreated commit before its parent, which GitHub's clock may date later" "$T/gh-ce" "$T/ce.state.json" \
+  'git("log", "-1", "--format=%ct", M[S["F1"]]) == git("log", "-1", "--format=%ct", M[S["M2"]]) != "1000000000" and git("log", "-1", "--format=%ct", M[S["C1"]]) == "1000000000"'
+check "compare-replay.py expects the original committer dates from a state file that predates committer dates at the time of the replay" \
+  '[ "$status_cmp_old_dates" = 1 ] && grep -q "^  main, step 1 ([0-9a-f]\{7\}): committer Ada Example <ada@example.com> 1794000000 +0000, planned Ada Example <ada@example.com> 1772359200 +0000$" "$T/cmp-old-dates-out" && ! grep -q "committed before its" "$T/cmp-old-dates-out" || { cat "$T/cmp-old-dates-out"; exit 1; }'
+check "compare-replay.py names a recreated commit that is committed before its parent" \
+  '[ "$status_cmp_order" = 1 ] && grep -Fqx "  the recreated commit $(echo "$early" | cut -c1-7) of $(echo "$F1" | cut -c1-7) is committed before its parent $(recreated "$M2" | cut -c1-7)" "$T/cmp-order-out" || { cat "$T/cmp-order-out"; exit 1; }'
 
 # --sign: the checks before the confirmation, which stop a run before it
 # writes anything. nothing_written <folder> <state file>: no write, no ref,
