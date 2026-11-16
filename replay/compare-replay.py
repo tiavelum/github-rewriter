@@ -351,8 +351,24 @@ class Comparison:
             "+refs/heads/*:refs/heads/*",
             "+refs/pull/*/head:refs/pull/*/head",
         )
-        refs = git(work, "for-each-ref", "--format=%(refname) %(objectname)", "refs/heads/")
+        refs = git(
+            work, "for-each-ref", "--format=%(refname) %(objectname)", "refs/heads/", "refs/pull/"
+        )
         return dict(line.split() for line in refs.splitlines())
+
+    def pull_heads(self, refs):
+        """The head of each pull request, which stays where its branch is deleted."""
+        pushed = [e["number"] for e in self.events if e["kind"] == "push-branch"]
+        for n in pushed:
+            sha, recorded = refs.get(f"refs/pull/{n}/head"), self.heads.get(n)
+            if sha is None:
+                self.differ(f"#{n}: the pull request has no head in the target")
+            elif sha != recorded:
+                self.differ(
+                    f"#{n}: the pull request head is {sha[:7]}, the state file's"
+                    f" {(recorded or '?')[:7]}"
+                )
+        self.totals.append(("pull request heads", len(pushed)))
 
     def main_branch(self, work, info):
         """The default branch, step by step: tree, message and identities as planned."""
@@ -440,7 +456,11 @@ class Comparison:
     def branches(self, refs, info):
         """The default branch and each pull request's branch, except the merged
         ones where the target deletes head branches on merge."""
-        found = {ref[len("refs/heads/") :]: sha for ref, sha in refs.items()}
+        found = {
+            ref[len("refs/heads/") :]: sha
+            for ref, sha in refs.items()
+            if ref.startswith("refs/heads/")
+        }
         merged = {e["number"] for e in self.events if e["kind"] == "merge-pull"}
         deletes = bool(info.get("delete_branch_on_merge"))
         expected = {self.default}
@@ -485,6 +505,7 @@ class Comparison:
             self.main_branch(work, target_info)
             self.recreated(work)
             self.branches(refs, target_info)
+            self.pull_heads(refs)
 
         print(f"Compared {self.source} with {self.slug}:")
         for name, value in self.totals:

@@ -375,26 +375,57 @@ class OneCommand:
             if "pull_request" in issue:
                 continue
             n = issue["number"]
-            status, parent = self.api.call("GET", f"repos/{self.source}/issues/{n}/parent")
-            if status == 200 and parent and repo_of(parent).lower() != self.source.lower():
-                self.outside.append((n, issue["id"], repo_of(parent), parent["number"]))
-            elif status not in (200, 404):
+            # The issue object names its parent; GitHub documents no answer of
+            # .../parent for an issue without one.
+            if "parent_issue_url" not in issue:
                 raise ReplayError(
-                    f"GET the parent of #{n} answered HTTP {status}: {message_of(parent)}"
+                    f"GitHub's issue #{n} of {self.source} has no field parent_issue_url, so"
+                    " replay.py cannot tell whether it is a sub-issue"
                 )
+            if issue["parent_issue_url"]:
+                parent = self.api.expect("GET", f"repos/{self.source}/issues/{n}/parent")
+                if repo_of(parent).lower() != self.source.lower():
+                    self.outside.append((n, issue["id"], repo_of(parent), parent["number"]))
             if (issue.get("sub_issues_summary") or {"total": 1})["total"]:
                 children = self.api.pages(f"repos/{self.source}/issues/{n}/sub_issues")
                 if children:
                     self.parents.append((n, [(repo_of(c), c["number"], c["id"]) for c in children]))
+        self.check_owners()
+
+    def check_owners(self):
+        """GitHub links a sub-issue only to a parent of the same owner, so each
+        repository a link of the replay reaches has to belong to the target's."""
+        owner = self.target.split("/")[0]
+        crossing = [
+            f"#{n} under {repo}#{p}"
+            for n, _, repo, p in self.outside
+            if repo.split("/")[0].lower() != owner.lower()
+        ]
+        crossing += [
+            f"{repo}#{c} under #{n}"
+            for n, children in self.parents
+            for repo, c, _ in children
+            if repo.lower() != self.source.lower() and repo.split("/")[0].lower() != owner.lower()
+        ]
+        if crossing:
+            raise ReplayError(
+                f"GitHub links a sub-issue only to a parent of the same owner, and the target's"
+                f" owner is {owner}: {'; '.join(crossing)}. Move or remove these links in the"
+                " source first, or take this step by hand after the replay"
+            )
 
     def describe_links(self):
         lines = [
-            f"#{n} under {repo}#{p}: the replay's #{n} takes the place of the source's"
+            f"#{n}: in {repo}#{p}, links the replay's #{n} in the place of the source's and"
+            f" unlinks the source's (writes in {repo})"
             for n, _, repo, p in self.outside
         ]
         for n, children in self.parents:
             named = [
-                f"#{c}" if repo.lower() == self.source.lower() else f"{repo}#{c}, moved from #{n}"
+                f"#{c}"
+                if repo.lower() == self.source.lower()
+                else f"{repo}#{c}, taken from the source's #{n} with replace_parent (writes in"
+                f" {repo} and in the source)"
                 for repo, c, _ in children
             ]
             lines.append(
@@ -515,17 +546,26 @@ class OneCommand:
         self.survey_links()
         for n, old, repo, p in self.outside:
             new = self.target_id(n)
-            present = self.sub_ids(repo, p)
-            if new not in present:
+            listed = self.sub_ids(repo, p)
+            if new not in listed:
                 self.api.expect(
                     "POST", f"repos/{repo}/issues/{p}/sub_issues", {"sub_issue_id": new}, ok=(201,)
                 )
-            # Right before the source's item, the link takes its place once that one goes.
-            self.api.expect(
-                "PATCH",
-                f"repos/{repo}/issues/{p}/sub_issues/priority",
-                {"sub_issue_id": new, "before_id": old},
-            )
+            # After the sub-issue before the source's, or before the one after it
+            # where the source's is first, the link takes its place once that one
+            # goes; without the new link in the list, a resume finds the same one.
+            others = [i for i in listed if i != new]
+            at = others.index(old)
+            if at:
+                anchor = {"after_id": others[at - 1]}
+            else:
+                anchor = {"before_id": others[1]} if len(others) > 1 else None
+            if anchor:
+                self.api.expect(
+                    "PATCH",
+                    f"repos/{repo}/issues/{p}/sub_issues/priority",
+                    {"sub_issue_id": new, **anchor},
+                )
             self.api.expect("DELETE", f"repos/{repo}/issues/{p}/sub_issue", {"sub_issue_id": old})
             print(f"  #{n} under {repo}#{p}, in the place of the source's")
         for n, children in self.parents:

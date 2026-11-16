@@ -449,7 +449,9 @@ status_run_plan=$?
 # and a merge deletes the head branch where delete_branch_on_merge is on. It
 # keeps the sub-issue links of every repository in links.json, by parent, as
 # lists of issue ids, with the ids of the target's items 7000 plus the number
-# and those of other repositories from their issues in $FAKE_GH_API.
+# and those of other repositories from their issues in $FAKE_GH_API; it gives
+# each issue it lists from there its parent_issue_url and sub_issues_summary,
+# and logs the body of each move of a sub-issue in priorities.
 mkdir "$T/bin-target"
 cat >"$T/bin-target/gh" <<'EOF'
 #!/usr/bin/env python3
@@ -579,6 +581,8 @@ def from_files(path, q):
             links, repo = load("links", {}), path[len("repos/"):-len("/issues")]
             for it in entries:
                 it["sub_issues_summary"] = {"total": len(links.get(f"{repo}#{it['number']}", []))}
+                parent = next((k for k, ids in links.items() if it.get("id") in ids), None)
+                it["parent_issue_url"] = parent and "https://api.github.com/repos/{}/issues/{}".format(*parent.split("#"))
         return 200, entries
     found = name.with_name(name.name + ".json")
     return (200, json.loads(found.read_text())) if found.exists() else (404, {"message": "Not Found"})
@@ -633,6 +637,8 @@ def sub_issues(method, repo, n, what, body, q):
         else:
             children.remove(child)
             children.insert(children.index(other) + ("after_id" in body), child)
+            with (root / "priorities").open("a") as f:
+                f.write(json.dumps(body, sort_keys=True) + "\n")
             result = 200, issues[(repo, n)]
     elif method == "DELETE" and what == "sub_issue" and body.get("sub_issue_id") in children:
         children.remove(body["sub_issue_id"])
@@ -1014,13 +1020,13 @@ status_cmp_a=$?
 compare "$T/gh-e" --state "$T/e.state.json" "$T/run.jsonl" "$mirror" ada-example/tool-e >"$T/cmp-e-out" 2>&1
 status_cmp_e=$?
 check "compare-replay.py finds no difference in a finished replay, with --final-name and without, and writes nothing" \
-  '[ "$status_cmp_a$status_cmp_e" = 00 ] && [ "$(tail -n 1 "$T/cmp-a-out")" = "No differences" ] && grep -qx "No differences" "$T/cmp-e-out" && for t in "items +6" "labels +2" "comments +4" "texts with a replaced hash +1" "commits on main +7" "recreated commits +12" "branches +4"; do grep -Eqx "  $t" "$T/cmp-a-out" || { echo "no line \"$t\""; exit 1; }; done && [ "$(writes "$T/gh-a" | wc -l)" -eq "$writes_before" ] && [ ! -e "$T/gh-a/refused" ] || { cat "$T/cmp-a-out" "$T/cmp-e-out"; exit 1; }'
+  '[ "$status_cmp_a$status_cmp_e" = 00 ] && [ "$(tail -n 1 "$T/cmp-a-out")" = "No differences" ] && grep -qx "No differences" "$T/cmp-e-out" && for t in "items +6" "labels +2" "comments +4" "texts with a replaced hash +1" "commits on main +7" "recreated commits +12" "branches +4" "pull request heads +3"; do grep -Eqx "  $t" "$T/cmp-a-out" || { echo "no line \"$t\""; exit 1; }; done && [ "$(writes "$T/gh-a" | wc -l)" -eq "$writes_before" ] && [ ! -e "$T/gh-a/refused" ] || { cat "$T/cmp-a-out" "$T/cmp-e-out"; exit 1; }'
 check "compare-replay.py notes each branch the target keeps and the source no longer has, and who authored the merges" \
   'for b in docs/5-notes feat/2-thing fix/3-parser; do grep -qx "  branch $b stays in the target; the source no longer has it" "$T/cmp-a-out" || exit 1; done && grep -qx "  merges authored by Ada Example <ada@example.com>" "$T/cmp-a-out" || { cat "$T/cmp-a-out"; exit 1; }'
 
 # The copy of A: #4 closed as completed, a footer on the last comment, the
-# colour of a label, a missing branch, and a last commit on main with the
-# tree of the one before.
+# colour of a label, a missing branch, the head of #3 at another commit, and
+# a last commit on main with the tree of the one before.
 cp -R "$T/gh-a" "$T/gh-diff"
 python3 - "$T/gh-diff" <<'EOF'
 import json, sys
@@ -1037,11 +1043,12 @@ edit("labels", lambda labels: [x.update(color="ee0701") for x in labels if x["na
 EOF
 d=$T/gh-diff/repo.git
 git --git-dir="$d" update-ref -d refs/heads/fix/3-parser
+git --git-dir="$d" update-ref refs/pull/3/head main~1
 git --git-dir="$d" update-ref refs/heads/main "$(echo "same tree" | git --git-dir="$d" commit-tree "main~1^{tree}" -p main~1)"
 compare "$T/gh-diff" --state "$T/a.state.json" "$T/run.jsonl" "$mirror" ada-example/tool-new >"$T/cmp-diff-out" 2>&1
 status_cmp_diff=$?
 check "compare-replay.py names every difference it finds and exits with 1" \
-  '[ "$status_cmp_diff" = 1 ] && for line in "#4 is closed as completed, the source'"'"'s not_planned" "#6, comment 1: the body differs; it has a footer the source lacks" "label bug: colour ee0701, the source'"'"'s d73a4a" "branch fix/3-parser is missing in the target"; do grep -Fqx "  $line" "$T/cmp-diff-out" || { echo "no line \"$line\""; exit 1; }; done && grep -q "^  main, step 7 ([0-9a-f]\{7\}): tree [0-9a-f]\{7\}, the source'"'"'s [0-9a-f]\{7\}$" "$T/cmp-diff-out" && grep -q "^Differences: [0-9]*$" "$T/cmp-diff-out" || { cat "$T/cmp-diff-out"; exit 1; }'
+  '[ "$status_cmp_diff" = 1 ] && for line in "#4 is closed as completed, the source'"'"'s not_planned" "#6, comment 1: the body differs; it has a footer the source lacks" "label bug: colour ee0701, the source'"'"'s d73a4a" "branch fix/3-parser is missing in the target"; do grep -Fqx "  $line" "$T/cmp-diff-out" || { echo "no line \"$line\""; exit 1; }; done && grep -q "^  #3: the pull request head is [0-9a-f]\{7\}, the state file'"'"'s [0-9a-f]\{7\}$" "$T/cmp-diff-out" && grep -q "^  main, step 7 ([0-9a-f]\{7\}): tree [0-9a-f]\{7\}, the source'"'"'s [0-9a-f]\{7\}$" "$T/cmp-diff-out" && grep -q "^Differences: [0-9]*$" "$T/cmp-diff-out" || { cat "$T/cmp-diff-out"; exit 1; }'
 compare "$T/gh-c" "$T/run.jsonl" "$mirror" ada-example/tool-c >"$T/cmp-c-out" 2>&1
 status_cmp_c=$?
 check "compare-replay.py refuses a replay that its state file records unfinished" \
@@ -1295,6 +1302,8 @@ check "replay.py creates the target private after the confirmation, with Actions
   '[ "$(writes "$T/ra" | head -n 1 | cut -d" " -f2-)" = "POST user/repos" ] && [ ! -e "$T/ra/absent" ] && python3 -c "import json, sys; s, a = (json.load(open(sys.argv[1] + f)) for f in (\"/settings.json\", \"/actions.json\")); sys.exit(not (s[\"private\"] and s[\"delete_branch_on_merge\"] and a == {\"enabled\": False}))" "$T/ra" && [ "$(git --git-dir="$T/ra/repo.git" for-each-ref --format="%(refname:short)" refs/heads/ | tr "\n" " ")" = "docs/5-notes main " ] || { writes "$T/ra"; cat "$T/ra/settings.json" "$T/ra/actions.json"; exit 1; }'
 check "replay.py moves each sub-issue link into the place of the source's item, and links the sub-issues of the source's items" \
   'links_hold "$T/ra" && grep -qx "  #1 under ada-example/plans#9, in the place of the source'"'"'s" "$T/ra-out" && grep -qx "  ada-example/plans#11 under the replay'"'"'s #6" "$T/ra-out"'
+check "replay.py moves a link after the sub-issue before the source's, or before the one after it where the source's is first" \
+  '[ "$(tr "\n" " " <"$T/ra/priorities")" = "{\"before_id\": 8010, \"sub_issue_id\": 7001} {\"after_id\": 8010, \"sub_issue_id\": 7004} " ] || { cat "$T/ra/priorities"; exit 1; }'
 check "replay.py prints, without running them, the commands that archive the source, rename the replay and restore its settings" \
   'for line in "gh api -X PATCH repos/ada-example/tool -f name=tool-archive" "gh api -X PATCH repos/ada-example/tool-archive -F archived=true" "gh api -X PATCH repos/ada-example/tool-replay-20261116 -f name=tool" "gh api -X PUT repos/ada-example/tool/actions/permissions -F enabled=true" "gh api -X PATCH repos/ada-example/tool -F allow_merge_commit=false -F allow_squash_merge=true -F allow_rebase_merge=false -F delete_branch_on_merge=true -f '"'"'description=A small tool'"'"'" "gh api -X DELETE repos/ada-example/tool/git/refs/heads/docs/5-notes"; do grep -Fqx "$line" "$T/ra-out" || { echo "no line: $line"; exit 1; }; done && ! grep -q "archived\|name=tool" "$T/ra/calls" || { cat "$T/ra-out"; exit 1; }'
 
@@ -1310,7 +1319,7 @@ run_file "$T/runs-w/tool.run.json" "$T/backup-rw"
 one "$T/rw" tool-replay-20261116 "$T/runs-w/tool.run.json" >"$T/rw-out" 2>&1
 status_rw=$?
 check "replay.py lists what it will do, sub-issue links included, and writes nothing on a wrong confirmation" \
-  '[ "$status_rw" = 1 ] && grep -q "replay.py: not confirmed; nothing changed on GitHub$" "$T/rw-out" && grep -qx "  7. move sub-issue links: 4" "$T/rw-out" && grep -qx "       the replay'"'"'s #6 gets the sub-issues of the source'"'"'s: ada-example/plans#11, moved from #6" "$T/rw-out" && grep -qx "  3. create ada-example/tool-replay-20261116, private and empty" "$T/rw-out" && grep -qx "  5. run run-replay.py --pace 0 --final-name ada-example/tool, and make main the default branch where GitHub names another" "$T/rw-out" && ! writes "$T/rw" && [ -e "$T/rw/absent" ] && [ ! -e "$T/runs-w/tool.progress.json" ] || { cat "$T/rw-out"; writes "$T/rw"; exit 1; }'
+  '[ "$status_rw" = 1 ] && grep -q "replay.py: not confirmed; nothing changed on GitHub$" "$T/rw-out" && grep -qx "  7. move sub-issue links: 4" "$T/rw-out" && grep -qx "       #1: in ada-example/plans#9, links the replay'"'"'s #1 in the place of the source'"'"'s and unlinks the source'"'"'s (writes in ada-example/plans)" "$T/rw-out" && grep -qx "       the replay'"'"'s #6 gets the sub-issues of the source'"'"'s: ada-example/plans#11, taken from the source'"'"'s #6 with replace_parent (writes in ada-example/plans and in the source)" "$T/rw-out" && grep -qx "  3. create ada-example/tool-replay-20261116, private and empty" "$T/rw-out" && grep -qx "  5. run run-replay.py --pace 0 --final-name ada-example/tool, and make main the default branch where GitHub names another" "$T/rw-out" && ! writes "$T/rw" && [ -e "$T/rw/absent" ] && [ ! -e "$T/runs-w/tool.progress.json" ] || { cat "$T/rw-out"; writes "$T/rw"; exit 1; }'
 mkdir -p "$T/runs-v"
 run_file "$T/work/tool.run.json" "$T/backup-rv"
 run_file "$T/runs-v/colour.run.json" "$T/backup-rv" 'colour="blue"'
@@ -1346,9 +1355,10 @@ check "replay.py ends a stopped and resumed run with the links and the target of
   'links_hold "$T/rb" && grep -qx "No differences" "$T/rb-out" && dump "$T/ra" >"$T/ra-dump" && dump "$T/rb" >"$T/rb-dump" && diff "$T/ra-dump" "$T/rb-dump"'
 
 # RM: a target that GitHub creates with the default branch master, and lets
-# no one change while it lacks the branch, with one sub-issue link; stopped
-# by a Ctrl-C in the replay after the first push, and resumed.
-replay_setup "$T/rm" ada-example/tool-replay-20261116 '{"ada-example/plans#9": [9001, 8010]}'
+# no one change while it lacks the branch, with #1 the only sub-issue of
+# ada-example/plans#9 and no other link; stopped by a Ctrl-C in the replay
+# after the first push, and resumed.
+replay_setup "$T/rm" ada-example/tool-replay-20261116 '{"ada-example/plans#9": [9001]}'
 run_file "$T/runs-m/tool.run.json" "$T/backup-rm"
 (FAKE_GH_DEFAULT=master FAKE_GH_INTERRUPT="POST repos/ada-example/tool-replay-20261116/issues" &&
   export FAKE_GH_DEFAULT FAKE_GH_INTERRUPT && one "$T/rm" ada-example/tool-replay-20261116 "$T/runs-m/tool.run.json") >"$T/rm-out" 2>&1
@@ -1356,7 +1366,19 @@ echo $? >"$T/rm-status"
 one "$T/rm" ada-example/tool-replay-20261116 "$T/runs-m/tool.run.json" >>"$T/rm-out" 2>&1
 echo $? >>"$T/rm-status"
 check "replay.py gives the target the source's default branch once it has it, where GitHub names another at the creation" \
-  '[ "$(tr "\n" " " <"$T/rm-status")" = "1 0 " ] && grep -q "^replay.py: stopped in step 5 of 8, replay; run the same command again" "$T/rm-out" && grep -qx "  default branch main, where GitHub had named it master" "$T/rm-out" && [ ! -e "$T/rm/rejected" ] && grep -qx "No differences" "$T/rm-out" && python3 -c "import json, sys; sys.exit(json.load(open(sys.argv[1]))[\"default_branch\"] != \"main\")" "$T/rm/settings.json" && links_hold "$T/rm" "{\"ada-example/plans#9\": [7001, 8010]}" || { cat "$T/rm-status" "$T/rm-out" "$T/rm/rejected" 2>&1; exit 1; }'
+  '[ "$(tr "\n" " " <"$T/rm-status")" = "1 0 " ] && grep -q "^replay.py: stopped in step 5 of 8, replay; run the same command again" "$T/rm-out" && grep -qx "  default branch main, where GitHub had named it master" "$T/rm-out" && [ ! -e "$T/rm/rejected" ] && grep -qx "No differences" "$T/rm-out" && python3 -c "import json, sys; sys.exit(json.load(open(sys.argv[1]))[\"default_branch\"] != \"main\")" "$T/rm/settings.json" && links_hold "$T/rm" "{\"ada-example/plans#9\": [7001]}" || { cat "$T/rm-status" "$T/rm-out" "$T/rm/rejected" 2>&1; exit 1; }'
+
+check "replay.py reads the parent only of an issue whose parent_issue_url names one, and skips the move of an only sub-issue" \
+  'grep -q " GET repos/ada-example/tool/issues/1/parent$" "$T/rm/calls" && ! grep -q " GET repos/ada-example/tool/issues/[46]/parent$" "$T/rm/calls" && [ ! -e "$T/rm/priorities" ] || { grep parent "$T/rm/calls"; cat "$T/rm/priorities"; exit 1; }'
+
+# RO: a replay under another owner than that of the repository of a parent
+# and of a sub-issue from elsewhere.
+replay_setup "$T/ro" bob-example/tool-replay-20261116
+run_file "$T/runs-o/tool.run.json" "$T/backup-ro" 'target="bob-example/tool-replay-20261116"' 'final_name="bob-example/tool"'
+one "$T/ro" bob-example/tool-replay-20261116 "$T/runs-o/tool.run.json" >"$T/ro-out" 2>&1
+status_ro=$?
+check "replay.py stops before the confirmation, without a write, where a sub-issue link would cross owners" \
+  '[ "$status_ro" = 1 ] && grep -Fqx "replay.py: GitHub links a sub-issue only to a parent of the same owner, and the target'"'"'s owner is bob-example: #1 under ada-example/plans#9; #4 under ada-example/plans#9; ada-example/plans#11 under #6. Move or remove these links in the source first, or take this step by hand after the replay" "$T/ro-out" && grep -q "^replay.py: stopped in the survey of the sub-issue links, before any write to GitHub in this run" "$T/ro-out" && ! grep -q "to confirm" "$T/ro-out" && ! writes "$T/ro" && [ -e "$T/ro/absent" ] && [ ! -e "$T/runs-o/tool.progress.json" ] || { cat "$T/ro-out"; writes "$T/ro"; exit 1; }'
 
 printf '\n%s passed, %s failed\n' "$passed" "$failed"
 [ "$failed" = 0 ]
