@@ -68,8 +68,8 @@ commit() {
 
 # The original, as on GitHub, with a main and a feature branch, and the
 # maintainer's clone of it.
-git init -q --bare "$T/claude-setup.git"
-q git clone "$T/claude-setup.git" "$T/work"
+git init -q --bare "$T/tool.git"
+q git clone "$T/tool.git" "$T/work"
 cd "$T/work" || exit 2
 commit one AdaE old@example.com 2026-01-01T10:00:00
 echo content >file.txt && git add file.txt
@@ -89,23 +89,23 @@ printf '%s\n' \
   'Ada Example <new@example.com> <new@example.com>' >"$T/mailmap"
 
 check "backup-mirror.sh mirrors every branch" \
-  'm=$("$here/backup-mirror.sh" "$T/claude-setup.git" "$T/backup") && git -C "$m" rev-parse -q --verify refs/heads/feature && case $m in "$T/backup/claude-setup-"*.git) ;; *) false ;; esac'
+  'm=$("$here/backup-mirror.sh" "$T/tool.git" "$T/backup") && git -C "$m" rev-parse -q --verify refs/heads/feature && case $m in "$T/backup/tool-"*.git) ;; *) false ;; esac'
 
-out=$("$here/rewrite-identities.sh" "$T/claude-setup.git" "$T/mailmap" "$T/rewritten" 2>&1)
+out=$("$here/rewrite-identities.sh" "$T/tool.git" "$T/mailmap" "$T/rewritten" 2>&1)
 check "rewrite-identities.sh maps every identity and prints the folder" \
   'printf "%s\n" "$out" | grep -qx " *4 author    Ada Example <new@example.com>" && ! printf "%s\n" "$out" | grep -q -e AdaE -e ada-example -e old@ && [ "$(printf "%s\n" "$out" | tail -n 1)" = "$T/rewritten" ]'
 check "rewrite-identities.sh keeps dates and tree" \
   '[ "$(git -C "$T/rewritten" log --format="%ad %cd" --date=raw main)" = "$before" ] && [ "$(git -C "$T/rewritten" rev-parse "main^{tree}")" = "$tree" ]'
 check "rewrite-identities.sh refuses an existing folder" \
-  '! "$here/rewrite-identities.sh" "$T/claude-setup.git" "$T/mailmap" "$T/rewritten"'
+  '! "$here/rewrite-identities.sh" "$T/tool.git" "$T/mailmap" "$T/rewritten"'
 check "rewrite-identities.sh refuses a missing mailmap" \
-  '! "$here/rewrite-identities.sh" "$T/claude-setup.git" "$T/nothing" "$T/other"'
+  '! "$here/rewrite-identities.sh" "$T/tool.git" "$T/nothing" "$T/other"'
 
 check "compare-rewrite.sh passes an identity-only rewrite" \
   '"$here/compare-rewrite.sh" "$T/rewritten" | grep -q "main: 3 commits, dates and tree unchanged"'
 check "compare-rewrite.sh leaves no extra ref behind" \
   '[ -z "$(git -C "$T/rewritten" for-each-ref refs/rewrite)" ]'
-q "$here/rewrite-identities.sh" "$T/claude-setup.git" "$T/mailmap" "$T/changed"
+q "$here/rewrite-identities.sh" "$T/tool.git" "$T/mailmap" "$T/changed"
 (cd "$T/changed" && echo more >>file.txt &&
   GIT_COMMITTER_DATE=2026-01-03T10:00:00 git commit -q --amend -a --no-edit)
 check "compare-rewrite.sh fails when content changed" \
@@ -114,12 +114,12 @@ check "compare-rewrite.sh fails on a folder it did not make" \
   '! "$here/compare-rewrite.sh" "$T/work"'
 
 check "force-push-rewrite.sh pushes nothing unconfirmed" \
-  '! echo wrong | "$here/force-push-rewrite.sh" "$T/rewritten" && [ "$(git -C "$T/claude-setup.git" log -1 --format=%an main)" = ada-example ]'
-out=$(echo claude-setup | "$here/force-push-rewrite.sh" "$T/rewritten" 2>&1)
+  '! echo wrong | "$here/force-push-rewrite.sh" "$T/rewritten" && [ "$(git -C "$T/tool.git" log -1 --format=%an main)" = ada-example ]'
+out=$(echo tool | "$here/force-push-rewrite.sh" "$T/rewritten" 2>&1)
 check "force-push-rewrite.sh overwrites the branch once confirmed" \
-  '[ "$(git -C "$T/claude-setup.git" rev-parse main)" = "$(git -C "$T/rewritten" rev-parse main)" ]'
+  '[ "$(git -C "$T/tool.git" rev-parse main)" = "$(git -C "$T/rewritten" rev-parse main)" ]'
 check "force-push-rewrite.sh leaves other branches and lists them" \
-  '[ "$(git -C "$T/claude-setup.git" log -1 --format=%an feature)" = AdaE ] && printf "%s\n" "$out" | grep -qx "  feature"'
+  '[ "$(git -C "$T/tool.git" log -1 --format=%an feature)" = AdaE ] && printf "%s\n" "$out" | grep -qx "  feature"'
 
 echo dirty >>"$T/work/file.txt"
 check "reset-clone.sh stops at uncommitted changes" \
@@ -128,7 +128,7 @@ git -C "$T/work" checkout -q -- file.txt
 git -C "$T/work" switch -q feature
 out=$("$here/reset-clone.sh" "$T/work" 2>&1)
 check "reset-clone.sh moves the clone onto the rewritten default branch" \
-  '[ "$(git -C "$T/work" branch --show-current)" = main ] && [ "$(git -C "$T/work" rev-parse main)" = "$(git -C "$T/claude-setup.git" rev-parse main)" ]'
+  '[ "$(git -C "$T/work" branch --show-current)" = main ] && [ "$(git -C "$T/work" rev-parse main)" = "$(git -C "$T/tool.git" rev-parse main)" ]'
 check "reset-clone.sh makes the branch track origin and lists the branches" \
   '[ "$(git -C "$T/work" rev-parse --abbrev-ref "main@{upstream}")" = origin/main ] && printf "%s\n" "$out" | grep -q "feature"'
 

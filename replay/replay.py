@@ -237,16 +237,18 @@ def read_run_file(path):
 
     owner, name = cfg["target"].split("/")
     final_owner, final_repo = cfg["final_name"].split("/")
-    day = re.fullmatch(re.escape(final_repo) + r"-replay-(\d{8})", name)
+    # The day-only form stays for run files written before the time was added;
+    # remove it once no open run issue's target uses it.
+    day = re.fullmatch(re.escape(final_repo) + r"-replay-(\d{8})(-\d{4})?", name)
     try:
-        dated = day and datetime.strptime(day[1], "%Y%m%d")
+        dated = day and datetime.strptime(day[1] + (day[2] or "-0000"), "%Y%m%d-%H%M")
     except ValueError:
         dated = None
     if owner.lower() != final_owner.lower() or not dated:
         raise ReplayError(
-            f"{path}: target must be {final_owner}/{final_repo}-replay-<YYYYMMDD>, the final"
-            " name with the day of the replay, so that the rename keeps its owner and no earlier"
-            " replay has used the name"
+            f"{path}: target must be {final_owner}/{final_repo}-replay-<YYYYMMDD-HHMM>, the"
+            " final name with the day and time of the replay, so that the rename keeps its owner"
+            " and no earlier replay has used the name"
         )
     return cfg, hashlib.sha256(raw).hexdigest()
 
