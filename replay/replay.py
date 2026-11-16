@@ -59,8 +59,8 @@ SETTINGS = (
     "has_projects",
     "has_discussions",
 )
-# The parts of security_and_analysis that the replay takes over, where GitHub
-# reports them for the source.
+# Only the parts #42 names; GitHub reports them only for a repository that
+# has them, so a source without them prints no line.
 SECURITY = ("secret_scanning", "secret_scanning_push_protection")
 RETRIES = 5
 # GitHub's guidance for a secondary rate limit without retry-after: wait at
@@ -672,14 +672,15 @@ class OneCommand:
         for line in lines:
             print(line)
         print()
-        clone = f"~/vc/{final_repo}"
+        old, clone = f"~/vc/{name}", f"~/vc/{final_repo}"
         print(
-            f"3. Replace your clone of {self.source} with a fresh clone of the replay; these"
-            f" commands take it at {clone} and keep the old one, after showing what it holds"
-            f" uncommitted, in {clone}-old for you to delete:"
+            f"3. Replace your clone of {self.source} at {old} with a fresh clone of the replay"
+            f" at {clone}; these commands show what the old one holds uncommitted and keep it"
+            f" in {old}-old for you to delete. Where {old}-old exists already, remove or rename"
+            " it first, since mv would move the old clone into it:"
         )
         print()
-        print(f"test ! -d {clone} || {{ git -C {clone} status --short; mv {clone} {clone}-old; }}")
+        print(f"test ! -d {old} || {{ git -C {old} status --short; mv {old} {old}-old; }}")
         print(f"gh repo clone {self.final} {clone}")
         print()
         print(f"4. Delete {self.progress_path}, {state} and {work}.")
