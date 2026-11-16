@@ -743,7 +743,7 @@ class Replay:
         sha, signed = self.recreate_all(e)
         self.push(sha, e["branch"])
         self.head = sha
-        return f"{commits(len(e['commits']))}{signed} to {e['branch']}, now at {sha[:7]}"
+        return f"{commits(len(e['commits']))} to {e['branch']}{signed}, now at {sha[:7]}"
 
     def push_branch(self, e):
         if e["base_commit"] not in self.hashes:

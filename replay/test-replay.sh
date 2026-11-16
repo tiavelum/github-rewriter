@@ -924,6 +924,9 @@ check "run-replay.py --sign takes a GPG key whose signing subkey GitHub lists, a
 # lists in the targets that know it, and an allowed-signers file for git log.
 if command -v ssh-keygen >/dev/null 2>&1; then
   ssh-keygen -q -t ed25519 -N '' -C test -f "$T/sign-key"
+  # The folder as Python prints a path, without the double slash that a
+  # TMPDIR ending in a slash, as on macOS, leaves in it.
+  P=$(printf '%s\n' "$T" | tr -s /)
   SIGNERS=$T/allowed-signers
   export SIGNERS
   echo "ada@example.com $(cut -d' ' -f1,2 "$T/sign-key.pub")" >"$SIGNERS"
@@ -947,7 +950,7 @@ EOF
   sign_replay "$T/gh-unknown" ada-example/tool-new "$T/unknown.state.json" >"$T/unknown-out" 2>&1
   status_unknown=$?
   check "run-replay.py --sign stops before writing where GitHub does not list the SSH key as a signing key" \
-    '[ "$status_unknown" = 1 ] && grep -Fqx "run-replay.py: GitHub does not list $T/sign-key.pub among your SSH signing keys, so it would show the signed commits as unverified; add it with: gh ssh-key add $T/sign-key.pub --type signing" "$T/unknown-out" && grep -q " GET user/ssh_signing_keys?per_page=100&page=1$" "$T/gh-unknown/calls" && nothing_written "$T/gh-unknown" "$T/unknown.state.json" || { cat "$T/unknown-out"; exit 1; }'
+    '[ "$status_unknown" = 1 ] && grep -Fqx "run-replay.py: GitHub does not list $P/sign-key.pub among your SSH signing keys, so it would show the signed commits as unverified; add it with: gh ssh-key add $P/sign-key.pub --type signing" "$T/unknown-out" && grep -q " GET user/ssh_signing_keys?per_page=100&page=1$" "$T/gh-unknown/calls" && nothing_written "$T/gh-unknown" "$T/unknown.state.json" || { cat "$T/unknown-out"; exit 1; }'
   sign_target "$T/gh-scope"
   (FAKE_GH_NO_SCOPE=1 && export FAKE_GH_NO_SCOPE && sign_replay "$T/gh-scope" ada-example/tool-new "$T/scope.state.json") >"$T/scope-out" 2>&1
   status_scope=$?
@@ -959,7 +962,7 @@ EOF
   sign_replay "$T/gh-sa" ada-example/tool-new "$T/sa.state.json" >"$T/sa-out" 2>&1
   status_sa=$?
   check "run-replay.py --sign says in the totals how many commits it signs and with which key, and in each push how many it signed" \
-    '[ "$status_sa" = 0 ] && grep -Eqx "  commits to sign +9" "$T/sa-out" && grep -Fqx "  signed: the commits committed by ada@example.com, with the SSH key $T/sign-key.pub (ssh-ed25519)" "$T/sa-out" && ! grep -q "same way twice" "$T/sa-out" && grep -q "#3 branch fix/3-parser, 1 commit, 0 signed, at " "$T/sa-out" && grep -q "#2 branch feat/2-thing, 2 commits, 2 signed, at " "$T/sa-out" || { cat "$T/sa-out"; exit 1; }'
+    '[ "$status_sa" = 0 ] && grep -Eqx "  commits to sign +9" "$T/sa-out" && grep -Fqx "  signed: the commits committed by ada@example.com, with the SSH key $P/sign-key.pub (ssh-ed25519)" "$T/sa-out" && ! grep -q "same way twice" "$T/sa-out" && grep -q "#3 branch fix/3-parser, 1 commit, 0 signed, at " "$T/sa-out" && grep -q " 3 commits to main, 3 signed, now at " "$T/sa-out" && grep -q "#2 branch feat/2-thing, 2 commits, 2 signed, at " "$T/sa-out" || { cat "$T/sa-out"; exit 1; }'
   rcheck "run-replay.py --sign signs exactly the recreated commits whose committer has the address" "$T/gh-sa" "$T/sa.state.json" \
     '(marks := {c["sha"]: (c["committer"]["email"], git("-c", "gpg.ssh.allowedSignersFile=" + S["SIGNERS"], "log", "-1", "--format=%G?", M[c["sha"]])) for e in E for c in e.get("commits", [])}) and all(mark == ("G" if email == "ada@example.com" else "N") for email, mark in marks.values()) and sorted(mark for _, mark in marks.values()) == ["G"] * 9 + ["N"] and marks[S["F1"]] == ("bob@example.com", "N") and [git("log", "-1", "--format=%G?", M[S[k]]) for k in ("M2", "M3")] == ["N", "N"]'
   # shape <folder>: every commit of the target, without its hash.
@@ -1012,7 +1015,7 @@ EOF
   check "run-replay.py --sign ends a run killed after a push and resumed with the same hashes as an uninterrupted one" \
     '[ "$(tr "\n" " " <"$T/sb-status")" = "137 0 " ] && grep -q "Resume the replay of ada-example/tool into ada-example/tool-new at event 5 of 23" "$T/sb-out" && [ -n "$(git --git-dir="$T/gh-sc/repo.git" for-each-ref refs/heads/feat/2-thing)" ] && dump "$T/gh-sa" >"$T/sa-dump" && dump "$T/gh-sb" >"$T/sb-dump" && diff "$T/sa-dump" "$T/sb-dump" && python3 -c "import json, sys; a, b = (json.load(open(f))[\"hashes\"] for f in sys.argv[1:]); sys.exit(a != b)" "$T/sa.state.json" "$T/sb.state.json" || { cat "$T/sb-status" "$T/sb-out"; exit 1; }'
   check "run-replay.py stops before pushing where a rebuilt commit gets another hash than the state file records" \
-    'b2=$(echo "$B2" | cut -c1-7) && [ "$status_sc" = 1 ] && grep -q "run-replay.py: commit $b2 was rebuilt as [0-9a-f]\{7\}, but $T/sc.state.json records 0123456; its signature differs from the one the first run made: the signing key signs differently each time, or it is another key. The run stops before it pushes a second history$" "$T/sc-out" && grep -q "^run-replay.py: stopped in event 5 of 23" "$T/sc-out" && [ "$(git --git-dir="$T/gh-sc/repo.git" for-each-ref)" = "$sc_refs" ] && [ "$(writes "$T/gh-sc" | wc -l)" -eq "$sc_writes" ] || { cat "$T/sc-out"; exit 1; }'
+    'b2=$(echo "$B2" | cut -c1-7) && [ "$status_sc" = 1 ] && grep -q "run-replay.py: commit $b2 was rebuilt as [0-9a-f]\{7\}, but $P/sc.state.json records 0123456; its signature differs from the one the first run made: the signing key signs differently each time, or it is another key. The run stops before it pushes a second history$" "$T/sc-out" && grep -q "^run-replay.py: stopped in event 5 of 23" "$T/sc-out" && [ "$(git --git-dir="$T/gh-sc/repo.git" for-each-ref)" = "$sc_refs" ] && [ "$(writes "$T/gh-sc" | wc -l)" -eq "$sc_writes" ] || { cat "$T/sc-out"; exit 1; }'
 else
   echo "ssh-keygen is missing; run-replay.py --sign with an SSH key not tested"
 fi
