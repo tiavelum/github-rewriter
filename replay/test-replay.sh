@@ -583,7 +583,9 @@ def from_files(path, q):
             for it in entries:
                 it["sub_issues_summary"] = {"total": len(links.get(f"{repo}#{it['number']}", []))}
                 parent = next((k for k, ids in links.items() if it.get("id") in ids), None)
-                it["parent_issue_url"] = parent and "https://api.github.com/repos/{}/issues/{}".format(*parent.split("#"))
+                # GitHub leaves the field out of an issue that is no sub-issue.
+                if parent:
+                    it["parent_issue_url"] = "https://api.github.com/repos/{}/issues/{}".format(*parent.split("#"))
         return 200, entries
     found = name.with_name(name.name + ".json")
     return (200, json.loads(found.read_text())) if found.exists() else (404, {"message": "Not Found"})
@@ -1372,6 +1374,13 @@ echo $? >>"$T/rm-status"
 check "replay.py gives the target the source's default branch once it has it, where GitHub names another at the creation" \
   '[ "$(tr "\n" " " <"$T/rm-status")" = "1 0 " ] && grep -q "^replay.py: stopped in step 5 of 8, replay; run the same command again" "$T/rm-out" && grep -qx "  default branch main, where GitHub had named it master" "$T/rm-out" && [ ! -e "$T/rm/rejected" ] && grep -qx "No differences" "$T/rm-out" && python3 -c "import json, sys; sys.exit(json.load(open(sys.argv[1]))[\"default_branch\"] != \"main\")" "$T/rm/settings.json" && links_hold "$T/rm" "{\"ada-example/plans#9\": [7001]}" || { cat "$T/rm-status" "$T/rm-out" "$T/rm/rejected" 2>&1; exit 1; }'
 
+# RN: the same target named master, replayed without a stop.
+replay_setup "$T/rn"
+run_file "$T/runs-n/tool.run.json" "$T/backup-rn"
+(FAKE_GH_DEFAULT=master && export FAKE_GH_DEFAULT && one "$T/rn" ada-example/tool-replay-20261116 "$T/runs-n/tool.run.json") >"$T/rn-out" 2>&1
+check "replay.py gives the target the source's default branch after an uninterrupted replay into a target named master" \
+  'grep -qx "  default branch main, where GitHub had named it master" "$T/rn-out" && [ ! -e "$T/rn/rejected" ] || { cat "$T/rn-out"; exit 1; }'
+
 check "replay.py reads the parent only of an issue whose parent_issue_url names one, and skips the move of an only sub-issue" \
   'grep -q " GET repos/ada-example/tool/issues/1/parent$" "$T/rm/calls" && ! grep -q " GET repos/ada-example/tool/issues/[46]/parent$" "$T/rm/calls" && [ ! -e "$T/rm/priorities" ] || { grep parent "$T/rm/calls"; cat "$T/rm/priorities"; exit 1; }'
 
@@ -1401,7 +1410,7 @@ run_file "$T/runs-o/tool.run.json" "$T/backup-ro" 'target="bob-example/tool-repl
 one "$T/ro" bob-example/tool-replay-20261116 "$T/runs-o/tool.run.json" >"$T/ro-out" 2>&1
 status_ro=$?
 check "replay.py stops before the confirmation, without a write, where a sub-issue link would cross owners" \
-  '[ "$status_ro" = 1 ] && grep -Fqx "replay.py: GitHub links a sub-issue only to a parent of the same owner, and the target'"'"'s owner is bob-example: #1 under ada-example/plans#9; #4 under ada-example/plans#9; ada-example/plans#11 under #6. Move or remove these links in the source first, or take this step by hand after the replay" "$T/ro-out" && grep -q "^replay.py: stopped in the survey of the sub-issue links, before any write to GitHub in this run" "$T/ro-out" && ! grep -q "to confirm" "$T/ro-out" && ! writes "$T/ro" && [ -e "$T/ro/absent" ] && [ ! -e "$T/runs-o/tool.progress.json" ] || { cat "$T/ro-out"; writes "$T/ro"; exit 1; }'
+  '[ "$status_ro" = 1 ] && grep -Fqx "replay.py: GitHub links a sub-issue only to a parent of the same owner, and the target'"'"'s owner is bob-example: #1 under ada-example/plans#9; #4 under ada-example/plans#9; ada-example/plans#11 under #6. GitHub refuses such a link whoever makes it, so replay.py cannot carry it. Move or remove these links in the source first, or replay with plan-replay.py and run-replay.py alone, which leave links alone, and leave these links out of the first move in the README'"'"'s Taking over the source'"'"'s name" "$T/ro-out" && grep -q "^replay.py: stopped in the survey of the sub-issue links, before any write to GitHub in this run" "$T/ro-out" && ! grep -q "to confirm" "$T/ro-out" && ! writes "$T/ro" && [ -e "$T/ro/absent" ] && [ ! -e "$T/runs-o/tool.progress.json" ] || { cat "$T/ro-out"; writes "$T/ro"; exit 1; }'
 
 printf '\n%s passed, %s failed\n' "$passed" "$failed"
 [ "$failed" = 0 ]
