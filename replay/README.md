@@ -231,7 +231,18 @@ The target does not get the original times and authors: every item, comment and 
 
 ## Taking over the source's name
 
-Once the replay is checked, give it the source's name, so that links to the source's items reach the replayed ones under the same numbers. Archive the source under a new name first, since its issues, pull requests and comments exist nowhere else, then rename the replay; for `tiavelum/mac-config` replayed into `tiavelum/mac-config-new`:
+Once the replay is checked, give it the source's name, so that links to the source's items reach the replayed ones under the same numbers.
+
+First move what a replay does not carry and an archive no longer lets you change: where an item of the source is a sub-issue of an issue elsewhere, link the replayed item and unlink the source's, since GitHub refuses to remove a sub-issue of an archived repository. For an item `N` of the source whose parent is `owner/other#P`:
+
+```sh
+id=$(gh api repos/tiavelum/mac-config-new/issues/N --jq .id)
+old=$(gh api repos/tiavelum/mac-config/issues/N --jq .id)
+gh api -X POST repos/owner/other/issues/P/sub_issues -F sub_issue_id=$id
+gh api -X DELETE repos/owner/other/issues/P/sub_issue -F sub_issue_id=$old
+```
+
+Then archive the source under a new name first, since its issues, pull requests and comments exist nowhere else, then rename the replay; for `tiavelum/mac-config` replayed into `tiavelum/mac-config-new`:
 
 ```sh
 gh api -X PATCH repos/tiavelum/mac-config -f name=mac-config-archive
