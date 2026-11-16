@@ -434,7 +434,10 @@ status_run_plan=$?
 # "<method> <endpoint>" and acts on its first occurrence: RATE_LIMIT answers
 # 403 with Retry-After: 1 and does nothing, INTERRUPT sends the caller a
 # SIGINT, as a Ctrl-C does, LOSE does the call and answers 502; FAKE_GH_SKIP
-# gives its number to an issue someone else creates.
+# gives its number to an issue someone else creates. It lists the signing keys
+# of the account from ssh_signing_keys.json and gpg_keys.json, none where a
+# file is missing; with FAKE_GH_NO_SCOPE, it refuses those lists as GitHub
+# refuses a token without the scope they need.
 mkdir "$T/bin-target"
 cat >"$T/bin-target/gh" <<'EOF'
 #!/usr/bin/env python3
@@ -555,6 +558,9 @@ def merge(it, body, items, closes):
 def handle(method, endpoint, body):
     path, _, query = endpoint.partition("?")
     q = {k: v[-1] for k, v in parse_qs(query).items()}
+    if method == "GET" and path in ("user/ssh_signing_keys", "user/gpg_keys"):
+        per, number = int(q.get("per_page", 30)), int(q.get("page", 1))
+        return 200, load(path[len("user/"):], [])[(number - 1) * per:number * per]
     prefix = f"repos/{slug}"
     if path != prefix and not path.startswith(prefix + "/"):
         return 404, {"message": "Not Found"}
@@ -673,6 +679,11 @@ headers = []
 if once("FAKE_GH_RATE_LIMIT", call):
     status, data = 403, {"message": "You have exceeded a secondary rate limit."}
     headers = [("Retry-After", "1")]
+elif endpoint.startswith("user/") and os.environ.get("FAKE_GH_NO_SCOPE"):
+    status, data = 404, {"message": "Not Found"}
+    kind = endpoint.split("?")[0].split("/")[1][:-1]
+    headers = [("X-OAuth-Scopes", "repo, read:org"),
+               ("X-Accepted-OAuth-Scopes", f"admin:{kind}, read:{kind}, write:{kind}")]
 else:
     if once("FAKE_GH_INTERRUPT", call):
         os.kill(os.getppid(), signal.SIGINT)
@@ -841,6 +852,185 @@ replay "$T/gh-d" ada-example/tool-d --pace 0 --state "$T/d.state.json" "$T/bad-t
 status_d=$?
 check "run-replay.py stops when the tree after a merge differs from the plan's, and names both" \
   '[ "$status_d" = 1 ] && grep -q "^run-replay.py: after the merge of #[0-9]*, the tree of main is [0-9a-f]\{7\}, the source'"'"'s [0-9a-f]\{7\}; the replay stops at the first difference" "$T/d-out" || { cat "$T/d-out"; exit 1; }'
+
+# --final-name: E, an unsigned replay whose squash messages name the source,
+# the name the target takes over; then a resume without the option.
+target "$T/gh-e" ada-example/tool-e
+replay "$T/gh-e" ada-example/tool-e --pace 0 --final-name ada-example/tool --state "$T/e.state.json" "$T/run.jsonl" "$mirror" ada-example/tool-e \
+  >"$T/e-out" 2>&1
+status_e=$?
+rcheck "run-replay.py --final-name puts the given name in the URL of a squash message" "$T/gh-e" "$T/e.state.json" \
+  'git("log", "-1", "--format=%B", M[S["M3"]]) == "fix: repair the parser (#3)\n\nThe parser failed on empty input.\n\nhttps://github.com/ada-example/tool/pull/3" and items[3]["title"] == "fix: repair the parser"'
+check "run-replay.py names in the totals the URL {pr_url} gets, with --final-name and without" \
+  '[ "$status_e" = 0 ] && grep -Fqx "  {pr_url} in 1 squash message: https://github.com/ada-example/tool/pull/<number>" "$T/e-out" && grep -Fqx "  {pr_url} in 1 squash message: https://github.com/ada-example/tool-new/pull/<number>" "$T/a-out" || { cat "$T/e-out"; exit 1; }'
+replay "$T/gh-e" ada-example/tool-e --pace 0 --state "$T/e.state.json" "$T/run.jsonl" "$mirror" ada-example/tool-e \
+  >"$T/e-again-out" 2>&1
+status_e_again=$?
+replay "$T/gh-e" ada-example/tool-e --final-name tool "$T/run.jsonl" "$mirror" ada-example/tool-e >/dev/null 2>&1
+status_bad_name=$?
+replay "$T/gh-e" ada-example/tool-e --sign ada.example.com "$T/run.jsonl" "$mirror" ada-example/tool-e >/dev/null 2>&1
+status_bad_sign=$?
+check "run-replay.py refuses a --final-name not of the form owner/repo, a --sign that is no address, and a resume with other options" \
+  '[ "$status_bad_name$status_bad_sign$status_e_again" = 221 ] && grep -q "^run-replay.py: .*e.state.json records a run with --final-name ada-example/tool; resume with the same options$" "$T/e-again-out" || { echo "$status_bad_name$status_bad_sign$status_e_again"; cat "$T/e-again-out"; exit 1; }'
+
+# --sign: the checks before the confirmation, which stop a run before it
+# writes anything. nothing_written <folder> <state file>: no write, no ref,
+# no state file and no work repository.
+nothing_written() {
+  ! writes "$1" && [ -z "$(git --git-dir="$1/repo.git" for-each-ref)" ] && [ ! -e "$2" ] && [ ! -e "${2%.state.json}.work.git" ]
+}
+target "$T/gh-nokey"
+replay "$T/gh-nokey" ada-example/tool-new --sign ada@example.com --state "$T/nokey.state.json" "$T/run.jsonl" "$mirror" ada-example/tool-new \
+  >"$T/nokey-out" 2>&1
+status_nokey=$?
+check "run-replay.py --sign stops without a user.signingkey, before writing" \
+  '[ "$status_nokey" = 1 ] && grep -q "^run-replay.py: --sign needs a user.signingkey in your git configuration$" "$T/nokey-out" && nothing_written "$T/gh-nokey" "$T/nokey.state.json" || { cat "$T/nokey-out"; exit 1; }'
+
+# A GPG key, through a fake gpg that knows one secret key, with a signing
+# subkey; no real key is involved.
+mkdir "$T/bin-gpg"
+cat >"$T/bin-gpg/gpg" <<'EOF'
+#!/bin/sh
+for last; do :; done
+[ "$last" = 0123456789ABCDEF ] || { echo "gpg: error reading key: No secret key" >&2; exit 2; }
+printf '%s\n' 'sec:u:255:22:0123456789ABCDEF:1772000000:::u:::scESC:::+:::ed25519:::0:' \
+  'fpr:::::::::FEDCBA98765432100123456789ABCDEF:' \
+  'ssb:u:255:22:1111222233334444:1772000000::::::s:::+:::ed25519::' \
+  'fpr:::::::::AAAABBBBCCCCDDDD1111222233334444:'
+EOF
+chmod +x "$T/bin-gpg/gpg"
+cat "$T/global" - >"$T/global-gpg" <<EOF
+[user]
+	signingkey = 0123456789ABCDEF
+[gpg]
+	program = $T/bin-gpg/gpg
+EOF
+target "$T/gh-gpg"
+(GIT_CONFIG_GLOBAL=$T/global-gpg && export GIT_CONFIG_GLOBAL &&
+  replay "$T/gh-gpg" ada-example/tool-new --sign ada@example.com --state "$T/gpg.state.json" "$T/run.jsonl" "$mirror" ada-example/tool-new) \
+  >"$T/gpg-out" 2>&1
+status_gpg=$?
+echo '[{"id": 3, "key_id": "FEDCBA9876543210", "can_sign": false, "subkeys": [{"id": 4, "key_id": "1111222233334444", "can_sign": true}]}]' >"$T/gh-gpg/gpg_keys.json"
+(GIT_CONFIG_GLOBAL=$T/global-gpg && export GIT_CONFIG_GLOBAL &&
+  replay "$T/gh-gpg" no --sign ada@example.com --state "$T/gpg.state.json" "$T/run.jsonl" "$mirror" ada-example/tool-new) \
+  >"$T/gpg-known-out" 2>&1
+status_gpg_known=$?
+check "run-replay.py --sign stops before writing where GitHub does not list the GPG key as one that signs" \
+  '[ "$status_gpg" = 1 ] && grep -q "^run-replay.py: GitHub does not list the GPG key 0123456789ABCDEF among your GPG keys that sign" "$T/gpg-out" && grep -q " GET user/gpg_keys?per_page=100&page=1$" "$T/gh-gpg/calls" && nothing_written "$T/gh-gpg" "$T/gpg.state.json" || { cat "$T/gpg-out"; exit 1; }'
+check "run-replay.py --sign takes a GPG key whose signing subkey GitHub lists, and says a stopped push cannot resume with it" \
+  '[ "$status_gpg_known" = 1 ] && grep -q "run-replay.py: not confirmed; nothing changed$" "$T/gpg-known-out" && grep -Eqx "  commits to sign +9" "$T/gpg-known-out" && grep -qx "  signed: the commits committed by ada@example.com, with the GPG key 0123456789ABCDEF" "$T/gpg-known-out" && grep -q "^  this key does not sign a commit the same way twice" "$T/gpg-known-out" && nothing_written "$T/gh-gpg" "$T/gpg.state.json" || { cat "$T/gpg-known-out"; exit 1; }'
+
+# An SSH key: a throwaway Ed25519 key without a passphrase, which GitHub
+# lists in the targets that know it, and an allowed-signers file for git log.
+if command -v ssh-keygen >/dev/null 2>&1; then
+  ssh-keygen -q -t ed25519 -N '' -C test -f "$T/sign-key"
+  # The folder as Python prints a path, without the double slash that a
+  # TMPDIR ending in a slash, as on macOS, leaves in it.
+  P=$(printf '%s\n' "$T" | tr -s /)
+  SIGNERS=$T/allowed-signers
+  export SIGNERS
+  echo "ada@example.com $(cut -d' ' -f1,2 "$T/sign-key.pub")" >"$SIGNERS"
+  cat "$T/global" - >"$T/global-sign" <<EOF
+[gpg]
+	format = ssh
+[user]
+	signingkey = $T/sign-key.pub
+EOF
+  # sign_target <folder>: a target whose account lists the key.
+  sign_target() {
+    target "$1" && printf '[{"id": 1, "key": "%s", "title": "test", "created_at": "2026-11-01T00:00:00Z"}]\n' "$(cut -d' ' -f1,2 "$T/sign-key.pub")" >"$1/ssh_signing_keys.json"
+  }
+  # sign_replay <folder> <answer> <state file>: a replay that signs Ada's commits.
+  sign_replay() {
+    (GIT_CONFIG_GLOBAL=$T/global-sign && export GIT_CONFIG_GLOBAL &&
+      replay "$1" "$2" --pace 0 --sign ada@example.com --state "$3" "$T/run.jsonl" "$mirror" ada-example/tool-new)
+  }
+
+  # A key with a passphrase that no agent holds would ask at every commit.
+  ssh-keygen -q -t ed25519 -N x -C test -f "$T/pass-key"
+  sed "s#sign-key.pub#pass-key.pub#" "$T/global-sign" >"$T/global-pass"
+  sign_target "$T/gh-pass"
+  (GIT_CONFIG_GLOBAL=$T/global-pass && export GIT_CONFIG_GLOBAL && unset SSH_AUTH_SOCK &&
+    replay "$T/gh-pass" ada-example/tool-new --pace 0 --sign ada@example.com --state "$T/pass.state.json" "$T/run.jsonl" "$mirror" ada-example/tool-new) \
+    >"$T/pass-out" 2>&1
+  status_pass=$?
+  check "run-replay.py --sign stops before writing when the key has a passphrase and no agent holds it" \
+    '[ "$status_pass" = 1 ] && grep -q "the signing key is not in the agent" "$T/pass-out" && nothing_written "$T/gh-pass" "$T/pass.state.json" || { cat "$T/pass-out"; exit 1; }'
+
+  target "$T/gh-unknown"
+  sign_replay "$T/gh-unknown" ada-example/tool-new "$T/unknown.state.json" >"$T/unknown-out" 2>&1
+  status_unknown=$?
+  check "run-replay.py --sign stops before writing where GitHub does not list the SSH key as a signing key" \
+    '[ "$status_unknown" = 1 ] && grep -Fqx "run-replay.py: GitHub does not list $P/sign-key.pub among your SSH signing keys, so it would show the signed commits as unverified; add it with: gh ssh-key add $P/sign-key.pub --type signing" "$T/unknown-out" && grep -q " GET user/ssh_signing_keys?per_page=100&page=1$" "$T/gh-unknown/calls" && nothing_written "$T/gh-unknown" "$T/unknown.state.json" || { cat "$T/unknown-out"; exit 1; }'
+  sign_target "$T/gh-scope"
+  (FAKE_GH_NO_SCOPE=1 && export FAKE_GH_NO_SCOPE && sign_replay "$T/gh-scope" ada-example/tool-new "$T/scope.state.json") >"$T/scope-out" 2>&1
+  status_scope=$?
+  check "run-replay.py --sign names the scope gh lacks to list the signing keys, and stops before writing" \
+    '[ "$status_scope" = 1 ] && grep -Fqx "run-replay.py: GitHub refused to list your SSH signing keys (HTTP 404), which gh may read only with the scope read:ssh_signing_key; add it with: gh auth refresh -s read:ssh_signing_key" "$T/scope-out" && nothing_written "$T/gh-scope" "$T/scope.state.json" || { cat "$T/scope-out"; exit 1; }'
+
+  # SA: one uninterrupted signed run.
+  sign_target "$T/gh-sa"
+  sign_replay "$T/gh-sa" ada-example/tool-new "$T/sa.state.json" >"$T/sa-out" 2>&1
+  status_sa=$?
+  check "run-replay.py --sign says in the totals how many commits it signs and with which key, and in each push how many it signed" \
+    '[ "$status_sa" = 0 ] && grep -Eqx "  commits to sign +9" "$T/sa-out" && grep -Fqx "  signed: the commits committed by ada@example.com, with the SSH key $P/sign-key.pub (ssh-ed25519)" "$T/sa-out" && ! grep -q "same way twice" "$T/sa-out" && grep -q "#3 branch fix/3-parser, 1 commit, 0 signed, at " "$T/sa-out" && grep -q " 3 commits to main, 3 signed, now at " "$T/sa-out" && grep -q "#2 branch feat/2-thing, 2 commits, 2 signed, at " "$T/sa-out" || { cat "$T/sa-out"; exit 1; }'
+  rcheck "run-replay.py --sign signs exactly the recreated commits whose committer has the address" "$T/gh-sa" "$T/sa.state.json" \
+    '(marks := {c["sha"]: (c["committer"]["email"], git("-c", "gpg.ssh.allowedSignersFile=" + S["SIGNERS"], "log", "-1", "--format=%G?", M[c["sha"]])) for e in E for c in e.get("commits", [])}) and all(mark == ("G" if email == "ada@example.com" else "N") for email, mark in marks.values()) and sorted(mark for _, mark in marks.values()) == ["G"] * 9 + ["N"] and marks[S["F1"]] == ("bob@example.com", "N") and [git("log", "-1", "--format=%G?", M[S[k]]) for k in ("M2", "M3")] == ["N", "N"]'
+  # shape <folder>: every commit of the target, without its hash.
+  shape() { git --git-dir="$1/repo.git" log --all --format='%T %an %ae %ad %cn %ce %cd %s' --date=raw | sort; }
+  check "run-replay.py --sign changes no tree, identity, date or subject" \
+    'shape "$T/gh-a" >"$T/a-shape" && shape "$T/gh-sa" >"$T/sa-shape" && [ "$(wc -l <"$T/a-shape")" -eq 12 ] && diff "$T/a-shape" "$T/sa-shape"'
+
+  # SB: the same signed run, killed right after it pushed the branch of #2,
+  # as a crash would, then resumed; and SC, a copy of that target resumed
+  # from a state file that records another hash for the branch's second
+  # commit, as a key that signs differently each time would leave it.
+  sign_target "$T/gh-sb"
+  cat >"$T/gh-sb/repo.git/hooks/post-receive" <<'EOF'
+#!/bin/sh
+# Kills the run-replay.py that pushes, once, after its push of feat/2-thing.
+grep -q ' refs/heads/feat/2-thing$' || exit 0
+[ ! -e ../killed ] || exit 0
+touch ../killed
+pid=$PPID
+while [ "${pid:-1}" -gt 1 ]; do
+  case $(ps -o args= -p "$pid") in
+  *run-replay.py*)
+    kill -9 "$pid"
+    exit 0
+    ;;
+  esac
+  pid=$(ps -o ppid= -p "$pid" | tr -d ' ')
+done
+EOF
+  chmod +x "$T/gh-sb/repo.git/hooks/post-receive"
+  sign_replay "$T/gh-sb" ada-example/tool-new "$T/sb.state.json" >"$T/sb-out" 2>&1
+  echo $? >"$T/sb-status"
+  # The push the kill left running ends on its own; then the copy.
+  sleep 1
+  cp -R "$T/gh-sb" "$T/gh-sc"
+  python3 - "$T/sb.state.json" "$T/sc.state.json" "$B2" <<'EOF'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as f:
+    state = json.load(f)
+assert sys.argv[3] in state["hashes"], "the killed run saved no hash before its push"
+state["hashes"][sys.argv[3]] = "0123456789abcdef0123456789abcdef01234567"
+with open(sys.argv[2], "w", encoding="utf-8") as f:
+    json.dump(state, f)
+EOF
+  sc_refs=$(git --git-dir="$T/gh-sc/repo.git" for-each-ref)
+  sc_writes=$(writes "$T/gh-sc" | wc -l)
+  sign_replay "$T/gh-sb" ada-example/tool-new "$T/sb.state.json" >>"$T/sb-out" 2>&1
+  echo $? >>"$T/sb-status"
+  sign_replay "$T/gh-sc" ada-example/tool-new "$T/sc.state.json" >"$T/sc-out" 2>&1
+  status_sc=$?
+  check "run-replay.py --sign ends a run killed after a push and resumed with the same hashes as an uninterrupted one" \
+    '[ "$(tr "\n" " " <"$T/sb-status")" = "137 0 " ] && grep -q "Resume the replay of ada-example/tool into ada-example/tool-new at event 5 of 23" "$T/sb-out" && [ -n "$(git --git-dir="$T/gh-sc/repo.git" for-each-ref refs/heads/feat/2-thing)" ] && dump "$T/gh-sa" >"$T/sa-dump" && dump "$T/gh-sb" >"$T/sb-dump" && diff "$T/sa-dump" "$T/sb-dump" && python3 -c "import json, sys; a, b = (json.load(open(f))[\"hashes\"] for f in sys.argv[1:]); sys.exit(a != b)" "$T/sa.state.json" "$T/sb.state.json" || { cat "$T/sb-status" "$T/sb-out"; exit 1; }'
+  check "run-replay.py stops before pushing where a rebuilt commit gets another hash than the state file records" \
+    'b2=$(echo "$B2" | cut -c1-7) && [ "$status_sc" = 1 ] && grep -q "run-replay.py: commit $b2 was rebuilt as [0-9a-f]\{7\}, but $P/sc.state.json records 0123456; its signature differs from the one the first run made: the signing key signs differently each time, or it is another key. The run stops before it pushes a second history$" "$T/sc-out" && grep -q "^run-replay.py: stopped in event 5 of 23" "$T/sc-out" && [ "$(git --git-dir="$T/gh-sc/repo.git" for-each-ref)" = "$sc_refs" ] && [ "$(writes "$T/gh-sc" | wc -l)" -eq "$sc_writes" ] || { cat "$T/sc-out"; exit 1; }'
+else
+  echo "ssh-keygen is missing; run-replay.py --sign with an SSH key not tested"
+fi
 
 printf '\n%s passed, %s failed\n' "$passed" "$failed"
 [ "$failed" = 0 ]

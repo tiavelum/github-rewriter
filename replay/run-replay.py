@@ -4,6 +4,7 @@ repository, so that the target gets the source's labels, issues, pull
 requests, comments and commits under the same numbers.
 
   run-replay.py [--state <file>] [--with-times] [--pace <seconds>]
+                [--sign <address>] [--final-name <owner/repo>]
                 <event file> <mirror> <owner/repo>
 
 <mirror> is the mirror the event file was planned from; <owner/repo> is the
@@ -18,7 +19,10 @@ Prints the totals and asks for <owner/repo> to be typed before the first
 write; anything else stops without writing. Writes to GitHub through gh api
 and git push only, at least --pace seconds apart (default 1), and waits out
 GitHub's rate limits. --with-times appends the original creation time to
-each body and comment.
+each body and comment. --sign signs each recreated commit whose committer
+has <address> with the signing key of your git configuration, after checking
+that GitHub knows the key as a signing key. --final-name fills {pr_url} in
+squash messages with the URL under the name the target will finally carry.
 """
 
 import bisect
@@ -63,6 +67,13 @@ CATCH_UP_WAIT = 3
 # GitHub closes the items a merged pull request names with a closing keyword
 # shortly after the merge; close-item waits this long for that.
 CLOSE_WAIT = 10
+SLUG = re.compile(r"[\w.-]+/[\w.-]+")
+# The scope gh needs to list the signing keys of each gpg.format, and the
+# endpoint that lists them.
+KEY_LISTS = {
+    "ssh": ("user/ssh_signing_keys", "read:ssh_signing_key", "SSH signing keys"),
+    "openpgp": ("user/gpg_keys", "read:gpg_key", "GPG keys"),
+}
 
 
 class ReplayError(Exception):
@@ -127,6 +138,29 @@ def parse_response(out):
     return int(lines[0].split()[1]), headers, data
 
 
+def git_config(name):
+    """A value of the git configuration that git commit-tree would read, or None."""
+    result = run(["git", "config", "--get", name])
+    return result.stdout.strip() if result.returncode == 0 and result.stdout.strip() else None
+
+
+def scopes(header):
+    return {s.strip() for s in (header or "").split(",") if s.strip()}
+
+
+def lacks_scope(headers):
+    """Whether GitHub's answer leaves open that the token lacks the scope the
+    endpoint needs: true unless the token holds one of the scopes it accepts,
+    where an admin: or write: scope also holds its read: scope, as gh counts."""
+    held = set()
+    for scope in scopes(headers.get("x-oauth-scopes")):
+        level, _, name = scope.partition(":")
+        held.add(scope)
+        if name and level in ("admin", "write"):
+            held |= {f"read:{name}", f"write:{name}"}
+    return not scopes(headers.get("x-accepted-oauth-scopes")) & held
+
+
 def message_of(data):
     if not isinstance(data, dict):
         return ""
@@ -161,6 +195,7 @@ class Api:
     def __init__(self, pace):
         self.pace = pace
         self.last_write = None
+        self.headers = {}
 
     def before_write(self):
         if self.last_write is not None:
@@ -188,6 +223,7 @@ class Api:
             if write:
                 self.after_write()
             status, headers, data = parse_response(result.stdout)
+            self.headers = headers
             wait, why = rate_limit_wait(status, headers, data, attempt), "rate limited"
             if wait is None and not write and (status is None or status >= 500):
                 wait, why = TRANSIENT_WAIT, f"HTTP {status}" if status else "no answer"
@@ -264,10 +300,13 @@ def utc_text(stamp):
 
 
 class Replay:
-    def __init__(self, events_path, mirror, slug, state_path, with_times, pace):
+    def __init__(self, events_path, mirror, slug, state_path, with_times, pace, sign, final_name):
         self.events_path, self.mirror, self.slug = events_path, mirror, slug
         self.state_path, self.work = state_path, work_path(state_path)
         self.with_times = with_times
+        self.sign, self.final_name = sign, final_name
+        # The options of git commit-tree that sign with the checked key, and what to say of it.
+        self.sign_options, self.key_note, self.steady_key = [], "", True
         self.api = Api(pace)
         self.header, self.events, self.digest = load_events(events_path)
         self.default = self.header["default_branch"]
@@ -297,6 +336,13 @@ class Replay:
             )
         if state.get("target") != self.slug:
             raise ReplayError(f"{self.state_path} records a replay into {state.get('target')}")
+        for option, value in (("--sign", self.sign), ("--final-name", self.final_name)):
+            recorded = state.get(option.strip("-").replace("-", "_"))
+            if recorded != value:
+                was = f"{option} {recorded}" if recorded else f"no {option}"
+                raise ReplayError(
+                    f"{self.state_path} records a run with {was}; resume with the same options"
+                )
         self.done, self.highest, self.head = state["done"], state["highest"], state["head"]
         self.hashes = state["hashes"]
         self.numbers = {int(k): v for k, v in state["numbers"].items()}
@@ -312,6 +358,8 @@ class Replay:
             "event_file": str(self.events_path),
             "source": self.header["source"],
             "target": self.slug,
+            "sign": self.sign,
+            "final_name": self.final_name,
             "done": self.done,
             "finished": self.finished,
             "highest": self.highest,
@@ -344,6 +392,129 @@ class Replay:
                 f" {missing[0][:7]}; give the mirror it was planned from"
             )
 
+    def check_signing(self):
+        """Checks the signing key of the git configuration as sign-commits.sh
+        does, and that GitHub knows it as a signing key."""
+        key = git_config("user.signingkey")
+        if not key:
+            raise ReplayError("--sign needs a user.signingkey in your git configuration")
+        form = git_config("gpg.format") or "openpgp"
+        if form == "ssh":
+            known = self.check_ssh_key(key)
+        elif form == "openpgp":
+            known = self.check_gpg_key(key)
+        else:
+            raise ReplayError(f"--sign signs with gpg.format ssh or openpgp, not {form}")
+        endpoint, scope, what = KEY_LISTS[form]
+        entries, page = [], 1
+        while True:
+            status, data = self.api.call("GET", f"{endpoint}?per_page=100&page={page}")
+            if status in (403, 404) and lacks_scope(self.api.headers):
+                raise ReplayError(
+                    f"GitHub refused to list your {what} (HTTP {status}), which gh may read only"
+                    f" with the scope {scope}; add it with: gh auth refresh -s {scope}"
+                )
+            if status != 200:
+                raise ReplayError(f"GET {endpoint} answered HTTP {status}: {message_of(data)}")
+            if not data:
+                break
+            entries.extend(data)
+            page += 1
+        known(entries)
+        # The key is passed on explicitly, so that the key checked is the key that signs.
+        self.sign_options = ["-c", f"gpg.format={form}", f"-S{key}"]
+
+    def check_ssh_key(self, key):
+        if key.startswith("key::"):
+            public, private, shown = key[len("key::") :], None, "the key of user.signingkey"
+        else:
+            path = Path(key).expanduser()
+            if not path.is_file():
+                raise ReplayError(f"no signing key at {path}")
+            public = path.read_text(encoding="utf-8", errors="replace").strip()
+            if public.startswith("-----BEGIN"):
+                # user.signingkey may name the private key; its public key lies next to it.
+                private, path = path, path.with_name(path.name + ".pub")
+                if not path.is_file():
+                    raise ReplayError(f"no public key {path} next to the signing key {private}")
+                public = path.read_text(encoding="utf-8", errors="replace").strip()
+            else:
+                private = (
+                    path.with_name(path.name[: -len(".pub")]) if key.endswith(".pub") else None
+                )
+            shown = str(path)
+        parts = public.split()
+        if len(parts) < 2:
+            raise ReplayError(f"{shown} holds no SSH public key")
+        kind, blob = parts[0], parts[1]
+        # A key with a passphrase has to be in the agent, or every commit asks.
+        no_passphrase = (
+            private is not None
+            and private.is_file()
+            and run(["ssh-keygen", "-y", "-P", "", "-f", str(private)]).returncode == 0
+        )
+        if not no_passphrase and blob not in run(["ssh-add", "-L"]).stdout.split():
+            keychain = " --apple-use-keychain" if sys.platform == "darwin" else ""
+            raise ReplayError(
+                "the signing key is not in the agent; load it with:"
+                f" ssh-add{keychain} {private or '<its private key>'}"
+            )
+        # Ed25519 signs the same commit with the same signature, so a resumed
+        # run rebuilds a signed commit with the same hash.
+        self.steady_key = kind == "ssh-ed25519"
+        self.key_note = f"the SSH key {shown} ({kind})"
+
+        def known(entries):
+            if not any(blob in str(entry.get("key", "")).split() for entry in entries):
+                raise ReplayError(
+                    f"GitHub does not list {shown} among your SSH signing keys, so it would show"
+                    " the signed commits as unverified; add it with:"
+                    f" gh ssh-key add {shown if key[:5] != 'key::' else '<public key file>'}"
+                    " --type signing"
+                )
+
+        return known
+
+    def check_gpg_key(self, key):
+        program = git_config("gpg.openpgp.program") or git_config("gpg.program") or "gpg"
+        listed = run(
+            [
+                program,
+                "--batch",
+                "--with-colons",
+                "--with-subkey-fingerprint",
+                "--list-secret-keys",
+                key.rstrip("!"),
+            ]
+        )
+        if listed.returncode:
+            raise ReplayError(f"{program} has no secret key {key}")
+        ids = {
+            line.split(":")[9][-16:].upper()
+            for line in listed.stdout.splitlines()
+            if line.startswith("fpr:") and len(line.split(":")) > 9
+        }
+        # An OpenPGP signature holds the time it was made, so a resumed run
+        # rebuilds a signed commit with another hash.
+        self.steady_key = False
+        self.key_note = f"the GPG key {key}"
+
+        def known(entries):
+            signing = {
+                str(k.get("key_id", "")).upper()
+                for entry in entries
+                for k in [entry, *(entry.get("subkeys") or [])]
+                if k.get("can_sign")
+            }
+            if not ids & signing:
+                raise ReplayError(
+                    f"GitHub does not list the GPG key {key} among your GPG keys that sign, so it"
+                    " would show the signed commits as unverified; add it with:"
+                    f" gpg --armor --export {key.rstrip('!')} | gh gpg-key add -"
+                )
+
+        return known
+
     def read_target(self):
         status, info = self.api.call("GET", f"repos/{self.slug}")
         if status != 200:
@@ -364,6 +535,9 @@ class Replay:
                 f" source's {self.default}; rename it on GitHub first"
             )
         self.url = info["html_url"]
+        # {pr_url} names the target, or the repository the target will be renamed to.
+        host = self.url.rsplit("/", 2)[0]
+        self.pr_base = f"{host}/{self.final_name}" if self.final_name else self.url
         protocol = run(["gh", "config", "get", "git_protocol"]).stdout.strip()
         self.remote = info["ssh_url"] if protocol == "ssh" else info["clone_url"]
         newest = self.api.expect(
@@ -442,8 +616,32 @@ class Replay:
             ("merges", count("merge-pull")),
             ("closes", count("close-item")),
         ]
+        if self.sign:
+            rows.append(
+                (
+                    "commits to sign",
+                    sum(
+                        c["committer"]["email"] == self.sign
+                        for e in left
+                        for c in e.get("commits", [])
+                    ),
+                )
+            )
         for name, value in rows:
             print(f"  {name:<25}{value:>6}")
+        if self.sign:
+            print(f"  signed: the commits committed by {self.sign}, with {self.key_note}")
+            if not self.steady_key:
+                print(
+                    "  this key does not sign a commit the same way twice: a run stopped in a push"
+                    " of signed commits cannot resume"
+                )
+        urls = sum(e["kind"] == "merge-pull" and "{pr_url}" in e["commit_message"] for e in left)
+        if urls:
+            print(
+                f"  {{pr_url}} in {urls} squash message{'' if urls == 1 else 's'}:"
+                f" {self.pr_base}/pull/<number>"
+            )
         if updated:
             print(f"  labels the target has and the replay updates: {', '.join(updated)}")
         if removed:
@@ -502,12 +700,38 @@ class Replay:
             GIT_COMMITTER_EMAIL=c["email"],
             GIT_COMMITTER_DATE=git_date(c["date"]),
         )
+        signed = self.sign is not None and c["email"] == self.sign
         args = ["commit-tree", commit["tree"]]
         for parent in parents:
             args += ["-p", parent]
+        if signed:
+            # -c goes before the command, -S<key> after it.
+            args = [*self.sign_options[:2], *args, self.sign_options[2]]
         sha = git(self.work, *args, stdin=self.text(commit["message"]), env=env)
+        recorded = self.hashes.get(commit["sha"])
+        if recorded and recorded != sha:
+            why = (
+                "its signature differs from the one the first run made: the signing key signs"
+                " differently each time, or it is another key"
+                if signed
+                else "it differs from the one the first run made"
+            )
+            raise ReplayError(
+                f"commit {commit['sha'][:7]} was rebuilt as {sha[:7]}, but {self.state_path}"
+                f" records {recorded[:7]}; {why}. The run stops before it pushes a second history"
+            )
         self.hashes[commit["sha"]] = sha
-        return sha
+        return sha, signed
+
+    def recreate_all(self, e):
+        """Recreates the commits of a push event and records their hashes before
+        the push, so that a resumed run can check it rebuilds the same ones."""
+        sha, signed = None, 0
+        for commit in e["commits"]:
+            sha, was_signed = self.recreate(commit)
+            signed += was_signed
+        self.save_state()
+        return sha, f", {signed} signed" if self.sign else ""
 
     def push(self, sha, branch):
         self.api.before_write()
@@ -516,24 +740,23 @@ class Replay:
         git(self.work, "update-ref", f"refs/target/{branch}", sha)
 
     def push_commits(self, e):
-        sha = None
-        for commit in e["commits"]:
-            sha = self.recreate(commit)
+        sha, signed = self.recreate_all(e)
         self.push(sha, e["branch"])
         self.head = sha
-        return f"{commits(len(e['commits']))} to {e['branch']}, now at {sha[:7]}"
+        return f"{commits(len(e['commits']))} to {e['branch']}{signed}, now at {sha[:7]}"
 
     def push_branch(self, e):
         if e["base_commit"] not in self.hashes:
             raise ReplayError(
                 f"the branch of #{e['number']} starts on {e['base_commit'][:7]}, not yet recreated"
             )
-        sha = None
-        for commit in e["commits"]:
-            sha = self.recreate(commit)
+        sha, signed = self.recreate_all(e)
         self.push(sha, e["branch"])
         self.heads[e["number"]] = sha
-        return f"#{e['number']} branch {e['branch']}, {commits(len(e['commits']))}, at {sha[:7]}"
+        return (
+            f"#{e['number']} branch {e['branch']}, {commits(len(e['commits']))}{signed},"
+            f" at {sha[:7]}"
+        )
 
     # Items
 
@@ -633,7 +856,8 @@ class Replay:
         if n not in self.heads or n not in self.urls:
             raise ReplayError(f"#{n} is merged before its branch was pushed or it was created")
         title = self.text(e["commit_title"])
-        message = self.text(e["commit_message"]).replace("{pr_url}", self.urls[n])
+        url = f"{self.pr_base}/pull/{n}" if self.final_name else self.urls[n]
+        message = self.text(e["commit_message"]).replace("{pr_url}", url)
         sha, note = None, ""
         if self.resumed_at == e["seq"]:
             pull = self.api.expect("GET", f"repos/{self.slug}/pulls/{n}")
@@ -764,6 +988,8 @@ class Replay:
     def main(self):
         self.check_mirror()
         resumed = self.load_state()
+        if self.sign:
+            self.check_signing()
         highest, refs = self.read_target()
         self.check_target(resumed, highest, refs)
         # Labels the target has, such as GitHub's defaults, are changed only before the first event.
@@ -816,7 +1042,7 @@ class Replay:
 def main(argv):
     if argv[:1] in (["-h"], ["--help"]):
         usage(0)
-    state, with_times, pace = None, False, 1.0
+    state, with_times, pace, sign, final_name = None, False, 1.0, None, None
     while argv[:1] and argv[0].startswith("--"):
         option, argv = argv[0], argv[1:]
         if option == "--state" and argv:
@@ -825,12 +1051,16 @@ def main(argv):
             with_times = True
         elif option == "--pace" and argv and re.fullmatch(r"\d+(\.\d+)?", argv[0]):
             pace, argv = float(argv[0]), argv[1:]
+        elif option == "--sign" and argv and re.fullmatch(r"[^@\s]+@[^@\s]+", argv[0]):
+            sign, argv = argv[0], argv[1:]
+        elif option == "--final-name" and argv and SLUG.fullmatch(argv[0]):
+            final_name, argv = argv[0], argv[1:]
         else:
             usage()
     if len(argv) != 3 or argv[0].startswith("-"):
         usage()
     events_path, mirror, slug = Path(argv[0]), Path(argv[1]), argv[2]
-    if not re.fullmatch(r"[\w.-]+/[\w.-]+", slug):
+    if not SLUG.fullmatch(slug):
         usage()
     replay = None
     try:
@@ -841,7 +1071,7 @@ def main(argv):
         state = state or default_state_path(events_path)
         if not state.parent.is_dir():
             raise ReplayError(f"no folder {state.parent} for the state file")
-        replay = Replay(events_path, mirror, slug, state, with_times, pace)
+        replay = Replay(events_path, mirror, slug, state, with_times, pace, sign, final_name)
         return replay.main()
     except ReplayError as stop:
         print(f"{PROG}: {stop}", file=sys.stderr)
