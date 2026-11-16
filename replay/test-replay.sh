@@ -435,7 +435,8 @@ status_run_plan=$?
 # from the files in $FAKE_GH_API, as the fake gh of the source does, and a
 # call without --include with the body alone, as gh does. Each FAKE_GH_* variable names a call
 # "<method> <endpoint>" and acts on its first occurrence: RATE_LIMIT answers
-# 403 with Retry-After: 1 and does nothing, INTERRUPT sends the caller a
+# 403 with Retry-After: 1 and does nothing, DENY answers 403 without a rate
+# limit and does nothing, INTERRUPT sends the caller a
 # SIGINT, as a Ctrl-C does, LOSE does the call and answers 502; FAKE_GH_SKIP
 # gives its number to an issue someone else creates. It lists the signing keys
 # of the account from ssh_signing_keys.json and gpg_keys.json, none where a
@@ -809,6 +810,8 @@ headers = []
 if once("FAKE_GH_RATE_LIMIT", call):
     status, data = 403, {"message": "You have exceeded a secondary rate limit."}
     headers = [("Retry-After", "1")]
+elif once("FAKE_GH_DENY", call):
+    status, data = 403, {"message": "Resource not accessible by personal access token"}
 elif endpoint.startswith("user/") and os.environ.get("FAKE_GH_NO_SCOPE"):
     status, data = 404, {"message": "Not Found"}
     kind = endpoint.split("?")[0].split("/")[1][:-1]
@@ -1357,11 +1360,12 @@ check "replay.py ends a stopped and resumed run with the links and the target of
 # RM: a target that GitHub creates with the default branch master, and lets
 # no one change while it lacks the branch, with #1 the only sub-issue of
 # ada-example/plans#9 and no other link; stopped by a Ctrl-C in the replay
-# after the first push, and resumed.
+# after the first push, and resumed; signed in as bob-example, a member of the
+# organisation ada-example.
 replay_setup "$T/rm" ada-example/tool-replay-20261116 '{"ada-example/plans#9": [9001]}'
 run_file "$T/runs-m/tool.run.json" "$T/backup-rm"
-(FAKE_GH_DEFAULT=master FAKE_GH_INTERRUPT="POST repos/ada-example/tool-replay-20261116/issues" &&
-  export FAKE_GH_DEFAULT FAKE_GH_INTERRUPT && one "$T/rm" ada-example/tool-replay-20261116 "$T/runs-m/tool.run.json") >"$T/rm-out" 2>&1
+(FAKE_GH_DEFAULT=master FAKE_GH_LOGIN=bob-example FAKE_GH_INTERRUPT="POST repos/ada-example/tool-replay-20261116/issues" &&
+  export FAKE_GH_DEFAULT FAKE_GH_LOGIN FAKE_GH_INTERRUPT && one "$T/rm" ada-example/tool-replay-20261116 "$T/runs-m/tool.run.json") >"$T/rm-out" 2>&1
 echo $? >"$T/rm-status"
 one "$T/rm" ada-example/tool-replay-20261116 "$T/runs-m/tool.run.json" >>"$T/rm-out" 2>&1
 echo $? >>"$T/rm-status"
@@ -1370,6 +1374,25 @@ check "replay.py gives the target the source's default branch once it has it, wh
 
 check "replay.py reads the parent only of an issue whose parent_issue_url names one, and skips the move of an only sub-issue" \
   'grep -q " GET repos/ada-example/tool/issues/1/parent$" "$T/rm/calls" && ! grep -q " GET repos/ada-example/tool/issues/[46]/parent$" "$T/rm/calls" && [ ! -e "$T/rm/priorities" ] || { grep parent "$T/rm/calls"; cat "$T/rm/priorities"; exit 1; }'
+
+check "replay.py creates the target with orgs/<owner>/repos where its owner is not the account gh is signed in with" \
+  '[ "$(writes "$T/rm" | head -n 1 | cut -d" " -f2-)" = "POST orgs/ada-example/repos" ] && ! grep -q " POST user/repos$" "$T/rm/calls" || { writes "$T/rm"; exit 1; }'
+
+# RD: GitHub refuses the creation once, then the change of Actions once;
+# each run stops in that step, and the next resumes there, the last one only
+# up to a wrong confirmation.
+replay_setup "$T/rd"
+run_file "$T/runs-d/tool.run.json" "$T/backup-rd"
+for deny in "POST user/repos" "PUT repos/ada-example/tool-replay-20261116/actions/permissions"; do
+  (FAKE_GH_DENY=$deny && export FAKE_GH_DENY && one "$T/rd" ada-example/tool-replay-20261116 "$T/runs-d/tool.run.json") >>"$T/rd-out" 2>&1
+  echo $? >>"$T/rd-status"
+done
+one "$T/rd" no "$T/runs-d/tool.run.json" >>"$T/rd-out" 2>&1
+echo $? >>"$T/rd-status"
+check "replay.py stops in step 3 where GitHub refuses the creation, and creates the target when the same command runs again" \
+  '[ "$(tr "\n" " " <"$T/rd-status")" = "1 1 1 " ] && grep -qx "replay.py: POST user/repos answered HTTP 403: Resource not accessible by personal access token" "$T/rd-out" && grep -q "^replay.py: stopped in step 3 of 8, create; run the same command again to resume there" "$T/rd-out" && grep -q "^Resume the replay of ada-example/tool into ada-example/tool-replay-20261116 at step 3, create, from " "$T/rd-out" && [ "$(writes "$T/rd" | grep -c " POST user/repos$")" = 2 ] && [ ! -e "$T/rd/absent" ] || { cat "$T/rd-status" "$T/rd-out"; writes "$T/rd"; exit 1; }'
+check "replay.py stops in step 4 where GitHub refuses a setting, and resumes there without creating the target again" \
+  'grep -qx "replay.py: PUT repos/ada-example/tool-replay-20261116/actions/permissions answered HTTP 403: Resource not accessible by personal access token" "$T/rd-out" && grep -q "^replay.py: stopped in step 4 of 8, settings; run the same command again to resume there" "$T/rd-out" && grep -q "^Resume the replay of ada-example/tool into ada-example/tool-replay-20261116 at step 4, settings, from " "$T/rd-out" && [ "$(tail -n 1 "$T/rd-out")" = "replay.py: stopped in the confirmation, before any write to GitHub in this run; run the same command again to resume once the cause is removed" ] && [ ! -e "$T/rd/actions.json" ] && python3 -c "import json, sys; sys.exit(json.load(open(sys.argv[1]))[\"done\"] != [\"create\"])" "$T/runs-d/tool.progress.json" && [ "$(writes "$T/rd" | cut -d" " -f2- | tr "\n" "|")" = "POST user/repos|POST user/repos|PUT repos/ada-example/tool-replay-20261116/actions/permissions|" ] || { cat "$T/rd-out"; writes "$T/rd"; exit 1; }'
 
 # RO: a replay under another owner than that of the repository of a parent
 # and of a sub-issue from elsewhere.
