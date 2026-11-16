@@ -408,9 +408,10 @@ class OneCommand:
         deletes = " and the deletion of head branches on, as the source has it"
         links = self.describe_links()
         what = {
-            "create": f"create {self.target}, private and empty, default branch {self.default}",
+            "create": f"create {self.target}, private and empty",
             "settings": f"turn Actions off in it{deletes if self.deletes else ''}",
-            "replay": f"run run-replay.py {' '.join(self.run_options())}",
+            "replay": f"run run-replay.py {' '.join(self.run_options())}, and make {self.default}"
+            " the default branch where GitHub names another",
             "compare": "compare the replay with the source with compare-replay.py",
             "links": f"move sub-issue links: {len(links)}",
             "commands": "print the commands that archive the source and rename the replay",
@@ -448,16 +449,6 @@ class OneCommand:
         endpoint = "user/repos" if owner.lower() == login.lower() else f"orgs/{owner}/repos"
         body = {"name": name, "private": True, "auto_init": False}
         info = self.api.expect("POST", endpoint, body, ok=(201,))
-        if info.get("default_branch") != self.default:
-            status, data = self.api.call(
-                "PATCH", f"repos/{self.target}", {"default_branch": self.default}
-            )
-            if status != 200:
-                raise ReplayError(
-                    f"{self.target} has the default branch {info.get('default_branch')}, the"
-                    f" source's is {self.default}, and GitHub refused to change it (HTTP {status}:"
-                    f" {message_of(data)}); name it {self.default} on GitHub"
-                )
         print(f"  {info.get('html_url', self.target)}")
 
     def settings(self):
@@ -481,10 +472,26 @@ class OneCommand:
 
     def replay(self):
         self.begin("replay", f"run-replay.py into {self.target}")
+        # A stopped replay may have pushed the branch already, and run-replay.py
+        # checks the default branch once the target has refs.
+        self.set_default(pushed=False)
         args = [sys.executable, HERE / "run-replay.py", *self.run_options()]
         result = child([*args, "--confirmed", self.target, self.events, self.mirror, self.target])
         if result.returncode:
             raise ReplayError(f"run-replay.py stopped with status {result.returncode}; see above")
+        self.set_default(pushed=True)
+
+    def set_default(self, pushed):
+        """Gives the target the source's default branch where GitHub named
+        another one at the creation. GitHub's documentation leaves open whether
+        an empty repository takes a default branch, so this waits until the
+        branch exists: after the replay, or before it where it was pushed."""
+        info = self.api.expect("GET", f"repos/{self.target}")
+        named = info.get("default_branch")
+        if named == self.default or not (pushed or self.default in self.target_branches(info)):
+            return
+        self.api.expect("PATCH", f"repos/{self.target}", {"default_branch": self.default})
+        print(f"  default branch {self.default}, where GitHub had named it {named}")
 
     def compare(self):
         self.begin("compare", f"compare {self.target} with {self.source}")
@@ -592,15 +599,18 @@ class OneCommand:
         print(f"3. Replace each local clone of {self.source} with a fresh clone of the replay.")
         print(f"4. Delete {self.progress_path}, {state} and {work}.")
 
-    def extra_branches(self):
-        """The branches of the target that the mirror of the source lacks."""
-        info = self.api.expect("GET", f"repos/{self.target}")
+    def target_branches(self, info):
+        """The branches of the target, as git ls-remote lists them."""
         protocol = run(["gh", "config", "get", "git_protocol"]).stdout.strip()
         remote = info["ssh_url"] if protocol == "ssh" else info["clone_url"]
         listed = run(["git", "ls-remote", "--heads", remote])
         if listed.returncode:
             raise ReplayError(f"git ls-remote of {self.target} failed: {listed.stderr.strip()}")
-        target = {line.split("\trefs/heads/", 1)[1] for line in listed.stdout.splitlines()}
+        return {line.split("\trefs/heads/", 1)[1] for line in listed.stdout.splitlines()}
+
+    def extra_branches(self):
+        """The branches of the target that the mirror of the source lacks."""
+        target = self.target_branches(self.api.expect("GET", f"repos/{self.target}"))
         source = run(
             [
                 "git",

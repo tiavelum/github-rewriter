@@ -51,9 +51,9 @@ It announces each of its eight steps as `Step <n> of 8`:
 
 1. **mirror**: makes the mirror with `backup-mirror.sh` in `backup`.
 2. **plan**: plans into the event file next to the mirror, with the mailmap and the types written into a temporary folder that it deletes afterwards, and prints every changed title and the totals, as [Planning a replay](#planning-a-replay) shows. It stops where a title would get a guessed type; give that title's commit or pull request its type in `types` and run again.
-3. **create**: creates the target, private and empty, for your account or for the organisation that owns it, with the source's default branch.
+3. **create**: creates the target, private and empty, for your account or for the organisation that owns it.
 4. **settings**: turns Actions off in the target, and the deletion of head branches on where the source has it on.
-5. **replay**: runs `run-replay.py` with `--pace`, `--final-name`, and `--sign` and `--with-times` where the run file sets them, and gives it your confirmation with `--confirmed`.
+5. **replay**: runs `run-replay.py` with `--pace`, `--final-name`, and `--sign` and `--with-times` where the run file sets them, and gives it your confirmation with `--confirmed`. Where GitHub has named the target's default branch other than the source's, it then makes the source's the default branch, once the replay has pushed it, and before `run-replay.py` where a stopped replay pushed it already.
 6. **compare**: runs `compare-replay.py`, as [Comparing the replay with its source](#comparing-the-replay-with-its-source) describes, and stops at any difference.
 7. **links**: moves the sub-issue links, as [Taking over the source's name](#taking-over-the-sources-name) describes. Where an issue of the source is a sub-issue of an issue elsewhere, it links the replayed issue, moves it right before the source's issue with `before_id`, so that it takes that one's place, and unlinks the source's. Where an issue of the source has sub-issues, the replayed issue gets them in the same order: the replayed ones for those of the source, and those from elsewhere moved over with `replace_parent`, since a sub-issue has one parent only.
 8. **commands**: prints what is left to you, with the commands of [Taking over the source's name](#taking-over-the-sources-name) for this replay.
@@ -62,9 +62,9 @@ Before the first step it checks that the target does not exist yet. Between the 
 
 ```
 Replay ada-example/tool into ada-example/tool-replay-20261116, to be renamed ada-example/tool:
-  3. create ada-example/tool-replay-20261116, private and empty, default branch main
+  3. create ada-example/tool-replay-20261116, private and empty
   4. turn Actions off in it and the deletion of head branches on, as the source has it
-  5. run run-replay.py --pace 0 --final-name ada-example/tool
+  5. run run-replay.py --pace 0 --final-name ada-example/tool, and make main the default branch where GitHub names another
   6. compare the replay with the source with compare-replay.py
   7. move sub-issue links: 4
        #1 under ada-example/plans#9: the replay's #1 takes the place of the source's
@@ -203,7 +203,7 @@ With a classic or OAuth token, `gh` lists [SSH signing keys only with the scope 
 gh auth refresh -s read:ssh_signing_key
 ```
 
-Where you run `run-replay.py` alone, not through `replay.py`, which does this itself, first create the target on GitHub, empty: without a README, license or ignore file, with the default branch named as the source's, and with no ruleset or branch protection on it yet, since the direct commits are pushed to it. Turn off Actions in it until the replay is checked, since every pushed branch and every merge would otherwise start the source's workflows; and where the source has deleted the branches of its merged pull requests, turn on the deletion of head branches, so that the replay's are deleted on merge too:
+Where you run `run-replay.py` alone, not through `replay.py`, which does this itself, first create the target on GitHub, empty: without a README, license or ignore file, and with no ruleset or branch protection on it yet, since the direct commits are pushed to it. Turn off Actions in it until the replay is checked, since every pushed branch and every merge would otherwise start the source's workflows; and where the source has deleted the branches of its merged pull requests, turn on the deletion of head branches, so that the replay's are deleted on merge too:
 
 ```sh
 gh api -X PUT repos/tiavelum/github-rewriter-trial/actions/permissions -F enabled=false
@@ -214,6 +214,12 @@ Then, with the mirror and the event file of [Planning a replay](#planning-a-repl
 
 ```sh
 python3 replay/run-replay.py "${mirror%.git}-typed.jsonl" "$mirror" tiavelum/github-rewriter-trial
+```
+
+Where GitHub names the target's default branch other than the source's, the run goes on while the target is empty. Once the replay is done, or where a resumed run stops at `the default branch of tiavelum/github-rewriter-trial is master, the source's main`, make the source's the default branch, here `main`, and run it again:
+
+```sh
+gh api -X PATCH repos/tiavelum/github-rewriter-trial -f default_branch=main
 ```
 
 It checks that the mirror holds every tree of the event file, that GitHub answers for the target under the name you gave (a renamed repository stops it), and that the target is empty, prints what it will do in totals, with the labels the target already has, and asks for the target's `owner/repo`; anything else stops it without a write. It then prints one line per event, and at the end what it did and the target's URL. This is the output of a run of the test's source, `ada-example/tool`, into a fake target, as `test-replay.sh` makes it; the answer typed at the prompt does not show, since the test pipes it in:
@@ -489,6 +495,7 @@ Events follow the original times, with these constraints: items are created stri
 - An item is replayed in its final state: one reopened and closed again is closed once, with its labels and assignees as they are now.
 - A pull request without commits of its own, or one whose base is not the default branch, is planned with a warning, since GitHub may refuse to create it; the run then stops at it.
 - A Ctrl-C reaches a running `git` too; the run then stops in the middle of the event, which the next run checks and finishes.
+- Where GitHub names a new target's default branch other than the source's, the replay's first push is of a branch with another name. [Update a repository](https://docs.github.com/en/rest/repos/repos#update-a-repository) says only that `default_branch` "updates the default branch for this repository", so how GitHub takes such a first push into an empty repository, and whether it would set the default branch of one, are open; `replay.py` therefore sets it only once the branch exists, and `run-replay.py` checks it only then. This has not run on GitHub yet; a trial with a source whose default branch is named otherwise than GitHub names a new repository's would settle it.
 
 ## Files
 

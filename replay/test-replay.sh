@@ -442,8 +442,10 @@ status_run_plan=$?
 # file is missing; with FAKE_GH_NO_SCOPE, it refuses those lists as GitHub
 # refuses a token without the scope they need. Where $FAKE_GITHUB/absent
 # exists, the target does not exist until a POST user/repos or orgs/*/repos
-# creates it, private where asked; PUT actions/permissions keeps Actions in
+# creates it, private where asked, with the default branch $FAKE_GH_DEFAULT,
+# main where it is unset; PUT actions/permissions keeps Actions in
 # actions.json, a PATCH of the repository keeps its settings in settings.json,
+# but refuses a default branch the target lacks and records that in rejected,
 # and a merge deletes the head branch where delete_branch_on_merge is on. It
 # keeps the sub-issue links of every repository in links.json, by parent, as
 # lists of issue ids, with the ids of the target's items 7000 plus the number
@@ -643,8 +645,9 @@ def create_repo(owner, body):
     if not (root / "absent").exists() or f"{owner}/{body['name']}" != slug:
         return invalid("name already exists on this account")
     (root / "absent").unlink()
-    save("settings", {"private": bool(body.get("private")), "default_branch": "main"})
-    return 201, {"full_name": slug, "html_url": f"https://github.com/{slug}", "default_branch": "main",
+    default = os.environ.get("FAKE_GH_DEFAULT", "main")
+    save("settings", {"private": bool(body.get("private")), "default_branch": default})
+    return 201, {"full_name": slug, "html_url": f"https://github.com/{slug}", "default_branch": default,
                  "private": bool(body.get("private"))}
 
 
@@ -690,6 +693,10 @@ def handle(method, endpoint, body):
         result = 200, {"full_name": slug, "default_branch": "main", "clone_url": str(repo),
                        "ssh_url": str(repo), "html_url": f"https://github.com/{slug}",
                        "permissions": {"admin": True, "push": True}, **load("settings", {})}
+    elif route == ("PATCH",) and "default_branch" in body and not rev(f"refs/heads/{body['default_branch']}"):
+        with (root / "rejected").open("a") as f:
+            f.write(f"{method} {endpoint}: no branch {body['default_branch']}\n")
+        result = invalid("the default branch must exist")
     elif route == ("PATCH",):
         save("settings", {**load("settings", {}), **body})
         result = 200, {"full_name": slug, **load("settings", {})}
@@ -1201,12 +1208,15 @@ fi
 
 # replay.py, from a run file, into a target that does not exist yet, with
 # sub-issue links: #1 and #4 of the source under ada-example/plans#9, #6 under
-# #4, and ada-example/plans#11 under #6. replay_setup <folder>: that target,
-# and next to it <folder>-api, the source's API of the run's plan with issue
-# ids, settings, Actions and the issues of ada-example/plans.
+# #4, and ada-example/plans#11 under #6. replay_setup <folder> [<owner/repo>
+# [<links>]]: that target, ada-example/tool-replay-20261116 by default, with
+# those links or the ones given as JSON, and next to it <folder>-api, the
+# source's API of the run's plan with issue ids, settings, Actions and the
+# issues of ada-example/plans.
+links_all='{"ada-example/plans#9": [9001, 8010, 9004], "ada-example/tool#4": [9006], "ada-example/tool#6": [8011]}'
 replay_setup() {
-  target "$1" ada-example/tool-replay-20261116 && touch "$1/absent" &&
-    echo '{"ada-example/plans#9": [9001, 8010, 9004], "ada-example/tool#4": [9006], "ada-example/tool#6": [8011]}' >"$1/links.json" &&
+  target "$1" "${2:-ada-example/tool-replay-20261116}" && touch "$1/absent" &&
+    echo "${3:-$links_all}" >"$1/links.json" &&
     cp -R "$T/api-run" "$1-api" && python3 - "$1-api" <<'EOF'
 import json, sys
 from pathlib import Path
@@ -1258,14 +1268,16 @@ EOF
 one() {
   printf '%s\n' "$2" | FAKE_GITHUB=$1 FAKE_GH_API=$1-api PATH=$target_path python3 "$here/replay.py" "$3"
 }
-# links_hold <folder>: the sub-issue links as the replay leaves them, each
-# replayed item in the place of the source's.
+# links_hold <folder> [<links>]: the sub-issue links as the replay leaves
+# them, each replayed item in the place of the source's, or else the links
+# given as JSON.
 links_hold() {
-  python3 - "$1/links.json" <<'EOF'
+  python3 - "$1/links.json" "${2:-}" <<'EOF'
 import json, sys
 links = {k: v for k, v in json.load(open(sys.argv[1])).items() if v}
-expected = {"ada-example/plans#9": [7001, 8010, 7004], "ada-example/tool#4": [9006],
-            "ada-example/tool-replay-20261116#4": [7006], "ada-example/tool-replay-20261116#6": [8011]}
+expected = json.loads(sys.argv[2]) if sys.argv[2] else {
+    "ada-example/plans#9": [7001, 8010, 7004], "ada-example/tool#4": [9006],
+    "ada-example/tool-replay-20261116#4": [7006], "ada-example/tool-replay-20261116#6": [8011]}
 sys.exit(0 if links == expected else f"links {links}, expected {expected}")
 EOF
 }
@@ -1298,7 +1310,7 @@ run_file "$T/runs-w/tool.run.json" "$T/backup-rw"
 one "$T/rw" tool-replay-20261116 "$T/runs-w/tool.run.json" >"$T/rw-out" 2>&1
 status_rw=$?
 check "replay.py lists what it will do, sub-issue links included, and writes nothing on a wrong confirmation" \
-  '[ "$status_rw" = 1 ] && grep -q "replay.py: not confirmed; nothing changed on GitHub$" "$T/rw-out" && grep -qx "  7. move sub-issue links: 4" "$T/rw-out" && grep -qx "       the replay'"'"'s #6 gets the sub-issues of the source'"'"'s: ada-example/plans#11, moved from #6" "$T/rw-out" && grep -qx "  3. create ada-example/tool-replay-20261116, private and empty, default branch main" "$T/rw-out" && ! writes "$T/rw" && [ -e "$T/rw/absent" ] && [ ! -e "$T/runs-w/tool.progress.json" ] || { cat "$T/rw-out"; writes "$T/rw"; exit 1; }'
+  '[ "$status_rw" = 1 ] && grep -q "replay.py: not confirmed; nothing changed on GitHub$" "$T/rw-out" && grep -qx "  7. move sub-issue links: 4" "$T/rw-out" && grep -qx "       the replay'"'"'s #6 gets the sub-issues of the source'"'"'s: ada-example/plans#11, moved from #6" "$T/rw-out" && grep -qx "  3. create ada-example/tool-replay-20261116, private and empty" "$T/rw-out" && grep -qx "  5. run run-replay.py --pace 0 --final-name ada-example/tool, and make main the default branch where GitHub names another" "$T/rw-out" && ! writes "$T/rw" && [ -e "$T/rw/absent" ] && [ ! -e "$T/runs-w/tool.progress.json" ] || { cat "$T/rw-out"; writes "$T/rw"; exit 1; }'
 mkdir -p "$T/runs-v"
 run_file "$T/work/tool.run.json" "$T/backup-rv"
 run_file "$T/runs-v/colour.run.json" "$T/backup-rv" 'colour="blue"'
@@ -1332,6 +1344,19 @@ check "replay.py stops at a difference the comparison finds, before it moves a s
   'grep -Fqx "  label docs: colour 0075ca, the source'"'"'s 123456" "$T/rb-out" && grep -q "^replay.py: stopped in step 6 of 8, compare; run the same command again to resume there" "$T/rb-out" && [ "$(grep -c "^Step 7 of 8, links" "$T/rb-out")" = 1 ]'
 check "replay.py ends a stopped and resumed run with the links and the target of an uninterrupted one" \
   'links_hold "$T/rb" && grep -qx "No differences" "$T/rb-out" && dump "$T/ra" >"$T/ra-dump" && dump "$T/rb" >"$T/rb-dump" && diff "$T/ra-dump" "$T/rb-dump"'
+
+# RM: a target that GitHub creates with the default branch master, and lets
+# no one change while it lacks the branch, with one sub-issue link; stopped
+# by a Ctrl-C in the replay after the first push, and resumed.
+replay_setup "$T/rm" ada-example/tool-replay-20261116 '{"ada-example/plans#9": [9001, 8010]}'
+run_file "$T/runs-m/tool.run.json" "$T/backup-rm"
+(FAKE_GH_DEFAULT=master FAKE_GH_INTERRUPT="POST repos/ada-example/tool-replay-20261116/issues" &&
+  export FAKE_GH_DEFAULT FAKE_GH_INTERRUPT && one "$T/rm" ada-example/tool-replay-20261116 "$T/runs-m/tool.run.json") >"$T/rm-out" 2>&1
+echo $? >"$T/rm-status"
+one "$T/rm" ada-example/tool-replay-20261116 "$T/runs-m/tool.run.json" >>"$T/rm-out" 2>&1
+echo $? >>"$T/rm-status"
+check "replay.py gives the target the source's default branch once it has it, where GitHub names another at the creation" \
+  '[ "$(tr "\n" " " <"$T/rm-status")" = "1 0 " ] && grep -q "^replay.py: stopped in step 5 of 8, replay; run the same command again" "$T/rm-out" && grep -qx "  default branch main, where GitHub had named it master" "$T/rm-out" && [ ! -e "$T/rm/rejected" ] && grep -qx "No differences" "$T/rm-out" && python3 -c "import json, sys; sys.exit(json.load(open(sys.argv[1]))[\"default_branch\"] != \"main\")" "$T/rm/settings.json" && links_hold "$T/rm" "{\"ada-example/plans#9\": [7001, 8010]}" || { cat "$T/rm-status" "$T/rm-out" "$T/rm/rejected" 2>&1; exit 1; }'
 
 printf '\n%s passed, %s failed\n' "$passed" "$failed"
 [ "$failed" = 0 ]

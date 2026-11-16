@@ -532,11 +532,6 @@ class Replay:
         permissions = info.get("permissions") or {}
         if not (permissions.get("push") or permissions.get("admin")):
             raise ReplayError(f"gh may not write to {self.slug}")
-        if info.get("default_branch") != self.default:
-            raise ReplayError(
-                f"the default branch of {self.slug} is {info.get('default_branch')}, the"
-                f" source's {self.default}; rename it on GitHub first"
-            )
         self.url = info["html_url"]
         # {pr_url} names the target, or the repository the target will be renamed to.
         host = self.url.rsplit("/", 2)[0]
@@ -553,6 +548,15 @@ class Replay:
         for line in result.stdout.splitlines():
             sha, _, ref = line.partition("\t")
             refs[ref] = sha
+        # An empty repository may name another default branch than the source's,
+        # since GitHub's documentation leaves open whether one can be set before
+        # it exists; the first push creates the branch, after which it is set.
+        if refs and info.get("default_branch") != self.default:
+            raise ReplayError(
+                f"the default branch of {self.slug} is {info.get('default_branch')}, the"
+                f" source's {self.default}; set it with: gh api -X PATCH repos/{self.slug}"
+                f" -f default_branch={self.default}"
+            )
         return (newest[0]["number"] if newest else 0), refs
 
     def check_target(self, resumed, highest, refs):
