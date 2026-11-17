@@ -42,10 +42,16 @@ Write the run file first, outside any repository, since it holds the mailmap; `r
 | `backup` | The folder of the mirror, the event file, the state file and the work repository | `~/vc-backup` |
 | `clone_url` | The URL `backup-mirror.sh` clones the source from | `git@github.com:<source>.git` |
 
-A field it does not know stops it, as does a value of the wrong kind. Then run it:
+A field it does not know stops it, as does a value of the wrong kind. Before the run, bring your clone of this repository up to date with [`git pull --ff-only`](https://git-scm.com/docs/git-pull), and show with [`gh config get`](https://cli.github.com/manual/gh_config_get) the protocol `gh` is set to, which [Running a replay](#running-a-replay) says has to work without a password:
 
 ```sh
-python3 ~/vc/github-rewriter/replay/replay.py ~/github-rewriter.run.json
+git -C ~/vc/github-rewriter pull --ff-only && gh config get git_protocol
+```
+
+Then run `replay.py`. On macOS, put `caffeinate -i` in front, which keeps the Mac from sleeping while idle until the command ends, as `man caffeinate` describes; a replay of many items takes a while:
+
+```sh
+caffeinate -i python3 ~/vc/github-rewriter/replay/replay.py ~/github-rewriter.run.json
 ```
 
 It announces each of its eight steps as `Step <n> of 8`:
