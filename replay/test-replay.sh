@@ -1269,7 +1269,7 @@ cat >"$T/api-reviews/repos_ada-example_tool_pulls_comments-1.json" <<'EOF'
   "line": null, "original_line": 3, "subject_type": "line", "in_reply_to_id": 601,
   "body": "Agreed.", "created_at": "2026-03-04T14:00:00Z"},
  {"id": 603, "pull_request_review_id": 503, "user": {"login": "bob-example"}, "path": "README.md",
-  "line": null, "original_line": null, "subject_type": "file", "in_reply_to_id": null,
+  "line": null, "original_line": null, "side": "LEFT", "subject_type": "file", "in_reply_to_id": null,
   "body": "Mention the parser.", "created_at": "2026-03-04T14:00:01Z"},
  {"id": 604, "pull_request_review_id": 504, "user": {"login": "bob-example"}, "path": "thing.sh",
   "line": 2, "original_line": 2, "subject_type": "line", "in_reply_to_id": null,
@@ -1277,6 +1277,25 @@ cat >"$T/api-reviews/repos_ada-example_tool_pulls_comments-1.json" <<'EOF'
 EOF
 (FAKE_GH_API=$T/api-reviews && export FAKE_GH_API && plan --types "$T/types" "$mirror" ada-example/tool "$T/mailmap" "$T/reviews.jsonl") >"$T/reviews-out" 2>&1
 status_reviews=$?
+# The same API with a review of #5 longer than a comment takes, and a review
+# comment without a review id.
+cp -R "$T/api-reviews" "$T/api-reviews-long"
+python3 - "$T/api-reviews-long" "$N1" <<'EOF'
+import json, sys
+from pathlib import Path
+api, n1 = Path(sys.argv[1]), sys.argv[2]
+(api / "repos_ada-example_tool_pulls_5_reviews-1.json").write_text(json.dumps([
+    {"id": 507, "user": {"login": "ada-example"}, "body": "x" * 65537, "state": "COMMENTED",
+     "submitted_at": "2026-03-07T09:00:00Z", "commit_id": n1}]))
+comments = api / "repos_ada-example_tool_pulls_comments-1.json"
+listed = json.loads(comments.read_text())
+listed.append({"id": 605, "pull_request_review_id": None, "user": {"login": "bob-example"},
+               "path": "thing.sh", "line": 1, "original_line": 1, "subject_type": "line",
+               "in_reply_to_id": None, "body": "Older than reviews.", "created_at": "2026-03-04T16:00:00Z"})
+comments.write_text(json.dumps(listed))
+EOF
+(FAKE_GH_API=$T/api-reviews-long && export FAKE_GH_API && plan --types "$T/types" "$mirror" ada-example/tool "$T/mailmap" "$T/reviews-long.jsonl") >"$T/reviews-long-out" 2>&1
+status_reviews_long=$?
 target "$T/gh-rv" ada-example/tool-rv
 (FAKE_GH_API=$T/api-reviews && export FAKE_GH_API && replay "$T/gh-rv" ada-example/tool-rv --pace 0 --state "$T/rv.state.json" "$T/reviews.jsonl" "$mirror" ada-example/tool-rv) >"$T/rv-out" 2>&1
 status_rv=$?
@@ -1303,6 +1322,9 @@ api = Path(sys.argv[1])
 reviews = api / "repos_ada-example_tool_pulls_3_reviews-1.json"
 changed = json.loads(reviews.read_text())
 changed[0]["body"] = "Reject empty input."
+# The text of one of its own review comments, which the plan holds below
+# the place of a body.
+changed[1]["body"] = "Agreed."
 reviews.write_text(json.dumps(changed))
 comments = api / "repos_ada-example_tool_issues_comments-1.json"
 kept = [c for c in json.loads(comments.read_text()) if c["id"] != 104]
@@ -1336,6 +1358,8 @@ pcheck "plan-replay.py plans each submitted review as a comment on its pull requ
 pcheck "plan-replay.py writes a review as its reviewer, state, commit, body and each review comment under its file and lines" \
   '[e["body"] for e in of("add-comment") if "review_id" in e] == ["_Review by bob-example: approved, on " + S["B2"][:7] + "._", "_Review by ada-example: changes requested, on " + S["F1"][:7] + "._\n\nHandle empty input.\n\n**`thing.sh`, lines 1 to 3, before the change**\n\nThis breaks on an empty line.", "_Review by bob-example: commented, on " + S["F1"][:7] + "._\n\n**`thing.sh`, line 3, a reply**\n\nAgreed.\n\n**`README.md`, file**\n\nMention the parser.", "_Review by ada-example: dismissed, on " + S["N1"][:7] + "._\n\nSuperseded."]'
 plan_file=$T/events.jsonl
+check "plan-replay.py warns of a review longer than a comment takes and of a review comment without a review id" \
+  '[ "$status_reviews_long" = 0 ] && grep -Eqx "plan-replay.py: warning: review 507 of #5 has 655[0-9]{2} characters, more than the 65536 a comment takes; the run stops at it" "$T/reviews-long-out" && grep -Fqx "plan-replay.py: warning: 1 review comment without a review id left out" "$T/reviews-long-out" || { cut -c1-300 "$T/reviews-long-out"; exit 1; }'
 check "plan-replay.py counts the reviews apart from the comments, and warns of the review comments of a review it does not carry" \
   '[ "$status_reviews" = 0 ] && grep -Fqx "plan-replay.py: warning: 1 review comment of review 504, which no submitted review of a listed pull request has, left out" "$T/reviews-out" && grep -Eqx "  comments +4" "$T/reviews-out" && grep -Eqx "  reviews +4" "$T/reviews-out" && grep -Eqx "  reviews +0" "$T/plan-out" || { cat "$T/reviews-out"; exit 1; }'
 rcheck "run-replay.py posts each review as a comment, with the recreated hash of the commit it names" "$T/gh-rv" "$T/rv.state.json" \
@@ -1343,7 +1367,7 @@ rcheck "run-replay.py posts each review as a comment, with the recreated hash of
 check "compare-replay.py finds no difference in a replay that carries the reviews as comments" \
   '[ "$status_rv$status_cmp_rv" = 00 ] && grep -qx "No differences" "$T/cmp-rv-out" && grep -Eqx "  comments +8" "$T/cmp-rv-out" && grep -Eqx "  reviews as comments +4" "$T/cmp-rv-out" || { cat "$T/rv-out" "$T/cmp-rv-out"; exit 1; }'
 check "compare-replay.py names a planned review or comment the source no longer has, a review or comment of the source the plan lacks, and a review body the plan lacks" \
-  '[ "$status_cmp_rv_changed" = 1 ] && grep -Fqx "  #5, comment 1: the source has no review 505" "$T/cmp-rv-changed-out" && grep -Fqx "  #2: review 506 of the source is not in the event file" "$T/cmp-rv-changed-out" && grep -Fqx "  #3, comment 2: the event file lacks the body of the review" "$T/cmp-rv-changed-out" && grep -Fqx "  #1: comment 199 of the source is not in the event file" "$T/cmp-rv-changed-out" && grep -Fqx "  #6, comment 1: the source has no comment 104" "$T/cmp-rv-changed-out" && grep -Fqx "  #2, comment 1: the event file lacks the body of the review" "$T/cmp-rv-changed-out" && grep -qx "Differences: 6" "$T/cmp-rv-changed-out" || { cat "$T/cmp-rv-changed-out"; exit 1; }'
+  '[ "$status_cmp_rv_changed" = 1 ] && grep -Fqx "  #5, comment 1: the source has no review 505" "$T/cmp-rv-changed-out" && grep -Fqx "  #2: review 506 of the source is not in the event file" "$T/cmp-rv-changed-out" && grep -Fqx "  #3, comment 2: the event file lacks the body of the review" "$T/cmp-rv-changed-out" && grep -Fqx "  #1: comment 199 of the source is not in the event file" "$T/cmp-rv-changed-out" && grep -Fqx "  #6, comment 1: the source has no comment 104" "$T/cmp-rv-changed-out" && grep -Fqx "  #2, comment 1: the event file lacks the body of the review" "$T/cmp-rv-changed-out" && grep -Fqx "  #3, comment 3: the event file lacks the body of the review" "$T/cmp-rv-changed-out" && grep -qx "Differences: 7" "$T/cmp-rv-changed-out" || { cat "$T/cmp-rv-changed-out"; exit 1; }'
 check "compare-replay.py finds no difference in a replay with --with-times that carries the reviews" \
   '[ "$status_rt$status_cmp_rt" = 00 ] && grep -qx "No differences" "$T/cmp-rt-out" || { cat "$T/rt-out" "$T/cmp-rt-out"; exit 1; }'
 check "compare-replay.py notes an event file that predates reviews, and expects none" \

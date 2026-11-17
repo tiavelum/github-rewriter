@@ -379,9 +379,10 @@ class Comparison:
                         continue
                     body = (r or {}).get("body") or ""
                     # Past the opening line, which names the state, such as
-                    # "approved", and could hold a short body by chance.
+                    # "approved"; the body follows right after the opening line, before
+                    # the review comments, which could hold the same text.
                     rest = e["body"].partition("\n\n")[2]
-                    if body.strip() and body not in rest:
+                    if body.strip() and not rest.startswith(body):
                         self.differ(
                             f"#{n}, comment {i}: the event file lacks the body of the review"
                         )

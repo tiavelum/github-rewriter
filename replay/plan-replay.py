@@ -845,10 +845,12 @@ def plan(mirror, repo, overrides, typed=True, keep_merges=False):
             )
     for rid, found in sorted(by_review.items(), key=lambda x: (x[0] is None, x[0] or 0)):
         if rid not in carried:
-            warn(
-                f"{len(found)} review comment{'s' if len(found) > 1 else ''} of review {rid},"
-                " which no submitted review of a listed pull request has, left out"
+            which = (
+                "without a review id"
+                if rid is None
+                else f"of review {rid}, which no submitted review of a listed pull request has,"
             )
+            warn(f"{len(found)} review comment{'s' if len(found) > 1 else ''} {which} left out")
 
     left = left_behind(mirror, info, gh_pages(f"repos/{repo}/releases"), events)
     return default, events, left
