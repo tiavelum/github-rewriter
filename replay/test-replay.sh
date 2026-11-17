@@ -1263,14 +1263,17 @@ cat >"$T/api-reviews/repos_ada-example_tool_pulls_5_reviews-1.json" <<EOF
 EOF
 cat >"$T/api-reviews/repos_ada-example_tool_pulls_comments-1.json" <<'EOF'
 [{"id": 601, "pull_request_review_id": 502, "user": {"login": "ada-example"}, "path": "thing.sh",
-  "line": 3, "start_line": 1, "original_line": 3, "subject_type": "line", "in_reply_to_id": null,
+  "line": 3, "start_line": 1, "original_line": 3, "side": "LEFT", "subject_type": "line", "in_reply_to_id": null,
   "body": "This breaks on an empty line.", "created_at": "2026-03-04T13:00:00Z"},
  {"id": 602, "pull_request_review_id": 503, "user": {"login": "bob-example"}, "path": "thing.sh",
   "line": null, "original_line": 3, "subject_type": "line", "in_reply_to_id": 601,
   "body": "Agreed.", "created_at": "2026-03-04T14:00:00Z"},
  {"id": 603, "pull_request_review_id": 503, "user": {"login": "bob-example"}, "path": "README.md",
   "line": null, "original_line": null, "subject_type": "file", "in_reply_to_id": null,
-  "body": "Mention the parser.", "created_at": "2026-03-04T14:00:01Z"}]
+  "body": "Mention the parser.", "created_at": "2026-03-04T14:00:01Z"},
+ {"id": 604, "pull_request_review_id": 504, "user": {"login": "bob-example"}, "path": "thing.sh",
+  "line": 2, "original_line": 2, "subject_type": "line", "in_reply_to_id": null,
+  "body": "Still a draft.", "created_at": "2026-03-04T15:00:00Z"}]
 EOF
 (FAKE_GH_API=$T/api-reviews && export FAKE_GH_API && plan --types "$T/types" "$mirror" ada-example/tool "$T/mailmap" "$T/reviews.jsonl") >"$T/reviews-out" 2>&1
 status_reviews=$?
@@ -1288,10 +1291,24 @@ status_cmp_rv=$?
 cp -R "$T/api-reviews" "$T/api-reviews-changed"
 echo '[]' >"$T/api-reviews-changed/repos_ada-example_tool_pulls_5_reviews-1.json"
 cat >"$T/api-reviews-changed/repos_ada-example_tool_pulls_2_reviews-1.json" <<EOF
-[{"id": 501, "user": {"login": "bob-example"}, "body": "", "state": "APPROVED",
+[{"id": 501, "user": {"login": "bob-example"}, "body": "approved", "state": "APPROVED",
   "submitted_at": "2026-03-02T15:00:00Z", "commit_id": "$B2"},
  {"id": 506, "user": {"login": "ada-example"}, "body": "Late.", "state": "COMMENTED",
   "submitted_at": "2026-03-09T09:00:00Z", "commit_id": "$B2"}]
+EOF
+python3 - "$T/api-reviews-changed" <<'EOF'
+import json, sys
+from pathlib import Path
+api = Path(sys.argv[1])
+reviews = api / "repos_ada-example_tool_pulls_3_reviews-1.json"
+changed = json.loads(reviews.read_text())
+changed[0]["body"] = "Reject empty input."
+reviews.write_text(json.dumps(changed))
+comments = api / "repos_ada-example_tool_issues_comments-1.json"
+kept = [c for c in json.loads(comments.read_text()) if c["id"] != 104]
+kept.append({"id": 199, "issue_url": "https://api.github.com/repos/ada-example/tool/issues/1",
+             "body": "Added later.", "user": {"login": "bob-example"}, "created_at": "2026-03-10T12:00:00Z"})
+comments.write_text(json.dumps(kept))
 EOF
 compare_api "$T/api-reviews-changed" "$T/gh-rv" --state "$T/rv.state.json" "$T/reviews.jsonl" "$mirror" ada-example/tool-rv >"$T/cmp-rv-changed-out" 2>&1
 status_cmp_rv_changed=$?
@@ -1307,21 +1324,28 @@ replay "$T/gh-ro" ada-example/tool-ro --pace 0 --state "$T/ro.state.json" "$T/ol
 status_ro_run=$?
 compare_api "$T/api-reviews" "$T/gh-ro" --state "$T/ro.state.json" "$T/old-reviews.jsonl" "$mirror" ada-example/tool-ro >"$T/cmp-ro-out" 2>&1
 status_cmp_ro=$?
+target "$T/gh-rt" ada-example/tool-rt
+(FAKE_GH_API=$T/api-reviews && export FAKE_GH_API && replay "$T/gh-rt" ada-example/tool-rt --pace 0 --with-times --state "$T/rt.state.json" "$T/reviews.jsonl" "$mirror" ada-example/tool-rt) >"$T/rt-out" 2>&1
+status_rt=$?
+compare_api "$T/api-reviews" "$T/gh-rt" --with-times --state "$T/rt.state.json" "$T/reviews.jsonl" "$mirror" ada-example/tool-rt >"$T/cmp-rt-out" 2>&1
+status_cmp_rt=$?
 export B2 F1 N1
 plan_file=$T/reviews.jsonl
 pcheck "plan-replay.py plans each submitted review as a comment on its pull request, at its time, and leaves a pending one out" \
   '[(e["number"], e["review_id"], e["created_at"]) for e in of("add-comment") if "review_id" in e] == [(2, 501, "2026-03-02T15:00:00Z"), (3, 502, "2026-03-04T13:00:00Z"), (3, 503, "2026-03-04T14:00:00Z"), (5, 505, "2026-03-07T09:00:00Z")] and [e.get("review_id", e.get("source_id")) for e in of("add-comment", 3)] == [102, 502, 503] and H["reviews"] is True and len(E) == 27'
 pcheck "plan-replay.py writes a review as its reviewer, state, commit, body and each review comment under its file and lines" \
-  '[e["body"] for e in of("add-comment") if "review_id" in e] == ["_Review by bob-example: approved, on " + S["B2"][:7] + "._", "_Review by ada-example: changes requested, on " + S["F1"][:7] + "._\n\nHandle empty input.\n\n**`thing.sh`, lines 1 to 3**\n\nThis breaks on an empty line.", "_Review by bob-example: commented, on " + S["F1"][:7] + "._\n\n**`thing.sh`, line 3, a reply**\n\nAgreed.\n\n**`README.md`, file**\n\nMention the parser.", "_Review by ada-example: dismissed, on " + S["N1"][:7] + "._\n\nSuperseded."]'
+  '[e["body"] for e in of("add-comment") if "review_id" in e] == ["_Review by bob-example: approved, on " + S["B2"][:7] + "._", "_Review by ada-example: changes requested, on " + S["F1"][:7] + "._\n\nHandle empty input.\n\n**`thing.sh`, lines 1 to 3, before the change**\n\nThis breaks on an empty line.", "_Review by bob-example: commented, on " + S["F1"][:7] + "._\n\n**`thing.sh`, line 3, a reply**\n\nAgreed.\n\n**`README.md`, file**\n\nMention the parser.", "_Review by ada-example: dismissed, on " + S["N1"][:7] + "._\n\nSuperseded."]'
 plan_file=$T/events.jsonl
-check "plan-replay.py counts the reviews apart from the comments" \
-  '[ "$status_reviews" = 0 ] && grep -Eqx "  comments +4" "$T/reviews-out" && grep -Eqx "  reviews +4" "$T/reviews-out" && grep -Eqx "  reviews +0" "$T/plan-out" || { cat "$T/reviews-out"; exit 1; }'
+check "plan-replay.py counts the reviews apart from the comments, and warns of the review comments of a review it does not carry" \
+  '[ "$status_reviews" = 0 ] && grep -Fqx "plan-replay.py: warning: 1 review comment of review 504, which no submitted review of a listed pull request has, left out" "$T/reviews-out" && grep -Eqx "  comments +4" "$T/reviews-out" && grep -Eqx "  reviews +4" "$T/reviews-out" && grep -Eqx "  reviews +0" "$T/plan-out" || { cat "$T/reviews-out"; exit 1; }'
 rcheck "run-replay.py posts each review as a comment, with the recreated hash of the commit it names" "$T/gh-rv" "$T/rv.state.json" \
-  'open(os.path.join(sys.argv[5], "rv-out")).read().count("reviews as comments           4") == 1 and comments[comments.index(next(c for c in comments if c[1].startswith("_Review by ada-example: changes")))][0] == 3 and any(c == (3, "_Review by ada-example: changes requested, on " + M[S["F1"]][:7] + "._\n\nHandle empty input.\n\n**`thing.sh`, lines 1 to 3**\n\nThis breaks on an empty line.") for c in comments) and len(comments) == 8'
+  'open(os.path.join(sys.argv[5], "rv-out")).read().count("reviews as comments           4") == 1 and comments[comments.index(next(c for c in comments if c[1].startswith("_Review by ada-example: changes")))][0] == 3 and any(c == (3, "_Review by ada-example: changes requested, on " + M[S["F1"]][:7] + "._\n\nHandle empty input.\n\n**`thing.sh`, lines 1 to 3, before the change**\n\nThis breaks on an empty line.") for c in comments) and len(comments) == 8 and open(os.path.join(sys.argv[5], "rv-out")).read().count("  comments                      4\n") == 1'
 check "compare-replay.py finds no difference in a replay that carries the reviews as comments" \
   '[ "$status_rv$status_cmp_rv" = 00 ] && grep -qx "No differences" "$T/cmp-rv-out" && grep -Eqx "  comments +8" "$T/cmp-rv-out" && grep -Eqx "  reviews as comments +4" "$T/cmp-rv-out" || { cat "$T/rv-out" "$T/cmp-rv-out"; exit 1; }'
-check "compare-replay.py names a planned review the source no longer has and a review of the source the plan lacks" \
-  '[ "$status_cmp_rv_changed" = 1 ] && grep -Fqx "  #5, comment 1: the source has no review 505" "$T/cmp-rv-changed-out" && grep -Fqx "  #2: review 506 of the source is not in the event file" "$T/cmp-rv-changed-out" && grep -qx "Differences: 2" "$T/cmp-rv-changed-out" || { cat "$T/cmp-rv-changed-out"; exit 1; }'
+check "compare-replay.py names a planned review or comment the source no longer has, a review or comment of the source the plan lacks, and a review body the plan lacks" \
+  '[ "$status_cmp_rv_changed" = 1 ] && grep -Fqx "  #5, comment 1: the source has no review 505" "$T/cmp-rv-changed-out" && grep -Fqx "  #2: review 506 of the source is not in the event file" "$T/cmp-rv-changed-out" && grep -Fqx "  #3, comment 2: the event file lacks the body of the review" "$T/cmp-rv-changed-out" && grep -Fqx "  #1: comment 199 of the source is not in the event file" "$T/cmp-rv-changed-out" && grep -Fqx "  #6, comment 1: the source has no comment 104" "$T/cmp-rv-changed-out" && grep -Fqx "  #2, comment 1: the event file lacks the body of the review" "$T/cmp-rv-changed-out" && grep -qx "Differences: 6" "$T/cmp-rv-changed-out" || { cat "$T/cmp-rv-changed-out"; exit 1; }'
+check "compare-replay.py finds no difference in a replay with --with-times that carries the reviews" \
+  '[ "$status_rt$status_cmp_rt" = 00 ] && grep -qx "No differences" "$T/cmp-rt-out" || { cat "$T/rt-out" "$T/cmp-rt-out"; exit 1; }'
 check "compare-replay.py notes an event file that predates reviews, and expects none" \
   '[ "$status_ro_run$status_cmp_ro" = 00 ] && grep -Fqx "  the event file predates reviews: it plans no review as a comment" "$T/cmp-ro-out" && grep -qx "No differences" "$T/cmp-ro-out" || { cat "$T/ro-run-out" "$T/cmp-ro-out"; exit 1; }'
 

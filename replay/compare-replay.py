@@ -378,7 +378,10 @@ class Comparison:
                         self.differ(f"#{n}, comment {i}: the source has no review {e['review_id']}")
                         continue
                     body = (r or {}).get("body") or ""
-                    if body.strip() and body not in e["body"]:
+                    # Past the opening line, which names the state, such as
+                    # "approved", and could hold a short body by chance.
+                    rest = e["body"].partition("\n\n")[2]
+                    if body.strip() and body not in rest:
                         self.differ(
                             f"#{n}, comment {i}: the event file lacks the body of the review"
                         )

@@ -820,26 +820,44 @@ def plan(mirror, repo, overrides, typed=True, keep_merges=False):
     by_review = {}
     for rc in gh_pages(f"repos/{repo}/pulls/comments"):
         by_review.setdefault(rc.get("pull_request_review_id"), []).append(rc)
+    carried = set()
     for n in sorted(pulls):
         for r in gh_pages(f"repos/{repo}/pulls/{n}/reviews"):
             if r.get("state") == "PENDING" or not r.get("submitted_at"):
                 continue
+            carried.add(r["id"])
+            text = review_text(r, by_review.get(r["id"], []))
+            if len(text) > COMMENT_LENGTH:
+                warn(
+                    f"review {r['id']} of #{n} has {len(text)} characters, more than the"
+                    f" {COMMENT_LENGTH} a comment takes; the run stops at it"
+                )
             add(
                 ("review", r["id"]),
                 "add-comment",
                 utc(r["submitted_at"]),
                 [("create", n)],
                 number=n,
-                body=review_text(r, by_review.get(r["id"], [])),
+                body=text,
                 author=(r.get("user") or {}).get("login"),
                 created_at=r["submitted_at"],
                 review_id=r["id"],
+            )
+    for rid, found in sorted(by_review.items(), key=lambda x: (x[0] is None, x[0] or 0)):
+        if rid not in carried:
+            warn(
+                f"{len(found)} review comment{'s' if len(found) > 1 else ''} of review {rid},"
+                " which no submitted review of a listed pull request has, left out"
             )
 
     left = left_behind(mirror, info, gh_pages(f"repos/{repo}/releases"), events)
     return default, events, left
 
 
+# The longest comment GitHub takes, as its community reports; the REST
+# documentation names no limit. A review with all its review comments in one
+# comment can be longer than any comment of the source.
+COMMENT_LENGTH = 65536
 REVIEW_STATES = {
     "APPROVED": "approved",
     "CHANGES_REQUESTED": "changes requested",
@@ -868,8 +886,10 @@ def review_text(review, comments):
             where = f"lines {start} to {end}"
         else:
             where = f"line {end}"
+        # On the LEFT side, the line is one of the file before the change.
+        side = ", before the change" if c.get("side") == "LEFT" and where != "file" else ""
         reply = ", a reply" if c.get("in_reply_to_id") else ""
-        parts.append(f"**`{c.get('path')}`, {where}{reply}**\n\n{c.get('body') or ''}")
+        parts.append(f"**`{c.get('path')}`, {where}{side}{reply}**\n\n{c.get('body') or ''}")
     return "\n\n".join(parts)
 
 
