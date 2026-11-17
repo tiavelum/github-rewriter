@@ -42,10 +42,16 @@ Write the run file first, outside any repository, since it holds the mailmap; `r
 | `backup` | The folder of the mirror, the event file, the state file and the work repository | `~/vc-backup` |
 | `clone_url` | The URL `backup-mirror.sh` clones the source from | `git@github.com:<source>.git` |
 
-A field it does not know stops it, as does a value of the wrong kind. Then run it:
+A field it does not know stops it, as does a value of the wrong kind. Before the run, bring your clone of this repository up to date and show the protocol `gh` gives git, which has to print `ssh` where git reaches GitHub over SSH, as [Running a replay](#running-a-replay) explains:
 
 ```sh
-python3 ~/vc/github-rewriter/replay/replay.py ~/github-rewriter.run.json
+git -C ~/vc/github-rewriter pull --ff-only && gh config get git_protocol
+```
+
+Then run it, on macOS under `caffeinate -i`, which keeps the Mac from sleeping until the command ends, since a large source takes hours:
+
+```sh
+caffeinate -i python3 ~/vc/github-rewriter/replay/replay.py ~/github-rewriter.run.json
 ```
 
 It announces each of its eight steps as `Step <n> of 8`:
