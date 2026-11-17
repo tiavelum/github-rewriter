@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Compares a finished replay with its source, read-only: the items, labels,
-bodies, comments, the default branch, the branches, tags and releases of the
-target against those of the source, the event file and the state file of
+bodies, comments, the reviews the replay carries as comments, the default
+branch, the branches, tags and releases of the target against those of the
+source, the event file and the state file of
 run-replay.py. A branch, tag or release of the source that the target lacks
 is a note where the event file's header lists it as left behind, and a
 difference otherwise.
@@ -137,6 +138,11 @@ def without_added_trailers(message, planned):
     while lines and (lines[-1] == "" or (CO_AUTHOR.match(lines[-1]) and lines[-1] not in known)):
         lines.pop()
     return "\n".join(lines)
+
+
+def item_number(comment):
+    """The number of the issue or pull request a comment belongs to."""
+    return int(comment["issue_url"].rsplit("/", 1)[1])
 
 
 def peeled_refs(repo, *prefixes):
@@ -335,25 +341,77 @@ class Comparison:
                 )
         self.totals.append(("labels", len(target_labels)))
 
-    def comments(self, source_comments, target_comments):
-        def by_item(comments):
-            grouped = {}
-            for c in sorted(comments, key=lambda c: (c.get("created_at") or "", c["id"])):
-                grouped.setdefault(int(c["issue_url"].rsplit("/", 1)[1]), []).append(c)
-            return grouped
-
-        source, target = by_item(source_comments), by_item(target_comments)
-        for n in sorted(set(source) | set(target)):
-            s, t = source.get(n, []), target.get(n, [])
-            if len(s) != len(t):
-                self.differ(f"#{n} has {len(t)} comments, the source {len(s)}")
+    def comments(self, source_comments, target_comments, source_reviews):
+        """The comments of each item in the order the event file plans them:
+        an issue comment with the source's text, a review with the text the
+        plan wrote of a review the source has. source_reviews maps review ids
+        to the source's reviews, or is None for an event file that predates
+        reviews."""
+        planned = {}
+        for e in self.events:
+            if e["kind"] == "add-comment":
+                planned.setdefault(e["number"], []).append(e)
+        events = [e for p in planned.values() for e in p]
+        by_id = {c["id"]: c for c in source_comments}
+        in_plan = {e.get("source_id") for e in events if "review_id" not in e}
+        for c in source_comments:
+            if c["id"] not in in_plan:
+                self.differ(
+                    f"#{item_number(c)}: comment {c['id']} of the source is not in the event file"
+                )
+        reviews_in_plan = {e["review_id"] for e in events if "review_id" in e}
+        for rid, r in sorted((source_reviews or {}).items()):
+            if rid not in reviews_in_plan:
+                self.differ(f"#{r['number']}: review {rid} of the source is not in the event file")
+        target = {}
+        for c in sorted(target_comments, key=lambda c: c["id"]):
+            target.setdefault(item_number(c), []).append(c)
+        for n in sorted(set(planned) | set(target)):
+            p, t = planned.get(n, []), target.get(n, [])
+            if len(p) != len(t):
+                self.differ(f"#{n} has {len(t)} comments, the event file plans {len(p)}")
                 continue
-            for i, (a, b) in enumerate(zip(s, t, strict=True), 1):
-                expected = self.expected_text(a.get("body"), a.get("created_at"))
+            for i, (e, b) in enumerate(zip(p, t, strict=True), 1):
+                if "review_id" in e:
+                    r = (source_reviews or {}).get(e["review_id"])
+                    if source_reviews is not None and r is None:
+                        self.differ(f"#{n}, comment {i}: the source has no review {e['review_id']}")
+                        continue
+                    body = (r or {}).get("body") or ""
+                    if body.strip() and body not in e["body"]:
+                        self.differ(
+                            f"#{n}, comment {i}: the event file lacks the body of the review"
+                        )
+                    expected = self.expected_text(e["body"], e.get("created_at"))
+                else:
+                    s = by_id.get(e.get("source_id"))
+                    if s is None:
+                        self.differ(
+                            f"#{n}, comment {i}: the source has no comment {e.get('source_id')}"
+                        )
+                        continue
+                    expected = self.expected_text(s.get("body"), s.get("created_at"))
                 found = b.get("body") or ""
                 if found != expected:
                     self.differ(f"#{n}, comment {i}: the body differs; {where(expected, found)}")
         self.totals.append(("comments", len(target_comments)))
+        self.totals.append(("reviews as comments", len(reviews_in_plan)))
+
+    def source_reviews(self):
+        """The reviews of the source's pull requests by id, but pending ones,
+        which only their author sees; None for an event file that predates
+        reviews, which plans none."""
+        if not self.header.get("reviews"):
+            self.notes.append("the event file predates reviews: it plans no review as a comment")
+            return None
+        found = {}
+        for e in self.events:
+            if e["kind"] != "create-pull":
+                continue
+            for r in gh_pages(f"repos/{self.source}/pulls/{e['number']}/reviews"):
+                if r.get("state") != "PENDING" and r.get("submitted_at"):
+                    found[r["id"]] = {**r, "number": e["number"]}
+        return found
 
     # Git
 
@@ -595,6 +653,7 @@ class Comparison:
         self.comments(
             gh_pages(f"repos/{self.source}/issues/comments"),
             gh_pages(f"repos/{self.slug}/issues/comments"),
+            self.source_reviews(),
         )
         self.totals.append(("texts with a replaced hash", self.replaced))
         with tempfile.TemporaryDirectory(prefix="compare-replay-") as folder:

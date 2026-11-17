@@ -1,6 +1,6 @@
 # replay
 
-How to replay a GitHub repository into a new, empty one with the scripts of this folder, for the owner of both: every commit, issue, pull request, comment and label of the source, so that the target gets them under the same numbers, with mapped identities and typed titles.
+How to replay a GitHub repository into a new, empty one with the scripts of this folder, for the owner of both: every commit, issue, pull request, comment, review and label of the source, reviews as comments, so that the target gets them under the same numbers, with mapped identities and typed titles.
 
 Planning reads the source and writes the replay as an event file; it changes nothing on GitHub. Running applies the event file to the target, after you confirm it, and can stop and resume. Comparing reads the source and the target and names every difference between them; it changes nothing either. `replay.py` takes these three steps in turn from one run file, with the steps around them, and is the way to run a replay; the sections after it describe the steps it takes, which you can also run alone. Each script takes its inputs as arguments; run without arguments, it prints its usage.
 
@@ -158,19 +158,20 @@ Squash messages written for merge commits: 5
   …
 Left behind: 0
 Totals:
-  items                        56
-  issues                       33
-  pull requests                23
-  comments                     95
+  items                        66
+  issues                       39
+  pull requests                27
+  comments                    119
+  reviews                      22
   labels                       13
-  commits                      62
-  squash merges                23
+  commits                      72
+  squash merges                27
   merge commits                 0
-  events                      241
+  events                      311
   guessed types                 0
   events out of time order      3
   left behind                   0
-~/vc-backup/github-rewriter-2026-11-16-173524.jsonl
+~/vc-backup/github-rewriter-2026-11-17-015317.jsonl
 ```
 
 Check every changed title, the guessed ones above all, and every squash message. To set a type yourself, write it into a file, one line per pull request number or commit hash of at least 7 characters, and plan again into a new event file:
@@ -186,7 +187,7 @@ It prints the same as before, with the type set, and the new event file:
 Changed titles: 7
   c1e8a97           Set up the repository: README, license, ignore list and project instructions  ->  chore: set up the repository: README, license, ignore list and project instructions
   …
-~/vc-backup/github-rewriter-2026-11-16-173524-typed.jsonl
+~/vc-backup/github-rewriter-2026-11-17-015317-typed.jsonl
 ```
 
 In the same file, a line of a pull request number, `summary` and a text sets the summary of the squash message that [How pull requests are merged](#how-pull-requests-are-merged) describes, such as `10 summary Signs commits and tags with the SSH key.`
@@ -277,6 +278,7 @@ Replay ada-example/tool into ada-example/tool-replay-20261116-1215: 23 events
   issues                        3
   pull requests                 3
   comments                      4
+  reviews as comments           0
   merges                        2
   closes                        3
   {pr_url} in 1 squash message: https://github.com/ada-example/tool-replay-20261116-1215/pull/<number>
@@ -343,6 +345,7 @@ Replay ada-example/tool into ada-example/tool-replay-20261116-1215: 23 events
   issues                        3
   pull requests                 3
   comments                      4
+  reviews as comments           0
   merges                        2
   closes                        3
   commits to sign               9
@@ -386,10 +389,11 @@ Next to it lies the work repository, with `.work.git` for `.state.json`: a bare 
 - **Merges**: each merged pull request is merged through GitHub, with the planned method, title and message and `{pr_url}` replaced by its URL, under the name `--final-name` gives or else under the target's, so GitHub is the committer of the squash commit, the account that runs the replay its author, and the time of the replay its date. After each merge, the tree of the default branch equals the source's.
 - **Items**: each issue and pull request under its number, with its title, body, labels, assignees, draft state, and the state and state reason it ends in. Each is created open, then merged or closed. A merge closes the issues its pull request names with a closing keyword, as on GitHub; a later close leaves such an issue as it is where the state reason matches, and otherwise reopens and closes it with the planned one, since GitHub [ignores a state reason unless the state changes](https://docs.github.com/en/rest/issues/issues#update-an-issue). After the last event, the run reopens an item the source has open that a merge closed, and stops where any other item, or the labels, differ from the plan.
 - **Comments**: each comment, in the planned order, after its item.
+- **Reviews**: each review of a pull request that its reviewer submitted, as a comment on the pull request at the place of its submission among the other comments, since a replay cannot submit a review for someone else; a pending review, which only its author sees, is left out. The comment opens with the reviewer, the review's state and the commit it was made on, such as `_Review by octocat: changes requested, on 3f2a9c1._`, then holds the review's body and each of its review comments under the file and the line or lines it was made on, `a reply` where it answers another. It is not attached to the diff, so the pull request's files show no review comments, and GitHub counts no approval.
 - **Hashes**: in every title, body, comment and commit message, a hash of 7 to 40 lowercase hexadecimal characters that is the prefix of exactly one source commit already recreated becomes the prefix of the same length of the new hash.
 - **Branches**: each pull request's branch stays, also after its merge, unless the target deletes head branches on merge.
 
-The target does not get the original times and authors: every item, comment and merge is by the account that runs the replay, at the time of the replay; `--with-times` keeps the creation time in the text. Nor does it get reactions, reviews, review comments, milestones or projects, which the plan does not read, an item's history between its creation and its final state, or the tags, releases and branches [What a replay leaves behind](#what-a-replay-leaves-behind) lists. References to items, in this repository or another, and `@` mentions act again: GitHub adds them to the timeline of the item named, and notifies the person mentioned.
+The target does not get the original times and authors: every item, comment and merge is by the account that runs the replay, at the time of the replay; `--with-times` keeps the creation time in the text. Nor does it get reactions, milestones or projects, which the plan does not read, reviews as reviews, which it carries as comments, an item's history between its creation and its final state, or the tags, releases and branches [What a replay leaves behind](#what-a-replay-leaves-behind) lists. References to items, in this repository or another, and `@` mentions act again: GitHub adds them to the timeline of the item named, and notifies the person mentioned.
 
 ## Comparing the replay with its source
 
@@ -403,7 +407,8 @@ It needs `gh` signed in with read access to the source and the target, reads Git
 
 - **Items**: each issue and pull request under its number, with its kind, the title the event file plans, its state, its state reason where it is a closed issue, its labels and assignees, and whether it is merged; a number the source lacks has to hold a closed placeholder.
 - **Labels**: each with its colour and description.
-- **Texts**: every body and comment equal to the source's, with each hash of a recreated commit replaced as [What the target ends with](#what-the-target-ends-with) says, and with the original time where `--with-times` is given; where a text ends in a footer the source lacks, it says so.
+- **Comments and reviews**: each item's comments in the order the event file plans them; each comment of the source and each review of a source pull request but pending ones in the event file, and each planned review still in the source, its body in the text the plan wrote of it. An event file planned before reviews were carried plans none, and the comparison notes it.
+- **Texts**: every body and comment equal to the source's, each review's comment equal to the text the plan wrote, with each hash of a recreated commit replaced as [What the target ends with](#what-the-target-ends-with) says, and with the original time where `--with-times` is given; where a text ends in a footer the source lacks, it says so.
 - **The default branch**: as many first-parent commits as the source's and as the event file plans, each with the source's tree at the same step and the hash the state file records; each direct commit with its planned message, author and committer, the author's original date and the committer date the state file records; each merge with its planned message, `{pr_url}` filled as the run filled it, and GitHub as committer. A `Co-authored-by` line that GitHub appends to a merge's message passes; one that stands twice does not.
 - **Recreated commits**: each commit the state file records, in the target and with the tree of its source commit, and none of those the run built itself committed before one of its parents.
 - **Branches**: the default branch and each pull request's branch, at the head the state file records, without those of merged pull requests where the target deletes head branches on merge.
@@ -417,6 +422,7 @@ Compared ada-example/tool with ada-example/tool-replay-20261116-1215:
   items                           6
   labels                          2
   comments                        4
+  reviews as comments             0
   texts with a replaced hash      1
   commits on main                 7
   recreated commits              12
@@ -562,13 +568,13 @@ The event file holds JSON Lines: the header on the first line, then one event pe
 
 | `kind` | Means | Fields |
 |---|---|---|
-| `header` | The first line, no event | `format` (1), `source`, `default_branch`, and `source_commits`: the hash of every source commit the replay recreates, so that later text can be pointed at the new hashes; and `left_behind`: each tag, release and branch the replay leaves behind, with its `kind`, `name`, `sha`, the commit it names or `null` for a release, and `reason` |
+| `header` | The first line, no event | `format` (1), `source`, `default_branch`, and `source_commits`: the hash of every source commit the replay recreates, so that later text can be pointed at the new hashes; and `left_behind`: each tag, release and branch the replay leaves behind, with its `kind`, `name`, `sha`, the commit it names or `null` for a release, and `reason`; and `reviews`, `true` where the plan carries the reviews |
 | `create-label` | Create a label | `name`, `color`, `description` |
 | `push-commits` | Push commits directly to the default branch | `branch`, `commits` |
 | `push-branch` | Push the branch of pull request `number` | `number`, `branch`, `source_branch`, `base_commit`, the source commit it starts on, `commits` |
 | `create-issue` | Create issue `number` | `number`, `title`, `body`, `labels`, `assignees`, `state`, `state_reason`, `author`, `created_at`; `placeholder` where it keeps the number of an item the source no longer has |
 | `create-pull` | Create pull request `number` | `number`, `title`, `original_title`, `type`, `type_from`, `body`, `head`, `base`, `draft`, `labels`, `assignees`, `state` (`open`, `closed` or `merged`), `author`, `created_at` |
-| `add-comment` | Comment on item `number` | `number`, `body`, `author`, `created_at`, `source_id` |
+| `add-comment` | Comment on item `number` | `number`, `body`, `author`, `created_at`, and `source_id`, the id of the source's comment, or `review_id`, the id of the review it carries |
 | `merge-pull` | Merge pull request `number` | `number`, `method` (`squash` or `merge`), `source_method` (`squash` or `merge`), `source_commit`, `tree`, `original_title`, `commit_title`, `commit_message`, `type`, `type_from` |
 | `close-item` | Close item `number` | `number`, `state_reason` |
 
@@ -578,7 +584,7 @@ Events follow the original times, with these constraints: items are created stri
 
 ## Known limits
 
-- Review comments, reviews, reactions, milestones and projects are not read.
+- Reactions, milestones and projects are not read. Reviews and their review comments become comments, as [What the target ends with](#what-the-target-ends-with) describes, so they are no longer attached to the diff, and the comparison checks a review's comment against the text the plan wrote and against the review's body, not its line comments, which it does not read again.
 - Tags, releases and branches without a pull request are not carried; the plan stops at each until it is accepted as left behind, as [What a replay leaves behind](#what-a-replay-leaves-behind) describes. A plan without push access to the source sees no draft release, since GitHub lists drafts only to those who can push, and the comparison checks a release by its tag name alone, not its text, assets or state.
 - An item is replayed in its final state: one reopened and closed again is closed once, with its labels and assignees as they are now.
 - A pull request without commits of its own, or one whose base is not the default branch, is planned with a warning, since GitHub may refuse to create it; the run then stops at it.

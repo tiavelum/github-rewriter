@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Plans the replay of a GitHub repository into an empty one: reads the
-commits from a mirror and the issues, pull requests, comments and labels from
-GitHub, and writes the ordered events that run-replay.py applies.
+commits from a mirror and the issues, pull requests, comments, reviews and
+labels from GitHub, and writes the ordered events that run-replay.py applies;
+each review becomes a comment on its pull request.
 
   plan-replay.py [--types <file>] [--no-types] [--keep-merges]
                  [--leave-behind <file>]
@@ -813,8 +814,63 @@ def plan(mirror, repo, overrides, typed=True, keep_merges=False):
             source_id=c["id"],
         )
 
+    # Each review of a pull request becomes a comment at its submission, since
+    # a replay cannot submit a review for someone else; a pending review is
+    # its author's draft, which GitHub shows nobody else.
+    by_review = {}
+    for rc in gh_pages(f"repos/{repo}/pulls/comments"):
+        by_review.setdefault(rc.get("pull_request_review_id"), []).append(rc)
+    for n in sorted(pulls):
+        for r in gh_pages(f"repos/{repo}/pulls/{n}/reviews"):
+            if r.get("state") == "PENDING" or not r.get("submitted_at"):
+                continue
+            add(
+                ("review", r["id"]),
+                "add-comment",
+                utc(r["submitted_at"]),
+                [("create", n)],
+                number=n,
+                body=review_text(r, by_review.get(r["id"], [])),
+                author=(r.get("user") or {}).get("login"),
+                created_at=r["submitted_at"],
+                review_id=r["id"],
+            )
+
     left = left_behind(mirror, info, gh_pages(f"repos/{repo}/releases"), events)
     return default, events, left
+
+
+REVIEW_STATES = {
+    "APPROVED": "approved",
+    "CHANGES_REQUESTED": "changes requested",
+    "COMMENTED": "commented",
+    "DISMISSED": "dismissed",
+}
+
+
+def review_text(review, comments):
+    """A review as the text of a comment: who reviewed, its state and the
+    commit it was made on, its body, and each of its review comments under
+    the file and lines it was made on."""
+    who = (review.get("user") or {}).get("login") or "someone"
+    state = REVIEW_STATES.get(review.get("state"), str(review.get("state", "")).lower())
+    commit = (review.get("commit_id") or "")[:7]
+    on = f", on {commit}" if commit else ""
+    parts = [f"_Review by {who}: {state}{on}._"]
+    if (review.get("body") or "").strip():
+        parts.append(review["body"])
+    for c in sorted(comments, key=lambda c: (c.get("created_at") or "", c["id"])):
+        end = c.get("line") or c.get("original_line")
+        start = c.get("start_line") or c.get("original_start_line")
+        if c.get("subject_type") == "file" or not end:
+            where = "file"
+        elif start and start != end:
+            where = f"lines {start} to {end}"
+        else:
+            where = f"line {end}"
+        reply = ", a reply" if c.get("in_reply_to_id") else ""
+        parts.append(f"**`{c.get('path')}`, {where}{reply}**\n\n{c.get('body') or ''}")
+    return "\n\n".join(parts)
 
 
 def review(events):
@@ -899,6 +955,7 @@ def main(argv):
         "default_branch": default,
         "source_commits": source_commits,
         "left_behind": left,
+        "reviews": True,
     }
     partial = output.with_name(output.name + ".partial")
     with partial.open("w", encoding="utf-8") as file:
@@ -934,7 +991,8 @@ def main(argv):
         ("items", count("create-issue", "create-pull")),
         ("issues", count("create-issue")),
         ("pull requests", count("create-pull")),
-        ("comments", count("add-comment")),
+        ("comments", sum(e["kind"] == "add-comment" and "review_id" not in e for e in events)),
+        ("reviews", sum("review_id" in e for e in events)),
         ("labels", count("create-label")),
         ("commits", pushed),
         ("squash merges", merges("squash")),

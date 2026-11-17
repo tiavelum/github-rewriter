@@ -647,7 +647,8 @@ class Replay:
             ("commits", sum(len(e.get("commits", [])) for e in left)),
             ("issues", count("create-issue")),
             ("pull requests", count("create-pull")),
-            ("comments", count("add-comment")),
+            ("comments", sum(e["kind"] == "add-comment" and "review_id" not in e for e in left)),
+            ("reviews as comments", sum("review_id" in e for e in left)),
             ("merges", count("merge-pull")),
             ("closes", count("close-item")),
         ]
