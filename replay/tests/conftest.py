@@ -69,12 +69,17 @@ class Result:
         return (self.out_lines or [""])[-1]
 
 
-def run(args, env, cwd):
+def run(args, env, cwd, stdin=None, merged=False):
+    """Runs a process and returns what it left. stdin, where given, is the
+    text it reads, as printf piped into it; merged puts its standard error
+    into its standard output, in the order written, as 2>&1 does."""
     done = subprocess.run(
         [str(a) for a in args],
         env=env,
         cwd=cwd,
-        capture_output=True,
+        input=None if stdin is None else stdin.encode("utf-8"),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT if merged else subprocess.PIPE,
         check=False,
     )
     # Decoded here rather than in text mode, which would turn "\r\n" and a
@@ -83,7 +88,7 @@ def run(args, env, cwd):
     return Result(
         done.returncode,
         done.stdout.decode("utf-8", errors="replace"),
-        done.stderr.decode("utf-8", errors="replace"),
+        (done.stderr or b"").decode("utf-8", errors="replace"),
     )
 
 
@@ -547,8 +552,8 @@ def plan(root):
     """Runs plan-replay.py with these arguments in that environment, from the
     session's folder, with the interpreter that runs pytest."""
 
-    def plan(*args, env):
-        return run([sys.executable, REPLAY / "plan-replay.py", *args], env, root)
+    def plan(*args, env, merged=False):
+        return run([sys.executable, REPLAY / "plan-replay.py", *args], env, root, merged=merged)
 
     return plan
 
@@ -577,3 +582,250 @@ class Plan:
 def read_plan():
     """Reads an event file as a Plan."""
     return Plan
+
+
+TOOL = "ada-example/tool"
+
+
+@dataclass(frozen=True)
+class Planned:
+    """A plan the session makes once: its event file, the API folder it was
+    planned from, and what plan-replay.py printed, standard error included."""
+
+    file: Path
+    api: Path
+    result: Result
+
+
+@pytest.fixture(scope="session")
+def run_plan(root, source, api, plan, source_gh):
+    """The plan run-replay.py applies, run.jsonl: the source's, with a fourth
+    comment, on #6, after every merge, that names a direct commit and a squash
+    merge by their hashes, and a word of hex characters that is no commit. Its
+    API, api-run, is a copy of the source's with that comment."""
+    folder = root / "api-run"
+    shutil.copytree(api, folder)
+    page = folder / f"{API_BASE}_issues_comments-1.json"
+    comments = json.loads(page.read_text(encoding="utf-8"))
+    c4, m2 = source.hashes["C4"], source.hashes["M2"]
+    comments.append(
+        {
+            "id": 104,
+            "issue_url": "https://api.github.com/repos/ada-example/tool/issues/6",
+            "body": f"Tidied in {c4[:7]}, after {m2[:10]}; abcdef0 is no commit.",
+            "user": {"login": "ada-example"},
+            "created_at": "2026-03-08T12:00:00Z",
+        }
+    )
+    page.write_text(json.dumps(comments), encoding="utf-8")
+    events = root / "run.jsonl"
+    env = source_gh("run-plan-gh").using(FAKE_GH_API=folder)
+    s = source
+    result = plan("--types", s.types, s.mirror, TOOL, s.mailmap, events, env=env, merged=True)
+    return Planned(events, folder, result)
+
+
+# The labels GitHub gives a new repository, as the shell test writes them.
+NEW_LABELS = (
+    '[{"name": "bug", "color": "ee0701", "description": "Something is wrong"},\n'
+    '      {"name": "enhancement", "color": "a2eeef", "description": "New feature or request"}]\n'
+)
+
+
+class Target:
+    """A target of the fake gh of the targets: the folder that holds its
+    name, its JSON files, its log of calls and its bare repository."""
+
+    def __init__(self, folder, env):
+        self.folder = Path(folder)
+        self.env = env
+        self.repo = self.folder / "repo.git"
+
+    def load(self, name, default):
+        """A JSON file the fake keeps, or default where it has none."""
+        path = self.folder / f"{name}.json"
+        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else default
+
+    def calls(self):
+        """The lines of the log of calls, each its time and "<method> <endpoint>";
+        none where the fake logged no call."""
+        path = self.folder / "calls"
+        return lines(path.read_text(encoding="utf-8")) if path.exists() else []
+
+    def writes(self):
+        """The calls that write, with their times, as writes() of the shell
+        test greps them: every line without " GET "."""
+        return [c for c in self.calls() if " GET " not in c]
+
+    def git(self, *args):
+        """The output of git in the target's repository, stripped; a failing
+        git fails the caller, as check=True does in rexpect of the shell test."""
+        done = run(["git", "--git-dir", self.repo, *args], self.env, self.folder)
+        if done.status:
+            raise RuntimeError(f"git {' '.join(map(str, args))} failed:\n{done.err}")
+        return done.out.strip()
+
+    def dump(self):
+        """The target's items, comments, labels, closings and refs, as dump()
+        of the shell test prints them; a missing file fails, as cat does."""
+        files = ("items", "comments", "labels", "closes")
+        content = b"".join((self.folder / f"{name}.json").read_bytes() for name in files)
+        refs = run(["git", "--git-dir", self.repo, "for-each-ref"], self.env, self.folder)
+        assert refs.status == 0, refs.err
+        return content + refs.out.encode("utf-8")
+
+
+class TargetView:
+    """What rexpect of the shell test reads of a target: items by number,
+    comments as (number, body), labels and closes from the fake's files, the
+    state file and its map of source to target hashes, the events of the plan
+    run-replay.py applied, and git in the target's repository."""
+
+    def __init__(self, target, state_file, plan):
+        self.items = {int(k): v for k, v in target.load("items", {}).items()}
+        self.comments = [(c["number"], c["body"]) for c in target.load("comments", [])]
+        self.labels, self.closes = target.load("labels", []), target.load("closes", [])
+        self.state = json.loads(Path(state_file).read_text(encoding="utf-8"))
+        self.recreated = self.state["hashes"]
+        self.events = plan.events
+        self.git = target.git
+
+
+@pytest.fixture(scope="session")
+def target_env(root, source_gh):
+    """The environment under which the scripts reach the fake gh of the
+    targets, first on PATH before the fake of the source, with $FAKE_GH_API
+    the source's API, as the shell test exports it."""
+    bin_dir = root / "bin-target"
+    bin_dir.mkdir()
+    gh = bin_dir / "gh"
+    python, fake = shlex.quote(sys.executable), shlex.quote(str(HERE / "fake-gh-target.py"))
+    # exec, so that the fake's parent, to which FAKE_GH_INTERRUPT sends a
+    # SIGINT, is the script that ran gh.
+    gh.write_text(f'#!/bin/sh\nexec {python} {fake} "$@"\n', encoding="utf-8")
+    gh.chmod(0o755)
+    env = source_gh("target-gh").env
+    return {**env, "PATH": f"{bin_dir}{os.pathsep}{env['PATH']}"}
+
+
+@pytest.fixture(scope="session")
+def make_target(root, base_env):
+    """Makes an empty target in a folder of the session, ada-example/tool-new
+    by default, with two labels as GitHub gives a new repository."""
+
+    def make(name, slug="ada-example/tool-new"):
+        folder = root / name
+        folder.mkdir()
+        (folder / "name").write_text(slug + "\n", encoding="utf-8")
+        Git(base_env, root)("init", "-q", "--bare", folder / "repo.git")
+        (folder / "labels.json").write_text(NEW_LABELS, encoding="utf-8")
+        return Target(folder, base_env)
+
+    return make
+
+
+@pytest.fixture(scope="session")
+def replay(root, target_env):
+    """Runs run-replay.py with these arguments against the target, with the
+    answer typed at the confirmation and the FAKE_GH_* variables given, from
+    the session's folder, with the interpreter that runs pytest."""
+
+    def replay(target, answer, *args, merged=False, **variables):
+        env = {**target_env, "FAKE_GITHUB": str(target.folder)}
+        env.update({k: str(v) for k, v in variables.items()})
+        script = [sys.executable, REPLAY / "run-replay.py", *args]
+        return run(script, env, root, stdin=f"{answer}\n", merged=merged)
+
+    return replay
+
+
+@dataclass(frozen=True)
+class Replayed:
+    """A replay the session makes once: its target, its state file and what
+    run-replay.py printed, with the log of calls and the dump of the target
+    as the run left them, before later runs add to the log."""
+
+    target: Target
+    state: Path
+    result: Result
+    calls: list
+    dump: bytes | None
+
+    @property
+    def writes(self):
+        """The calls of this run that write, as Target.writes() reads them."""
+        return [c for c in self.calls if " GET " not in c]
+
+
+@pytest.fixture(scope="session")
+def replay_a(root, source, run_plan, make_target, replay):
+    """A: one uninterrupted run, paced at 0.1 s, that hits a rate limit once;
+    its standard output and error apart."""
+    target = make_target("gh-a")
+    state = root / "a.state.json"
+    slug = "ada-example/tool-new"
+    result = replay(
+        target,
+        slug,
+        *("--pace", "0.1", "--state", state, run_plan.file, source.mirror, slug),
+        FAKE_GH_RATE_LIMIT="POST repos/ada-example/tool-new/issues/1/comments",
+    )
+    return Replayed(target, state, result, target.calls(), target.dump())
+
+
+@pytest.fixture(scope="session")
+def replay_c(root, source, run_plan, make_target, replay):
+    """C: a replay into a target where someone else creates an issue, with the
+    default state file, run.state.json, and --with-times; it stops at #4 and
+    leaves the replay unfinished."""
+    target = make_target("gh-c", "ada-example/tool-c")
+    slug = "ada-example/tool-c"
+    result = replay(
+        target,
+        slug,
+        *("--pace", "0", "--with-times", run_plan.file, source.mirror, slug),
+        merged=True,
+        FAKE_GH_SKIP=4,
+    )
+    # No dump: no check compares this stopped target with another.
+    return Replayed(target, root / "run.state.json", result, target.calls(), None)
+
+
+@pytest.fixture(scope="session")
+def replay_e(root, source, run_plan, make_target, replay):
+    """E: an unsigned replay with --final-name, whose squash messages name the
+    source, the name the target takes over."""
+    target = make_target("gh-e", "ada-example/tool-e")
+    state = root / "e.state.json"
+    slug = "ada-example/tool-e"
+    result = replay(
+        target,
+        slug,
+        *("--pace", "0", "--final-name", TOOL, "--state", state),
+        *(run_plan.file, source.mirror, slug),
+        merged=True,
+    )
+    return Replayed(target, state, result, target.calls(), target.dump())
+
+
+@pytest.fixture(scope="session")
+def run_process(root, base_env):
+    """Runs a command through run(), with the suite's environment, from the
+    session's folder; merged as run() takes it."""
+
+    def run_process(*args, merged=False):
+        return run(args, base_env, root, merged=merged)
+
+    return run_process
+
+
+@pytest.fixture(scope="session")
+def view(read_plan, run_plan):
+    """Reads a target as rexpect of the shell test does, with the state file
+    given and the events of run.jsonl."""
+    plan = read_plan(run_plan.file)
+
+    def view(target, state_file):
+        return TargetView(target, state_file, plan)
+
+    return view
