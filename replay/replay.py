@@ -9,10 +9,11 @@ source's name, which stay yours to run.
 
 The run file holds JSON with the fields that replay/README.md lists; keep it
 outside any repository, since it holds the mailmap. Before the confirmation
-replay.py writes nothing on GitHub, and it stops where a title would get a
-guessed type, where the plan leaves behind a tag, release or branch that
-leave_behind does not accept, or where the target exists already. It runs
-backup-mirror.sh,
+replay.py writes nothing on GitHub, and it stops where the run file sets
+no_tags without no_releases, where a title would get a guessed type, where
+the plan leaves behind a tag, release or branch that neither leave_behind
+accepts nor no_tags or no_releases turns off, or where the target exists
+already. It runs backup-mirror.sh,
 plan-replay.py, run-replay.py and compare-replay.py as processes, writes to
 GitHub through gh api and run-replay.py only, and keeps its progress in
 <name>.progress.json next to the run file, so that the same command resumes
@@ -40,6 +41,8 @@ SLUG = re.compile(r"[\w.-]+/[\w.-]+")
 ADDRESS = re.compile(r"[^@\s]+@[^@\s]+")
 STEPS = ("mirror", "plan", "create", "settings", "replay", "compare", "links", "commands")
 REQUIRED = ("source", "target", "mailmap")
+# What no_<kind> turns off, as plan-replay.py's --no-<kind> does.
+SWITCHES = ("tags", "releases", "reviews")
 DEFAULTS = {
     "final_name": None,
     "types": [],
@@ -48,6 +51,9 @@ DEFAULTS = {
     "keep_merges": False,
     "with_times": False,
     "no_types": False,
+    "no_tags": False,
+    "no_releases": False,
+    "no_reviews": False,
     "pace": 1,
     "backup": "~/vc-backup",
     "clone_url": None,
@@ -231,8 +237,14 @@ def read_run_file(path):
             "a list of lines",
         )
     check("mailmap", bool, "a list of at least one line")
-    for field in ("keep_merges", "with_times", "no_types"):
+    for field in ("keep_merges", "with_times", "no_types", *(f"no_{k}" for k in SWITCHES)):
         check(field, lambda v: isinstance(v, bool), "true or false")
+    if cfg["no_tags"] and not cfg["no_releases"]:
+        raise ReplayError(
+            f"{path}: no_tags needs no_releases: GitHub creates the missing tag of a release it"
+            " creates, at the commit the release's target_commitish names, so a replay with"
+            " releases would still carry tags. Set no_releases to true too, or no_tags to false"
+        )
     check(
         "pace",
         lambda v: isinstance(v, int | float) and not isinstance(v, bool) and v >= 0,
@@ -366,6 +378,7 @@ class OneCommand:
             args += ["--no-types"] * self.cfg["no_types"] + ["--keep-merges"] * self.cfg[
                 "keep_merges"
             ]
+            args += [f"--no-{k}" for k in self.turned_off()]
             result = child([*args, self.mirror, self.source, mailmap, self.events])
         if result.returncode:
             raise ReplayError("plan-replay.py stopped; its message stands above")
@@ -472,6 +485,13 @@ class OneCommand:
             if step == "links":
                 for line in links:
                     print(f"       {line}")
+        off = self.turned_off()
+        if off:
+            kinds = ", ".join(off[:-1]) + " and " + off[-1] if len(off) > 1 else off[0]
+            print(
+                f"  turned off in the run file: {kinds}; the replay carries none of them, and"
+                " only the archive keeps them"
+            )
         print(f"Type {self.target} to confirm: ", end="", flush=True)
         try:
             answer = sys.stdin.readline().strip()
@@ -655,6 +675,20 @@ class OneCommand:
         left = self.left_behind()
         if left:
             notes.append(f"only the archive keeps what the plan left behind: {', '.join(left)}")
+        header = self.plan_header()
+        for kind in ("tags", "releases"):
+            if kind in header.get("turned_off", []) and any(
+                x["kind"] == kind[:-1] for x in header.get("left_behind", [])
+            ):
+                notes.append(
+                    f"only the archive keeps the {kind} of the source, since the plan turned"
+                    f" {kind} off"
+                )
+        if "reviews" in header.get("turned_off", []):
+            notes.append(
+                "only the archive keeps the reviews of the pull requests, since the plan turned"
+                " reviews off"
+            )
         stem = self.events.name[: -len(".jsonl")]
         state, work = (self.events.with_name(stem + x) for x in (".state.json", ".work.git"))
         print(
@@ -705,11 +739,18 @@ class OneCommand:
             raise ReplayError(f"git ls-remote of {self.target} failed: {listed.stderr.strip()}")
         return {line.split("\trefs/heads/", 1)[1] for line in listed.stdout.splitlines()}
 
-    def left_behind(self):
-        """What the event file's header lists as left behind, as kind and name."""
+    def plan_header(self):
         with self.events.open(encoding="utf-8") as file:
-            header = json.loads(file.readline())
-        return [f"{x['kind']} {x['name']}" for x in header.get("left_behind", [])]
+            return json.loads(file.readline())
+
+    def left_behind(self):
+        """What the event file's header lists as left behind, as kind and name;
+        with tags or releases turned off, each of them too."""
+        return [f"{x['kind']} {x['name']}" for x in self.plan_header().get("left_behind", [])]
+
+    def turned_off(self):
+        """The kinds the run file turns off, in the order of SWITCHES."""
+        return [k for k in SWITCHES if self.cfg[f"no_{k}"]]
 
     def extra_branches(self):
         """The branches of the target that the mirror of the source lacks."""
