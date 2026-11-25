@@ -675,7 +675,16 @@ class OneCommand:
         left = self.left_behind()
         if left:
             notes.append(f"only the archive keeps what the plan left behind: {', '.join(left)}")
-        if "reviews" in self.plan_header().get("turned_off", []):
+        header = self.plan_header()
+        for kind in ("tags", "releases"):
+            if kind in header.get("turned_off", []) and any(
+                x["kind"] == kind[:-1] for x in header.get("left_behind", [])
+            ):
+                notes.append(
+                    f"only the archive keeps the {kind} of the source, since the plan turned"
+                    f" {kind} off"
+                )
+        if "reviews" in header.get("turned_off", []):
             notes.append(
                 "only the archive keeps the reviews of the pull requests, since the plan turned"
                 " reviews off"
