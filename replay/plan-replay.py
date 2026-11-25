@@ -96,15 +96,19 @@ IDENTITY = re.compile(r"^(?P<name>.*) <(?P<email>[^>]*)> (?P<date>\d+ [+-]\d{4})
 # The lines that open a signature git appends to a signed tag's message; git
 # takes the last of them as the start of the signature.
 SIGNATURE = re.compile(
-    r"^-----BEGIN (?:PGP SIGNATURE|PGP MESSAGE|SIGNED MESSAGE|SSH SIGNATURE)-----$", re.M
+    r"^-----BEGIN (PGP SIGNATURE|PGP MESSAGE|SIGNED MESSAGE|SSH SIGNATURE)-----$", re.M
 )
 
 
 def unsigned(message):
     """A tag's message without the signature git appended to it, which would
     not hold for the recreated tag."""
-    starts = [m.start() for m in SIGNATURE.finditer(message)]
-    return message[: starts[-1]] if starts else message
+    # Only where the text from the last opening line on ends with its closing
+    # line: a message may hold such a line in its text.
+    starts = list(SIGNATURE.finditer(message))
+    if starts and message.rstrip("\n").endswith(f"-----END {starts[-1].group(1)}-----"):
+        return message[: starts[-1].start()]
+    return message
 
 
 def die(message):
