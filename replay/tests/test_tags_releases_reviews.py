@@ -21,6 +21,7 @@ from conftest import (
     has_match,
     has_search,
     has_text,
+    lines,
 )
 
 ADA = ("Ada Example", "ada@example.com")
@@ -155,11 +156,14 @@ def killed_tag(root, run_process, extra_plan, mirror_extra, make_target, replay)
     tc_refs = run_process("git", "--git-dir", copy.repo, "for-each-ref").out
     second = tk_replay(target, state)
     tc = tk_replay(copy, copy_state)
+    # One text, as the second run appends to the file of the first: a line
+    # the killed run left unended runs on into the second run's first line.
+    out = first.out + second.out
     return SimpleNamespace(
         target=target,
         statuses=[shell_status(r) for r in (first, second)],
-        out_lines=[line for r in (first, second) for line in r.out_lines],
-        out=first.out + second.out,
+        out_lines=lines(out),
+        out=out,
         copy=copy,
         tc_refs=tc_refs,
         tc=tc,
@@ -545,11 +549,11 @@ def review_plans(root, source, plan, source_gh, api_reviews, api_reviews_long):
 
 def without_header_keys(path, keys):
     """The text of an event file whose header lacks those keys."""
-    lines = path.read_text(encoding="utf-8").splitlines()
-    header = json.loads(lines[0])
+    head, *rest = path.read_text(encoding="utf-8").splitlines()
+    header = json.loads(head)
     for key in keys:
         del header[key]
-    return "\n".join([json.dumps(header), *lines[1:]]) + "\n"
+    return "\n".join([json.dumps(header), *rest]) + "\n"
 
 
 @pytest.fixture(scope="module")
@@ -802,8 +806,8 @@ def test_no_reviews_plans_no_review_records_them_turned_off_and_plans_nothing_el
     assert not [e for e in p.events if "review_id" in e]
     assert p.header["reviews"] is False
     assert p.header["turned_off"] == ["reviews"]
-    lines = run_plan.file.read_text(encoding="utf-8").splitlines()
-    assert p.events == [json.loads(line) for line in lines[1:]]
+    run_lines = run_plan.file.read_text(encoding="utf-8").splitlines()
+    assert p.events == [json.loads(line) for line in run_lines[1:]]
 
 
 def test_no_reviews_reads_no_review_and_no_review_comment_from_github_and_warns_of_none(
