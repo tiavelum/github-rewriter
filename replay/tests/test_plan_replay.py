@@ -3,8 +3,7 @@
 import re
 
 import pytest
-
-TOOL = "ada-example/tool"
+from conftest import TOOL
 
 
 def has_match(pattern, lines):

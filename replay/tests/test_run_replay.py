@@ -6,8 +6,7 @@ from itertools import pairwise
 from types import SimpleNamespace
 
 import pytest
-
-TOOL_NEW = "ada-example/tool-new"
+from conftest import TOOL_NEW
 
 
 def split_lines(text):
@@ -274,21 +273,6 @@ def test_ends_a_stopped_and_resumed_replay_in_the_same_target_as_an_uninterrupte
     assert replay_a.dump.decode("utf-8") == resumed_b.dump.decode("utf-8")
 
 
-@pytest.fixture(scope="module")
-def again(root, source, run_plan, replay_a, replay):
-    """A run on the finished replay A, and one into it with another state
-    file; the count of A's writes before them."""
-    target = replay_a.target
-    writes_a = len(target.writes())
-    common = ("--pace", "0", "--state")
-    tail = (run_plan.file, source.mirror, TOOL_NEW)
-    same = replay(target, TOOL_NEW, *common, replay_a.state, *tail, merged=True)
-    other = replay(target, TOOL_NEW, *common, root / "other.state.json", *tail, merged=True)
-    return SimpleNamespace(
-        writes_a=writes_a, same=same, other=other, writes_after=len(target.writes())
-    )
-
-
 def test_checks_a_finished_replay_again_without_writing_and_refuses_a_non_empty_target(again):
     """run-replay.py checks a finished replay again without writing, and refuses a target that is not empty"""  # noqa: E501 # the description word for word
     same, other = again.same, again.other
@@ -297,30 +281,6 @@ def test_checks_a_finished_replay_again_without_writing_and_refuses_a_non_empty_
     not_empty = "ada-example/tool-new is not empty: it has 8 refs and items up to #6"
     assert has_text(not_empty, other.out_lines), other.out
     assert again.writes_after == again.writes_a
-
-
-@pytest.fixture(scope="module")
-def lag(source, run_plan, replay_a, replay, again):
-    """A run on the finished replay A whose first list of issues lacks the
-    highest-numbered item and every pull request; the reads of #2 and #6
-    before it. After the runs of again, as in the shell test."""
-    target = replay_a.target
-
-    def reads(n):
-        return sum(
-            c.endswith(f" GET repos/ada-example/tool-new/issues/{n}") for c in target.calls()
-        )
-
-    before = {2: reads(2), 6: reads(6)}
-    result = replay(
-        target,
-        TOOL_NEW,
-        *("--pace", "0", "--state", replay_a.state, run_plan.file, source.mirror, TOOL_NEW),
-        merged=True,
-        FAKE_GH_LAG="GET repos/ada-example/tool-new/issues?state=all&per_page=100&page=1",
-    )
-    after = {2: reads(2), 6: reads(6)}
-    return SimpleNamespace(result=result, before=before, after=after, writes=len(target.writes()))
 
 
 def test_reads_by_its_number_an_item_the_targets_list_lacks_before_it_calls_it_missing(lag, again):
@@ -361,8 +321,9 @@ def test_runs_gh_with_git_terminal_prompt_0_so_no_call_through_run_waits_for_a_p
 ):
     """run-replay.py runs gh with GIT_TERMINAL_PROMPT=0, so no call through run() waits for a password"""  # noqa: E501 # the description word for word
     # Read after the last run into A, as in the shell test, whose $(cat) drops
-    # the final line breaks.
-    prompt = (replay_a.target.folder / "prompt").read_text(encoding="utf-8")
+    # the final line breaks; a missing file fails, as cat does.
+    prompt = lag.prompt
+    assert prompt is not None
     assert prompt.rstrip("\n") == "0"
 
 
@@ -411,19 +372,6 @@ def test_names_in_the_totals_the_url_pr_url_gets_with_final_name_and_without(rep
     assert final in e.out_lines, e.out
     target = "  {pr_url} in 1 squash message: https://github.com/ada-example/tool-new/pull/<number>"
     assert target in a.out_lines, a.out
-
-
-@pytest.fixture(scope="module")
-def e_again(source, run_plan, replay_e, replay_c, replay):
-    """A resume of E without --final-name, and two runs into E with a wrong
-    --final-name and a wrong --sign, with the default state file, which the
-    replay C wrote before them, as in the shell test."""
-    target, slug = replay_e.target, "ada-example/tool-e"
-    tail = (run_plan.file, source.mirror, slug)
-    resumed = replay(target, slug, "--pace", "0", "--state", replay_e.state, *tail, merged=True)
-    bad_name = replay(target, slug, "--final-name", "tool", *tail, merged=True)
-    bad_sign = replay(target, slug, "--sign", "ada.example.com", *tail, merged=True)
-    return SimpleNamespace(resumed=resumed, bad_name=bad_name, bad_sign=bad_sign)
 
 
 def test_refuses_a_bad_final_name_a_sign_that_is_no_address_and_a_resume_with_other_options(

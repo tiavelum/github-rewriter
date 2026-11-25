@@ -7,11 +7,7 @@ import re
 import shutil
 
 import pytest
-
-TOOL = "ada-example/tool"
-# The tag of mirror-odd.git whose name holds a no-break space.
-NBSP_TAG = "sp\N{NO-BREAK SPACE}ace"
-RELEASES = "repos_ada-example_tool_releases"
+from conftest import NBSP_TAG, RELEASES, TOOL
 
 
 def has_match(pattern, lines):

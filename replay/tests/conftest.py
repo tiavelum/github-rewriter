@@ -870,6 +870,73 @@ def view(read_plan, run_plan):
     return view
 
 
+TOOL_NEW = "ada-example/tool-new"
+
+
+# again, lag and e_again are session fixtures, so that the comparisons of A
+# and E, which the shell test runs after them, can ask for them first.
+@pytest.fixture(scope="session")
+def again(root, source, run_plan, replay_a, replay):
+    """A run on the finished replay A, and one into it with another state
+    file; the count of A's writes before them."""
+    target = replay_a.target
+    writes_a = len(target.writes())
+    common = ("--pace", "0", "--state")
+    tail = (run_plan.file, source.mirror, TOOL_NEW)
+    same = replay(target, TOOL_NEW, *common, replay_a.state, *tail, merged=True)
+    other = replay(target, TOOL_NEW, *common, root / "other.state.json", *tail, merged=True)
+    return SimpleNamespace(
+        writes_a=writes_a, same=same, other=other, writes_after=len(target.writes())
+    )
+
+
+@pytest.fixture(scope="session")
+def lag(source, run_plan, replay_a, replay, again):
+    """A run on the finished replay A whose first list of issues lacks the
+    highest-numbered item and every pull request; the reads of #2 and #6
+    before it. After the runs of again, as in the shell test. Its prompt is
+    the content of A's prompt file right after it, the last run of
+    run-replay.py into A where the shell test reads that file: a later
+    comparison of A writes the file again."""
+    target = replay_a.target
+
+    def reads(n):
+        return sum(
+            c.endswith(f" GET repos/ada-example/tool-new/issues/{n}") for c in target.calls()
+        )
+
+    before = {2: reads(2), 6: reads(6)}
+    result = replay(
+        target,
+        TOOL_NEW,
+        *("--pace", "0", "--state", replay_a.state, run_plan.file, source.mirror, TOOL_NEW),
+        merged=True,
+        FAKE_GH_LAG="GET repos/ada-example/tool-new/issues?state=all&per_page=100&page=1",
+    )
+    after = {2: reads(2), 6: reads(6)}
+    prompt = target.folder / "prompt"
+    return SimpleNamespace(
+        result=result,
+        before=before,
+        after=after,
+        writes=len(target.writes()),
+        prompt=prompt.read_text(encoding="utf-8") if prompt.exists() else None,
+    )
+
+
+@pytest.fixture(scope="session")
+def e_again(source, run_plan, replay_e, replay_c, replay):
+    """A resume of E without --final-name, and two runs into E with a wrong
+    --final-name and a wrong --sign, with the default state file, which the
+    replay C wrote before them, as in the shell test."""
+    target, slug = replay_e.target, "ada-example/tool-e"
+    tail = (run_plan.file, source.mirror, slug)
+    resumed = replay(target, slug, "--pace", "0", "--state", replay_e.state, *tail, merged=True)
+    bad_name = replay(target, slug, "--final-name", "tool", *tail, merged=True)
+    bad_sign = replay(target, slug, "--sign", "ada.example.com", *tail, merged=True)
+    return SimpleNamespace(resumed=resumed, bad_name=bad_name, bad_sign=bad_sign)
+
+
 # A tag name with a no-break space, which git allows in a ref's name.
 NBSP_TAG = "sp\N{NO-BREAK SPACE}ace"
 
@@ -1229,3 +1296,53 @@ def drafts_plan(root, api_drafts, leave_branches, plan_extra):
     )
     events = root / "drafts.jsonl"
     return Planned(events, api_drafts, plan_extra(api_drafts, events, "--leave-behind", leave))
+
+
+@pytest.fixture(scope="session")
+def compare(root, target_env):
+    """Runs compare-replay.py with these arguments against the target, with
+    the source's API in the folder api, from the session's folder, with the
+    interpreter that runs pytest; its output and error in one, as compare,
+    compare_extra and compare_drafts of the shell test write them."""
+
+    def compare(target, *args, api):
+        env = {**target_env, "FAKE_GITHUB": str(target.folder), "FAKE_GH_API": str(api)}
+        return run([sys.executable, REPLAY / "compare-replay.py", *args], env, root, merged=True)
+
+    return compare
+
+
+@pytest.fixture(scope="session")
+def compare_finished(source, run_plan, replay_a, replay_e, lag, e_again, compare):
+    """compare-replay.py against the finished targets of A and E, with the
+    API of run.jsonl, after the runs of lag and e_again, as in the shell test;
+    the count of A's writes right before the comparisons and right after
+    them, and the content of A's file of refused calls after them, None where
+    it has none."""
+    a, e = replay_a, replay_e
+    writes_before = len(a.target.writes())
+    tail = (run_plan.file, source.mirror)
+    cmp_a = compare(a.target, "--state", a.state, *tail, TOOL_NEW, api=run_plan.api)
+    cmp_e = compare(e.target, "--state", e.state, *tail, "ada-example/tool-e", api=run_plan.api)
+    refused = a.target.folder / "refused"
+    return SimpleNamespace(
+        a=cmp_a,
+        e=cmp_e,
+        writes_before=writes_before,
+        writes_after=len(a.target.writes()),
+        refused=refused.read_text(encoding="utf-8") if refused.exists() else None,
+    )
+
+
+@pytest.fixture(scope="session")
+def replay_x(root, extra_plan, mirror_extra, make_target, replay):
+    """X: the plan that carries three tags and three releases and leaves
+    behind two branches, extra.jsonl, replayed into a target with immutable
+    releases, with the default state file, extra.state.json; its output and
+    error in one."""
+    slug = "ada-example/tool-x"
+    target = make_target("gh-x", slug)
+    (target.folder / "immutable").touch()
+    result = replay(target, slug, "--pace", "0", extra_plan.file, mirror_extra, slug, merged=True)
+    # No dump: no check compares this target with another by its files.
+    return Replayed(target, root / "extra.state.json", result, target.calls(), None)
