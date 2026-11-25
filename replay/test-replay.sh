@@ -427,18 +427,23 @@ EOF
 (FAKE_GH_API=$T/api-run && export FAKE_GH_API && plan --types "$T/types" "$mirror" ada-example/tool "$T/mailmap" "$T/run.jsonl") >"$T/run-plan-out" 2>&1
 status_run_plan=$?
 
-# What a replay leaves behind: a copy of the mirror with a lightweight and an
-# annotated tag and four branches, those of #2 and #3 at their pull requests'
-# heads, that of #5 at another commit than its pull request's head, and one of
-# no pull request; and a copy of the run's API with a release and a draft.
-# api-extra-del is the same source deleting head branches on merge.
+# What a replay leaves behind: a copy of the mirror with a lightweight tag at
+# the squash merge of #2, an annotated one at a direct commit, by Ada's old
+# address and naming a commit by its hash, and one at the commit of #3's
+# branch, by Bob, and four branches, those of #2 and #3 at their pull
+# requests' heads, that of #5 at another commit than its pull request's head,
+# and one of no pull request; and a copy of the run's API with a release and
+# a draft. api-extra-del is the same source deleting head branches on merge.
 mirror_extra=$T/mirror-extra.git
 cp -R "$mirror" "$mirror_extra"
 for ref in "wip/idea $C5" "feat/2-thing $B2" "fix/3-parser $F1" "docs/5-notes $N1"; do
   git --git-dir="$mirror_extra" update-ref "refs/heads/${ref% *}" "${ref#* }"
 done
 git --git-dir="$mirror_extra" tag v0.1 "$M2"
-git --git-dir="$mirror_extra" tag -a v0.2 -m "Second" "$C5"
+GIT_COMMITTER_NAME="Ada Old" GIT_COMMITTER_EMAIL=ada.old@example.com GIT_COMMITTER_DATE=2026-03-07T15:00:00+02:00 \
+  git --git-dir="$mirror_extra" tag -a v0.2 -m "Second, after $(echo "$C4" | cut -c1-7)" "$C5"
+GIT_COMMITTER_NAME="Bob Example" GIT_COMMITTER_EMAIL=bob@example.com GIT_COMMITTER_DATE=2026-03-04T10:30:00+00:00 \
+  git --git-dir="$mirror_extra" tag -a v0.1.1 -m "Parser fix" "$F1"
 cp -R "$T/api-run" "$T/api-extra"
 cat >"$T/api-extra/repos_ada-example_tool_releases-1.json" <<'EOF'
 [{"id": 2, "tag_name": "v0.3", "name": "Next", "draft": true, "prerelease": false},
@@ -461,29 +466,34 @@ status_extra=$?
 plan_extra "$T/api-extra-del" "$T/extra-del.jsonl" >"$T/extra-del-out" 2>"$T/extra-del-err"
 status_extra_del=$?
 export N1 N2
-check "plan-replay.py stops, and writes no event file, at each tag, release and branch it leaves behind that --leave-behind does not accept" \
-  'n1=$(echo "$N1" | cut -c1-7) n2=$(echo "$N2" | cut -c1-7) c5=$(echo "$C5" | cut -c1-7) m2=$(echo "$M2" | cut -c1-7) && [ "$status_extra_stop" = 1 ] && [ ! -e "$T/extra-stop.jsonl" ] && grep -q "^plan-replay.py: the replay leaves behind 6 of the source'"'"'s tags, releases and branches that --leave-behind does not accept" "$T/extra-stop-err" && for line in "  branch   docs/5-notes  # at $n1; the replay pushes the head of #5, $n2, under its name" "  branch   wip/idea      # at $c5, the head of no pull request" "  tag      v0.1          # lightweight, at $m2; the replay pushes no tags" "  tag      v0.2          # annotated, at $c5; the replay pushes no tags" "  release  v0.2          # published, named '"'"'Second'"'"'; the replay creates no releases" "  release  v0.3          # draft, named '"'"'Next'"'"'; the replay creates no releases"; do grep -Fqx "$line" "$T/extra-stop-err" || { echo "no line: $line"; exit 1; }; done && ! grep -q "feat/2-thing\|fix/3-parser\|Traceback" "$T/extra-stop-err" || { cat "$T/extra-stop-err"; exit 1; }'
+check "plan-replay.py stops, and writes no event file, at each release and branch it leaves behind that --leave-behind does not accept, and carries the tags" \
+  'n1=$(echo "$N1" | cut -c1-7) n2=$(echo "$N2" | cut -c1-7) c5=$(echo "$C5" | cut -c1-7) && [ "$status_extra_stop" = 1 ] && [ ! -e "$T/extra-stop.jsonl" ] && grep -q "^plan-replay.py: the replay leaves behind 4 of the source'"'"'s tags, releases and branches that --leave-behind does not accept" "$T/extra-stop-err" && for line in "  branch   docs/5-notes  # at $n1; the replay pushes the head of #5, $n2, under its name" "  branch   wip/idea      # at $c5, the head of no pull request" "  release  v0.2          # published, named '"'"'Second'"'"'; the replay creates no releases" "  release  v0.3          # draft, named '"'"'Next'"'"'; the replay creates no releases"; do grep -Fqx "$line" "$T/extra-stop-err" || { echo "no line: $line"; exit 1; }; done && ! grep -q "feat/2-thing\|fix/3-parser\|^  tag \|Traceback" "$T/extra-stop-err" || { cat "$T/extra-stop-err"; exit 1; }'
 plan_file=$T/extra.jsonl
-pcheck "plan-replay.py records what --leave-behind accepts in the header, and plans nothing else differently" \
-  '[(x["kind"], x["name"]) for x in H["left_behind"]] == [("branch", "docs/5-notes"), ("branch", "wip/idea"), ("tag", "v0.1"), ("tag", "v0.2"), ("release", "v0.2"), ("release", "v0.3")] and [x["sha"] for x in H["left_behind"]] == [S["N1"], S["C5"], S["M2"], S["C5"], None, None] and E == [json.loads(line) for line in open(os.path.join(os.path.dirname(sys.argv[1]), "run.jsonl"), encoding="utf-8").read().splitlines()[1:]]'
+pcheck "plan-replay.py records what --leave-behind accepts in the header, and plans nothing else differently but the tags" \
+  '[(x["kind"], x["name"]) for x in H["left_behind"]] == [("branch", "docs/5-notes"), ("branch", "wip/idea"), ("release", "v0.2"), ("release", "v0.3")] and [x["sha"] for x in H["left_behind"]] == [S["N1"], S["C5"], None, None] and [{k: v for k, v in e.items() if k != "seq"} for e in E if e["kind"] != "create-tag"] == [{k: v for k, v in json.loads(line).items() if k != "seq"} for line in open(os.path.join(os.path.dirname(sys.argv[1]), "run.jsonl"), encoding="utf-8").read().splitlines()[1:]]'
+pcheck "plan-replay.py plans each tag at a recreated commit, lightweight or annotated, with the message and the tagger mapped through the mailmap and the original date" \
+  '(t := {e["name"]: e for e in of("create-tag")}) and [(e["name"], e["commit"], e["annotated"]) for e in of("create-tag")] == [("v0.1", S["M2"], False), ("v0.1.1", S["F1"], True), ("v0.2", S["C5"], True)] and (t["v0.1"]["message"], t["v0.1"]["tagger"], t["v0.1"]["time"]) == (None, None, None) and (t["v0.2"]["message"], t["v0.2"]["tagger"], t["v0.2"]["time"]) == ("Second, after " + S["C4"][:7] + "\n", {"name": "Ada Example", "email": "ada@example.com", "date": "2026-03-07T15:00:00+02:00"}, "2026-03-07T13:00:00Z") and (t["v0.1.1"]["message"], t["v0.1.1"]["tagger"]) == ("Parser fix\n", {"name": "Bob Example", "email": "bob@example.com", "date": "2026-03-04T10:30:00+00:00"})'
+pcheck "plan-replay.py plans a lightweight tag right after the event that recreates its commit, and an annotated one at its date after that event" \
+  '(t := {e["name"]: E.index(e) for e in of("create-tag")}) and t["v0.1"] == E.index(of("merge-pull", 2)[0]) + 1 and t["v0.2"] > E.index(next(e for e in of("push-commits") if S["C5"] in [c["sha"] for c in e["commits"]])) and t["v0.1.1"] > E.index(of("push-branch", 3)[0]) and E[t["v0.1.1"] - 1]["time"] <= E[t["v0.1.1"]]["time"] <= E[t["v0.1.1"] + 1]["time"]'
 plan_file=$T/events.jsonl
-check "plan-replay.py prints what it leaves behind, counts it, and warns of an accepted line that names nothing it leaves behind" \
-  '[ "$status_extra" = 0 ] && grep -qx "Left behind: 6" "$T/extra-out" && grep -Eqx "  left behind +6" "$T/extra-out" && grep -Eqx "  tag      v0.1          lightweight, at [0-9a-f]{7}; the replay pushes no tags" "$T/extra-out" && grep -qx "plan-replay.py: warning: .*/leave accepts tag v9, which the replay does not leave behind" "$T/extra-err" && [ "$(wc -l <"$T/extra-err")" -eq 1 ] && grep -qx "Left behind: 0" "$T/plan-out" && grep -Eqx "  left behind +0" "$T/plan-out" || { cat "$T/extra-err" "$T/extra-out"; exit 1; }'
+check "plan-replay.py prints what it leaves behind, counts it and the tags, and warns of an accepted line that names nothing it leaves behind, a tag it carries included" \
+  '[ "$status_extra" = 0 ] && grep -qx "Left behind: 4" "$T/extra-out" && grep -Eqx "  left behind +4" "$T/extra-out" && grep -Eqx "  tags +3" "$T/extra-out" && grep -Eqx "  release  v0.3          draft, named '"'"'Next'"'"'; the replay creates no releases" "$T/extra-out" && for name in v0.1 v0.2 v9; do grep -qx "plan-replay.py: warning: .*/leave accepts tag $name, which the replay does not leave behind" "$T/extra-err" || { echo "no warning for $name"; exit 1; }; done && [ "$(wc -l <"$T/extra-err")" -eq 3 ] && grep -qx "Left behind: 0" "$T/plan-out" && grep -Eqx "  left behind +0" "$T/plan-out" && grep -Eqx "  tags +0" "$T/plan-out" || { cat "$T/extra-err" "$T/extra-out"; exit 1; }'
 check "plan-replay.py leaves behind the branch of a merged pull request where the source deletes head branches on merge" \
-  '[ "$status_extra_del" = 1 ] && grep -q "^plan-replay.py: the replay leaves behind 8 of" "$T/extra-del-err" && grep -Fqx "  branch   feat/2-thing  # the head of #2, which the replay deletes on its merge, as the source deletes head branches" "$T/extra-del-err" && grep -Fqx "  branch   fix/3-parser  # the head of #3, which the replay deletes on its merge, as the source deletes head branches" "$T/extra-del-err" || { cat "$T/extra-del-err"; exit 1; }'
+  '[ "$status_extra_del" = 1 ] && grep -q "^plan-replay.py: the replay leaves behind 6 of" "$T/extra-del-err" && grep -Fqx "  branch   feat/2-thing  # the head of #2, which the replay deletes on its merge, as the source deletes head branches" "$T/extra-del-err" && grep -Fqx "  branch   fix/3-parser  # the head of #3, which the replay deletes on its merge, as the source deletes head branches" "$T/extra-del-err" || { cat "$T/extra-del-err"; exit 1; }'
 grep '^  [a-z]* ' "$T/extra-stop-err" >"$T/leave-pasted"
 plan_extra "$T/api-extra" "$T/extra-pasted.jsonl" --leave-behind "$T/leave-pasted" >"$T/extra-pasted-out" 2>&1
 status_extra_pasted=$?
 check "plan-replay.py takes the lines it prints where it stops, with their comments, as lines of --leave-behind" \
-  '[ "$status_extra_pasted" = 0 ] && [ "$(wc -l <"$T/leave-pasted")" -eq 6 ] && grep -qx "Left behind: 6" "$T/extra-pasted-out" || { cat "$T/leave-pasted" "$T/extra-pasted-out"; exit 1; }'
+  '[ "$status_extra_pasted" = 0 ] && [ "$(wc -l <"$T/leave-pasted")" -eq 4 ] && grep -qx "Left behind: 4" "$T/extra-pasted-out" || { cat "$T/leave-pasted" "$T/extra-pasted-out"; exit 1; }'
 # A tag of the annotated tag v0.2, a tag of a tree, and a tag whose name holds
-# a no-break space, which git allows.
+# a no-break space, which git allows, at a commit that only refs/pull/7/head
+# holds, which the replay does not recreate.
 mirror_odd=$T/mirror-odd.git
 cp -R "$mirror_extra" "$mirror_odd"
 git -c advice.nestedTag=false --git-dir="$mirror_odd" tag -a v0.3 -m "Third" v0.2
 git --git-dir="$mirror_odd" tag tree-tag "$C5^{tree}"
 nbsp=$(printf 'sp\302\240ace')
-git --git-dir="$mirror_odd" tag "$nbsp" "$C5"
+git --git-dir="$mirror_odd" tag "$nbsp" "$S1"
 # plan_odd <event file> [<option>...]: plans that mirror.
 plan_odd() {
   events=$1
@@ -495,8 +505,8 @@ grep '^  [a-z]* ' "$T/odd-stop-err" >"$T/leave-odd"
 plan_odd "$T/odd.jsonl" --leave-behind "$T/leave-odd" >"$T/odd-out" 2>&1
 status_odd=$?
 export nbsp
-check "plan-replay.py peels a tag of a tag to its commit, names a tag of a tree as such, and takes back a name with a no-break space" \
-  'c5=$(echo "$C5" | cut -c1-7) tree=$(git --git-dir="$mirror_odd" rev-parse "$C5^{tree}" | cut -c1-7) && grep -Eqx "  tag      v0\.3 +# annotated, at $c5; the replay pushes no tags" "$T/odd-stop-err" && grep -Eqx "  tag      tree-tag +# lightweight, at the tree $tree; the replay pushes no tags" "$T/odd-stop-err" && grep -Fq "  tag      $nbsp " "$T/odd-stop-err" && [ "$status_odd" = 0 ] && grep -qx "Left behind: 9" "$T/odd-out" || { cat "$T/odd-stop-err" "$T/odd-out"; exit 1; }'
+check "plan-replay.py stops at a tag of a tag, peeled to its commit, a tag of a tree and a tag of a commit it does not recreate, and takes back a name with a no-break space" \
+  'c5=$(echo "$C5" | cut -c1-7) s1=$(echo "$S1" | cut -c1-7) tree=$(git --git-dir="$mirror_odd" rev-parse "$C5^{tree}" | cut -c1-7) && grep -q "^plan-replay.py: the replay leaves behind 7 of" "$T/odd-stop-err" && grep -Eqx "  tag      v0\.3 +# annotated, at $c5 through another tag; the replay carries no tag of a tag" "$T/odd-stop-err" && grep -Eqx "  tag      tree-tag +# lightweight, at the tree $tree; the replay carries only tags of commits" "$T/odd-stop-err" && grep -Fq "  tag      $nbsp " "$T/odd-stop-err" && grep -Eq "^  tag      .* # lightweight, at $s1, a commit the replay does not recreate$" "$T/odd-stop-err" && ! grep -q "^  tag      v0\.[12]" "$T/odd-stop-err" && [ "$status_odd" = 0 ] && grep -qx "Left behind: 7" "$T/odd-out" && grep -Eqx "  tags +3" "$T/odd-out" || { cat "$T/odd-stop-err" "$T/odd-out"; exit 1; }'
 plan_file=$T/odd.jsonl
 pcheck "plan-replay.py records the commit a tag of a tag peels to in the header" \
   '[x["sha"] for x in H["left_behind"] if (x["kind"], x["name"]) == ("tag", "v0.3")] == [S["C5"]]'
@@ -524,13 +534,15 @@ status_norel=$?
 plan_extra "$T/api-extra" "$T/off-all.jsonl" --no-tags --no-releases --leave-behind "$T/leave" >"$T/off-all-out" 2>"$T/off-all-err"
 status_off_all=$?
 check "plan-replay.py --no-tags --no-releases accepts every tag and release without a line of --leave-behind, lists each as turned off, and still stops at each branch" \
-  'm2=$(echo "$M2" | cut -c1-7) && [ "$status_off$status_off_stop" = 01 ] && [ ! -s "$T/off-err" ] && grep -qx "Left behind: 6" "$T/off-out" && grep -Fqx "  tag      v0.1          lightweight, at $m2; tags are turned off" "$T/off-out" && grep -Fqx "  release  v0.3          draft, named '"'"'Next'"'"'; releases are turned off" "$T/off-out" && [ ! -e "$T/off-stop.jsonl" ] && grep -q "^plan-replay.py: the replay leaves behind 2 of the source'"'"'s tags, releases and branches" "$T/off-stop-err" && [ "$(grep -c "^  branch " "$T/off-stop-err")" -eq 2 ] && ! grep -q "^  tag \|^  release " "$T/off-stop-err" || { cat "$T/off-err" "$T/off-out" "$T/off-stop-err"; exit 1; }'
+  'm2=$(echo "$M2" | cut -c1-7) && [ "$status_off$status_off_stop" = 01 ] && [ ! -s "$T/off-err" ] && grep -qx "Left behind: 7" "$T/off-out" && grep -Eqx "  tags +0" "$T/off-out" && grep -Fqx "  tag      v0.1          lightweight, at $m2; tags are turned off" "$T/off-out" && grep -Fqx "  release  v0.3          draft, named '"'"'Next'"'"'; releases are turned off" "$T/off-out" && [ ! -e "$T/off-stop.jsonl" ] && grep -q "^plan-replay.py: the replay leaves behind 2 of the source'"'"'s tags, releases and branches" "$T/off-stop-err" && [ "$(grep -c "^  branch " "$T/off-stop-err")" -eq 2 ] && ! grep -q "^  tag \|^  release " "$T/off-stop-err" || { cat "$T/off-err" "$T/off-out" "$T/off-stop-err"; exit 1; }'
 plan_file=$T/off.jsonl
-pcheck "plan-replay.py --no-tags --no-releases lists tags and releases as turned off in the header, and plans nothing else differently" \
-  'H["turned_off"] == ["tags", "releases"] and H["reviews"] is True and [(x["kind"], x["name"]) for x in H["left_behind"]] == [("branch", "docs/5-notes"), ("branch", "wip/idea"), ("tag", "v0.1"), ("tag", "v0.2"), ("release", "v0.2"), ("release", "v0.3")] and [x["reason"].rsplit("; ", 1)[1] for x in H["left_behind"][2:]] == ["tags are turned off"] * 2 + ["releases are turned off"] * 2 and E == [json.loads(line) for line in open(os.path.join(os.path.dirname(sys.argv[1]), "run.jsonl"), encoding="utf-8").read().splitlines()[1:]]'
+pcheck "plan-replay.py --no-tags --no-releases plans no tag, lists tags and releases as turned off in the header, and plans nothing else differently" \
+  'H["turned_off"] == ["tags", "releases"] and H["reviews"] is True and not of("create-tag") and [(x["kind"], x["name"]) for x in H["left_behind"]] == [("branch", "docs/5-notes"), ("branch", "wip/idea"), ("tag", "v0.1"), ("tag", "v0.1.1"), ("tag", "v0.2"), ("release", "v0.2"), ("release", "v0.3")] and [x["reason"].rsplit("; ", 1)[1] for x in H["left_behind"][2:]] == ["tags are turned off"] * 3 + ["releases are turned off"] * 2 and E == [json.loads(line) for line in open(os.path.join(os.path.dirname(sys.argv[1]), "run.jsonl"), encoding="utf-8").read().splitlines()[1:]]'
 plan_file=$T/norel.jsonl
-check "plan-replay.py --no-releases alone accepts the releases and still stops at each tag" \
-  '[ "$status_norel" = 1 ] && [ ! -e "$T/norel.jsonl" ] && grep -q "^plan-replay.py: the replay leaves behind 2 of the source'"'"'s tags" "$T/norel-err" && grep -Eqx "  tag      v0\.1 +# lightweight, at [0-9a-f]{7}; the replay pushes no tags" "$T/norel-err" && grep -Eqx "  tag      v0\.2 +# annotated, at [0-9a-f]{7}; the replay pushes no tags" "$T/norel-err" && ! grep -q "^  release " "$T/norel-err" || { cat "$T/norel-err"; exit 1; }'
+check "plan-replay.py --no-releases alone accepts the releases and carries the tags" \
+  '[ "$status_norel" = 0 ] && [ ! -s "$T/norel-err" ] && grep -qx "Left behind: 4" "$T/norel-out" && grep -Eqx "  tags +3" "$T/norel-out" && grep -Eqx "  release  v0\.2 +published, named '"'"'Second'"'"'; releases are turned off" "$T/norel-out" && ! grep -q "^  tag " "$T/norel-out" || { cat "$T/norel-err" "$T/norel-out"; exit 1; }'
+pcheck "plan-replay.py --no-releases alone plans the tags as without a switch, and lists only releases as turned off" \
+  'H["turned_off"] == ["releases"] and [(x["kind"], x["name"]) for x in H["left_behind"]] == [("branch", "docs/5-notes"), ("branch", "wip/idea"), ("release", "v0.2"), ("release", "v0.3")] and E == [json.loads(line) for line in open(os.path.join(os.path.dirname(sys.argv[1]), "extra.jsonl"), encoding="utf-8").read().splitlines()[1:]]'
 plan_file=$T/events.jsonl
 check "plan-replay.py warns of a line of --leave-behind for a tag or release a switch accepts already, and does not stop at it" \
   '[ "$status_off_all" = 0 ] && for line in "tag v0.1, which --no-tags" "tag v0.2, which --no-tags" "release v0.2, which --no-releases" "release v0.3, which --no-releases"; do grep -qx "plan-replay.py: warning: .*/leave accepts $line leaves behind already" "$T/off-all-err" || { echo "no warning: $line"; exit 1; }; done && grep -qx "plan-replay.py: warning: .*/leave accepts tag v9, which the replay does not leave behind" "$T/off-all-err" && [ "$(wc -l <"$T/off-all-err")" -eq 5 ] || { cat "$T/off-all-err"; exit 1; }'
@@ -1252,18 +1264,18 @@ status_z=$?
 status_cmp_z=$?
 compare_extra "$T/gh-x" "$T/extra.jsonl" "$mirror_odd" ada-example/tool-x >"$T/cmp-x-odd-out" 2>&1
 status_cmp_x_odd=$?
-check "compare-replay.py notes each tag, release and branch of the source that the plan left behind, and finds no difference" \
-  '[ "$status_x$status_cmp_x" = 00 ] && grep -qx "No differences" "$T/cmp-x-out" && for line in "branch docs/5-notes" "branch wip/idea" "tag v0.1" "tag v0.2" "release v0.2" "release v0.3"; do grep -Fqx "  $line of the source is left behind, as planned" "$T/cmp-x-out" || { echo "no note for $line"; exit 1; }; done && grep -Eqx "  tags +0" "$T/cmp-x-out" && grep -Eqx "  releases +0" "$T/cmp-x-out" && ! grep -q "feat/2-thing of\|fix/3-parser of" "$T/cmp-x-out" || { cat "$T/x-out" "$T/cmp-x-out"; exit 1; }'
+check "compare-replay.py notes each release and branch of the source that the plan left behind, takes each tag it carries as carried, and finds no difference" \
+  '[ "$status_x$status_cmp_x" = 00 ] && grep -qx "No differences" "$T/cmp-x-out" && for line in "branch docs/5-notes" "branch wip/idea" "release v0.2" "release v0.3"; do grep -Fqx "  $line of the source is left behind, as planned" "$T/cmp-x-out" || { echo "no note for $line"; exit 1; }; done && grep -Eqx "  tags +3" "$T/cmp-x-out" && grep -Eqx "  releases +0" "$T/cmp-x-out" && ! grep -q "feat/2-thing of\|fix/3-parser of\|^  tag " "$T/cmp-x-out" || { cat "$T/x-out" "$T/cmp-x-out"; exit 1; }'
 check "compare-replay.py names a tag and a release of the target that the source lacks as differences" \
-  '[ "$status_cmp_x_more" = 1 ] && grep -Fqx "  tag v9 is in the target, not in the source" "$T/cmp-x-more-out" && grep -Fqx "  release v0.4 is in the target, not in the source" "$T/cmp-x-more-out" && grep -qx "Differences: 2" "$T/cmp-x-more-out" && grep -Eqx "  tags +1" "$T/cmp-x-more-out" || { cat "$T/cmp-x-more-out"; exit 1; }'
+  '[ "$status_cmp_x_more" = 1 ] && grep -Fqx "  tag v9 is in the target, not in the source" "$T/cmp-x-more-out" && grep -Fqx "  release v0.4 is in the target, not in the source" "$T/cmp-x-more-out" && grep -qx "Differences: 2" "$T/cmp-x-more-out" && grep -Eqx "  tags +4" "$T/cmp-x-more-out" || { cat "$T/cmp-x-more-out"; exit 1; }'
 check "compare-replay.py names as a difference each tag, release and branch of the source that the target lacks and the plan did not leave behind" \
-  '[ "$status_cmp_a_extra" = 1 ] && for line in "branch wip/idea of the source is missing in the target" "tag v0.1 of the source is missing in the target" "tag v0.2 of the source is missing in the target" "release v0.2 of the source is missing in the target" "release v0.3 of the source is missing in the target"; do grep -Fqx "  $line" "$T/cmp-a-extra-out" || { echo "no line: $line"; exit 1; }; done && grep -Eqx "  branch docs/5-notes of the source is at [0-9a-f]{7} in the target, not at the recreated [0-9a-f]{7}" "$T/cmp-a-extra-out" && grep -qx "Differences: 6" "$T/cmp-a-extra-out" && ! grep -q "left behind" "$T/cmp-a-extra-out" || { cat "$T/cmp-a-extra-out"; exit 1; }'
-check "compare-replay.py takes a tag of the target at the recreated commit, lightweight or annotated, as carried" \
-  '[ "$status_cmp_a_tags" = 1 ] && grep -qx "Differences: 4" "$T/cmp-a-tags-out" && grep -Eqx "  tags +2" "$T/cmp-a-tags-out" && ! grep -q "tag v0\.[12]" "$T/cmp-a-tags-out" || { cat "$T/cmp-a-tags-out"; exit 1; }'
+  '[ "$status_cmp_a_extra" = 1 ] && for line in "branch wip/idea of the source is missing in the target" "tag v0.1 of the source is missing in the target" "tag v0.1.1 of the source is missing in the target" "tag v0.2 of the source is missing in the target" "release v0.2 of the source is missing in the target" "release v0.3 of the source is missing in the target"; do grep -Fqx "  $line" "$T/cmp-a-extra-out" || { echo "no line: $line"; exit 1; }; done && grep -Eqx "  branch docs/5-notes of the source is at [0-9a-f]{7} in the target, not at the recreated [0-9a-f]{7}" "$T/cmp-a-extra-out" && grep -qx "Differences: 7" "$T/cmp-a-extra-out" && ! grep -q "left behind" "$T/cmp-a-extra-out" || { cat "$T/cmp-a-extra-out"; exit 1; }'
+check "compare-replay.py takes a tag of the target at the recreated commit, lightweight or annotated, as carried, where the event file plans no tag" \
+  '[ "$status_cmp_a_tags" = 1 ] && grep -qx "Differences: 5" "$T/cmp-a-tags-out" && grep -Fqx "  tag v0.1.1 of the source is missing in the target" "$T/cmp-a-tags-out" && grep -Eqx "  tags +2" "$T/cmp-a-tags-out" && ! grep -q "tag v0\.[12] " "$T/cmp-a-tags-out" || { cat "$T/cmp-a-tags-out"; exit 1; }'
 check "compare-replay.py names a pushed branch the target lacks once, as a branch of the replay" \
   '[ "$status_cmp_x_lost" = 1 ] && grep -qx "Differences: 1" "$T/cmp-x-lost-out" && grep -Fqx "  branch fix/3-parser is missing in the target" "$T/cmp-x-lost-out" || { cat "$T/cmp-x-lost-out"; exit 1; }'
 check "compare-replay.py notes an event file that predates left_behind, and takes the branches the target deleted on merge as carried" \
-  '[ "$status_y$status_cmp_y" = 01 ] && grep -Fqx "  the event file predates left_behind: it accepts nothing as left behind" "$T/cmp-y-out" && grep -qx "Differences: 6" "$T/cmp-y-out" && ! grep -q "feat/2-thing of\|fix/3-parser of" "$T/cmp-y-out" || { cat "$T/y-out" "$T/cmp-y-out"; exit 1; }'
+  '[ "$status_y$status_cmp_y" = 01 ] && grep -Fqx "  the event file predates left_behind: it accepts nothing as left behind" "$T/cmp-y-out" && grep -qx "Differences: 4" "$T/cmp-y-out" && ! grep -q "feat/2-thing of\|fix/3-parser of" "$T/cmp-y-out" || { cat "$T/y-out" "$T/cmp-y-out"; exit 1; }'
 check "compare-replay.py notes as left behind a pushed branch that the plan left behind, since the target deletes it on merge" \
   '[ "$status_z$status_cmp_z" = 00 ] && grep -qx "No differences" "$T/cmp-z-out" && grep -Fqx "  branch feat/2-thing of the source is left behind, as planned" "$T/cmp-z-out" && grep -Fqx "  branch fix/3-parser of the source is left behind, as planned" "$T/cmp-z-out" || { cat "$T/z-out" "$T/cmp-z-out"; exit 1; }'
 check "compare-replay.py names a tag of a tag, a tag of a tree and a tag whose name holds a no-break space, without a traceback" \
@@ -1286,6 +1298,75 @@ check "compare-replay.py notes each tag and release of the source as turned off 
   '[ "$status_to$status_cmp_to" = 00 ] && grep -qx "No differences" "$T/cmp-to-out" && for line in "tag v0.1 of the source is left behind: tags are turned off" "tag v0.2 of the source is left behind: tags are turned off" "release v0.2 of the source is left behind: releases are turned off" "release v0.3 of the source is left behind: releases are turned off" "branch docs/5-notes of the source is left behind, as planned" "branch wip/idea of the source is left behind, as planned"; do grep -Fqx "  $line" "$T/cmp-to-out" || { echo "no note: $line"; exit 1; }; done && ! grep -q "^  tag .*as planned\|^  release .*as planned" "$T/cmp-to-out" && ! grep -q "reviews are turned off" "$T/cmp-to-out" || { cat "$T/to-out" "$T/cmp-to-out"; exit 1; }'
 check "compare-replay.py names a tag or release of the source in the target a difference where the plan turns its kind off" \
   '[ "$status_cmp_to_more" = 1 ] && grep -Fqx "  tag v0.1 is in the target, though tags are turned off" "$T/cmp-to-more-out" && grep -Fqx "  release v0.2 is in the target, though releases are turned off" "$T/cmp-to-more-out" && grep -qx "Differences: 2" "$T/cmp-to-more-out" && grep -Fqx "  tag v0.2 of the source is left behind: tags are turned off" "$T/cmp-to-more-out" || { cat "$T/cmp-to-more-out"; exit 1; }'
+check "run-replay.py creates no tag where the plan turns tags off" \
+  '[ -z "$(git --git-dir="$T/gh-to/repo.git" for-each-ref refs/tags/)" ] && grep -Eqx "  tags +0" "$T/to-out" && grep -Eqx "  tags +0" "$T/cmp-to-out" || { cat "$T/to-out"; exit 1; }'
+
+# Tags: X's target, as the run created its tags; TX, a copy of it with v0.1
+# at another commit, v0.2 made anew with another message, and v0.1.1 made
+# lightweight, compared, and checked again by run-replay.py from a copy of
+# X's state file; TK, X's replay killed by a hook of the target's repository
+# right after it pushed v0.2, and resumed; and TC, a copy of TK's target
+# resumed from a state file that records another tag object for v0.2, as a
+# rebuild that differs would leave it.
+rcheck "run-replay.py creates each tag at the recreated commit, lightweight or annotated, with the planned message, its hashes replaced, the mapped tagger and the original date, unsigned" "$T/gh-x" "$T/extra.state.json" \
+  'git("cat-file", "-t", "refs/tags/v0.1") == "commit" and git("rev-parse", "refs/tags/v0.1") == M[S["M2"]] and git("cat-file", "-t", "refs/tags/v0.2") == "tag" and git("cat-file", "tag", "refs/tags/v0.2").split("\n") == ["object " + M[S["C5"]], "type commit", "tag v0.2", "tagger Ada Example <ada@example.com> 1772888400 +0200", "", "Second, after " + M[S["C4"]][:7]] and M[S["C4"]][:7] != S["C4"][:7] and git("cat-file", "tag", "refs/tags/v0.1.1").split("\n")[:4] == ["object " + M[S["F1"]], "type commit", "tag v0.1.1", "tagger Bob Example <bob@example.com> 1772620200 +0000"] and json.loads(open(sys.argv[2]).read())["tags"] == {"v0.1": M[S["M2"]], "v0.1.1": git("rev-parse", "refs/tags/v0.1.1"), "v0.2": git("rev-parse", "refs/tags/v0.2")}'
+check "run-replay.py counts the tags in its totals and prints a line per tag" \
+  'm2=$(git --git-dir="$T/gh-x/repo.git" rev-parse refs/tags/v0.1 | cut -c1-7) && grep -Eqx "  tags +3" "$T/x-out" && grep -Eq "^ *[0-9]+/[0-9]+  create-tag    v0\.1, lightweight, at $m2$" "$T/x-out" && grep -Eq "^ *[0-9]+/[0-9]+  create-tag    v0\.2, annotated, at [0-9a-f]{7}$" "$T/x-out" && grep -Eqx "  create-tag +3" "$T/x-out" && grep -Eqx "  create-tag +0" "$T/a-out" || { cat "$T/x-out"; exit 1; }'
+cp -R "$T/gh-x" "$T/gh-tx"
+cp "$T/extra.state.json" "$T/tx.state.json"
+tx=$T/gh-tx/repo.git
+git --git-dir="$tx" tag -f v0.1 main >/dev/null
+GIT_COMMITTER_NAME="Ada Example" GIT_COMMITTER_EMAIL=ada@example.com GIT_COMMITTER_DATE="1772888400 +0200" \
+  git --git-dir="$tx" tag -f -a -m "Another message" v0.2 "v0.2^{commit}" >/dev/null
+git --git-dir="$tx" tag -f v0.1.1 "v0.1.1^{commit}" >/dev/null
+compare_extra "$T/gh-tx" --state "$T/tx.state.json" "$T/extra.jsonl" "$mirror_extra" ada-example/tool-x >"$T/cmp-tx-out" 2>&1
+status_cmp_tx=$?
+replay "$T/gh-tx" ada-example/tool-x --pace 0 --state "$T/tx.state.json" "$T/extra.jsonl" "$mirror_extra" ada-example/tool-x >"$T/tx-out" 2>&1
+status_tx=$?
+check "compare-replay.py names a tag at another commit than the recreated one, an annotated tag with another message and a lightweight tag planned annotated" \
+  'main=$(git --git-dir="$tx" rev-parse main | cut -c1-7) m2=$(python3 -c "import json, sys; print(json.load(open(sys.argv[1]))[\"hashes\"][sys.argv[2]][:7])" "$T/tx.state.json" "$M2") && [ "$status_cmp_tx" = 1 ] && grep -Fqx "  tag v0.1 of the source is at $main in the target, not at the recreated $m2" "$T/cmp-tx-out" && grep -Fq "  tag v0.2: the message differs; they part at character 1: '"'"'Another message" "$T/cmp-tx-out" && grep -Fqx "  tag v0.1.1 is lightweight in the target, annotated as planned" "$T/cmp-tx-out" && grep -qx "Differences: 3" "$T/cmp-tx-out" || { cat "$T/cmp-tx-out"; exit 1; }'
+check "run-replay.py checks the target's tags after the last event, and stops at each that differs from the state file" \
+  '[ "$status_tx" = 1 ] && grep -q "run-replay.py: ada-example/tool-x differs from the plan: tag v0\.1 is at [0-9a-f]\{7\}, the state file'"'"'s [0-9a-f]\{7\}; tag v0\.1\.1 is at [0-9a-f]\{7\}, the state file'"'"'s [0-9a-f]\{7\}; tag v0\.2 is at [0-9a-f]\{7\}, the state file'"'"'s [0-9a-f]\{7\}$" "$T/tx-out" || { cat "$T/tx-out"; exit 1; }'
+target "$T/gh-tk" ada-example/tool-x
+cat >"$T/gh-tk/repo.git/hooks/post-receive" <<'EOF'
+#!/bin/sh
+grep -q ' refs/tags/v0.2$' || exit 0
+[ ! -e ../killed ] || exit 0
+touch ../killed
+pid=$PPID
+while [ "${pid:-1}" -gt 1 ]; do
+  case $(ps -o args= -p "$pid") in
+  *run-replay.py*)
+    kill -9 "$pid"
+    exit 0
+    ;;
+  esac
+  pid=$(ps -o ppid= -p "$pid" | tr -d ' ')
+done
+EOF
+chmod +x "$T/gh-tk/repo.git/hooks/post-receive"
+replay "$T/gh-tk" ada-example/tool-x --pace 0 --state "$T/tk.state.json" "$T/extra.jsonl" "$mirror_extra" ada-example/tool-x >"$T/tk-out" 2>&1
+echo $? >"$T/tk-status"
+sleep 1
+cp -R "$T/gh-tk" "$T/gh-tc"
+python3 - "$T/tk.state.json" "$T/tc.state.json" <<'EOF'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as f:
+    state = json.load(f)
+assert "v0.2" in state["tags"], "the killed run saved no tag before its push"
+state["tags"]["v0.2"] = "0123456789abcdef0123456789abcdef01234567"
+with open(sys.argv[2], "w", encoding="utf-8") as f:
+    json.dump(state, f)
+EOF
+tc_refs=$(git --git-dir="$T/gh-tc/repo.git" for-each-ref)
+replay "$T/gh-tk" ada-example/tool-x --pace 0 --state "$T/tk.state.json" "$T/extra.jsonl" "$mirror_extra" ada-example/tool-x >>"$T/tk-out" 2>&1
+echo $? >>"$T/tk-status"
+replay "$T/gh-tc" ada-example/tool-x --pace 0 --state "$T/tc.state.json" "$T/extra.jsonl" "$mirror_extra" ada-example/tool-x >"$T/tc-out" 2>&1
+status_tc=$?
+check "run-replay.py resumes a run killed after it pushed a tag, takes the pushed tag over, and ends with the tags of an uninterrupted run" \
+  '[ "$(tr "\n" " " <"$T/tk-status")" = "137 0 " ] && grep -Eq "[0-9]+/[0-9]+  create-tag    v0\.2, annotated, at [0-9a-f]{7}, found pushed$" "$T/tk-out" && git --git-dir="$T/gh-x/repo.git" for-each-ref refs/tags/ >"$T/x-tags" && git --git-dir="$T/gh-tk/repo.git" for-each-ref refs/tags/ >"$T/tk-tags" && [ "$(wc -l <"$T/x-tags")" -eq 3 ] && diff "$T/x-tags" "$T/tk-tags" || { cat "$T/tk-status" "$T/tk-out"; exit 1; }'
+check "run-replay.py stops before pushing where a rebuilt tag differs from the one the state file records" \
+  '[ "$status_tc" = 1 ] && grep -q "run-replay.py: tag v0\.2 was rebuilt as [0-9a-f]\{7\}, but .*/tc.state.json records 0123456; it differs from the one the first run made. The run stops before it pushes a second tag$" "$T/tc-out" && grep -q "^run-replay.py: stopped in event [0-9]* of [0-9]*" "$T/tc-out" && [ "$(git --git-dir="$T/gh-tc/repo.git" for-each-ref)" = "$tc_refs" ] || { cat "$T/tc-out"; exit 1; }'
 
 # Reviews: the run's API with five reviews, as GitHub lists them: an
 # approval of #2 without a body, a request for changes on #3 with a comment
@@ -1611,7 +1692,7 @@ status_gpg_known=$?
 check "run-replay.py --sign stops before writing where GitHub does not list the GPG key as one that signs" \
   '[ "$status_gpg" = 1 ] && grep -q "^run-replay.py: GitHub does not list the GPG key 0123456789ABCDEF among your GPG keys that sign" "$T/gpg-out" && grep -q " GET user/gpg_keys?per_page=100&page=1$" "$T/gh-gpg/calls" && nothing_written "$T/gh-gpg" "$T/gpg.state.json" || { cat "$T/gpg-out"; exit 1; }'
 check "run-replay.py --sign takes a GPG key whose signing subkey GitHub lists, and says a stopped push cannot resume with it" \
-  '[ "$status_gpg_known" = 1 ] && grep -q "run-replay.py: not confirmed; nothing changed$" "$T/gpg-known-out" && grep -Eqx "  commits to sign +9" "$T/gpg-known-out" && grep -qx "  signed: the commits committed by ada@example.com, with the GPG key 0123456789ABCDEF" "$T/gpg-known-out" && grep -q "^  this key does not sign a commit the same way twice" "$T/gpg-known-out" && nothing_written "$T/gh-gpg" "$T/gpg.state.json" || { cat "$T/gpg-known-out"; exit 1; }'
+  '[ "$status_gpg_known" = 1 ] && grep -q "run-replay.py: not confirmed; nothing changed$" "$T/gpg-known-out" && grep -Eqx "  commits to sign +9" "$T/gpg-known-out" && grep -Eqx "  tags to sign +0" "$T/gpg-known-out" && grep -qx "  signed: the commits committed and the tags tagged by ada@example.com, with the GPG key 0123456789ABCDEF" "$T/gpg-known-out" && grep -qx "  this key does not sign a commit the same way twice: a run stopped in a push of signed commits, or in a signed tag, cannot resume" "$T/gpg-known-out" && nothing_written "$T/gh-gpg" "$T/gpg.state.json" || { cat "$T/gpg-known-out"; exit 1; }'
 
 # An SSH key: a throwaway Ed25519 key without a passphrase, which GitHub
 # lists in the targets that know it, and an allowed-signers file for git log.
@@ -1666,7 +1747,7 @@ EOF
   sign_replay "$T/gh-sa" ada-example/tool-new "$T/sa.state.json" >"$T/sa-out" 2>&1
   status_sa=$?
   check "run-replay.py --sign says in the totals how many commits it signs and with which key, and in each push how many it signed" \
-    '[ "$status_sa" = 0 ] && grep -Eqx "  commits to sign +9" "$T/sa-out" && grep -Fqx "  signed: the commits committed by ada@example.com, with the SSH key $P/sign-key.pub (ssh-ed25519)" "$T/sa-out" && ! grep -q "same way twice" "$T/sa-out" && grep -q "#3 branch fix/3-parser, 1 commit, 0 signed, at " "$T/sa-out" && grep -q " 3 commits to main, 3 signed, now at " "$T/sa-out" && grep -q "#2 branch feat/2-thing, 2 commits, 2 signed, at " "$T/sa-out" || { cat "$T/sa-out"; exit 1; }'
+    '[ "$status_sa" = 0 ] && grep -Eqx "  commits to sign +9" "$T/sa-out" && grep -Fqx "  signed: the commits committed and the tags tagged by ada@example.com, with the SSH key $P/sign-key.pub (ssh-ed25519)" "$T/sa-out" && ! grep -q "same way twice" "$T/sa-out" && grep -q "#3 branch fix/3-parser, 1 commit, 0 signed, at " "$T/sa-out" && grep -q " 3 commits to main, 3 signed, now at " "$T/sa-out" && grep -q "#2 branch feat/2-thing, 2 commits, 2 signed, at " "$T/sa-out" || { cat "$T/sa-out"; exit 1; }'
   rcheck "run-replay.py --sign signs exactly the recreated commits whose committer has the address" "$T/gh-sa" "$T/sa.state.json" \
     '(marks := {c["sha"]: (c["committer"]["email"], git("-c", "gpg.ssh.allowedSignersFile=" + S["SIGNERS"], "log", "-1", "--format=%G?", M[c["sha"]])) for e in E for c in e.get("commits", [])}) and all(mark == ("G" if email == "ada@example.com" else "N") for email, mark in marks.values()) and sorted(mark for _, mark in marks.values()) == ["G"] * 9 + ["N"] and marks[S["F1"]] == ("bob@example.com", "N") and [git("log", "-1", "--format=%G?", M[S[k]]) for k in ("M2", "M3")] == ["N", "N"]'
   # shape <folder>: every commit of the target, without its hash.
@@ -1721,6 +1802,20 @@ EOF
     '[ "$(tr "\n" " " <"$T/sb-status")" = "137 0 " ] && grep -q "Resume the replay of ada-example/tool into ada-example/tool-new at event 5 of 23" "$T/sb-out" && [ -n "$(git --git-dir="$T/gh-sc/repo.git" for-each-ref refs/heads/feat/2-thing)" ] && dump "$T/gh-sa" >"$T/sa-dump" && dump "$T/gh-sb" >"$T/sb-dump" && diff "$T/sa-dump" "$T/sb-dump" && python3 -c "import json, sys; a, b = (json.load(open(f))[\"hashes\"] for f in sys.argv[1:]); sys.exit(a != b)" "$T/sa.state.json" "$T/sb.state.json" || { cat "$T/sb-status" "$T/sb-out"; exit 1; }'
   check "run-replay.py stops before pushing where a rebuilt commit gets another hash than the state file records" \
     'b2=$(echo "$B2" | cut -c1-7) && [ "$status_sc" = 1 ] && grep -q "run-replay.py: commit $b2 was rebuilt as [0-9a-f]\{7\}, but $P/sc.state.json records 0123456; its signature differs from the one the first run made: the signing key signs differently each time, or it is another key. The run stops before it pushes a second history$" "$T/sc-out" && grep -q "^run-replay.py: stopped in event 5 of 23" "$T/sc-out" && [ "$(git --git-dir="$T/gh-sc/repo.git" for-each-ref)" = "$sc_refs" ] && [ "$(writes "$T/gh-sc" | wc -l)" -eq "$sc_writes" ] || { cat "$T/sc-out"; exit 1; }'
+
+  # XS: X's plan replayed with --sign, which signs v0.2, tagged by Ada, and
+  # not v0.1.1, tagged by Bob; then compared.
+  sign_target "$T/gh-xs"
+  (GIT_CONFIG_GLOBAL=$T/global-sign && export GIT_CONFIG_GLOBAL &&
+    replay "$T/gh-xs" ada-example/tool-new --pace 0 --sign ada@example.com --state "$T/xs.state.json" "$T/extra.jsonl" "$mirror_extra" ada-example/tool-new) \
+    >"$T/xs-out" 2>&1
+  status_xs=$?
+  compare_extra "$T/gh-xs" --state "$T/xs.state.json" "$T/extra.jsonl" "$mirror_extra" ada-example/tool-new >"$T/cmp-xs-out" 2>&1
+  status_cmp_xs=$?
+  # verified <tag>: the tag of XS's target, verified against the allowed signers.
+  verified() { git -c gpg.ssh.allowedSignersFile="$SIGNERS" --git-dir="$T/gh-xs/repo.git" verify-tag "$1"; }
+  check "run-replay.py --sign signs each annotated tag whose tagger has the address, and no other, and says in the totals how many" \
+    '[ "$status_xs$status_cmp_xs" = 00 ] && grep -Eqx "  tags to sign +1" "$T/xs-out" && grep -Eq "^ *[0-9]+/[0-9]+  create-tag    v0\.2, annotated, signed, at [0-9a-f]{7}$" "$T/xs-out" && grep -Eq "^ *[0-9]+/[0-9]+  create-tag    v0\.1\.1, annotated, at [0-9a-f]{7}$" "$T/xs-out" && verified v0.2 && ! verified v0.1.1 && ! git --git-dir="$T/gh-xs/repo.git" cat-file tag v0.1.1 | grep -q "BEGIN SSH SIGNATURE" && grep -Eqx "  tags to sign +0" "$T/sa-out" && grep -qx "No differences" "$T/cmp-xs-out" || { cat "$T/xs-out" "$T/cmp-xs-out"; exit 1; }'
 else
   echo "ssh-keygen is missing; run-replay.py --sign with an SSH key not tested"
 fi
@@ -1947,12 +2042,12 @@ run_file "$T/runs-l/stop.run.json" "$T/backup-rl" "clone_url=\"$T/source-extra.g
 one "$T/rl" ada-example/tool-replay-20261116 "$T/runs-l/stop.run.json" >"$T/rl-stop-out" 2>&1
 status_rl_stop=$?
 check "replay.py stops in the plan, before any write, where the plan leaves behind what leave_behind does not accept" \
-  '[ "$status_rl_stop" = 1 ] && grep -q "^plan-replay.py: the replay leaves behind 3 of the source'"'"'s tags, releases and branches that --leave-behind does not accept (leave_behind, in a run file of replay.py)" "$T/rl-stop-out" && grep -qx "replay.py: plan-replay.py stopped; its message stands above" "$T/rl-stop-out" && grep -q "^replay.py: stopped in step 2 of 8, plan, before any write to GitHub in this run" "$T/rl-stop-out" && ! writes "$T/rl" && [ -e "$T/rl/absent" ] || { cat "$T/rl-stop-out"; exit 1; }'
+  '[ "$status_rl_stop" = 1 ] && grep -q "^plan-replay.py: the replay leaves behind 2 of the source'"'"'s tags, releases and branches that --leave-behind does not accept (leave_behind, in a run file of replay.py)" "$T/rl-stop-out" && grep -qx "replay.py: plan-replay.py stopped; its message stands above" "$T/rl-stop-out" && grep -q "^replay.py: stopped in step 2 of 8, plan, before any write to GitHub in this run" "$T/rl-stop-out" && ! writes "$T/rl" && [ -e "$T/rl/absent" ] || { cat "$T/rl-stop-out"; exit 1; }'
 run_file "$T/runs-l/tool.run.json" "$T/backup-rl-2" "clone_url=\"$T/source-extra.git\"" 'leave_behind=["tag v0.1", "release v0.1", "branch wip/idea"]'
 one "$T/rl" ada-example/tool-replay-20261116 "$T/runs-l/tool.run.json" >"$T/rl-out" 2>&1
 status_rl=$?
-check "replay.py passes leave_behind to the plan, and names in its last step what only the archive keeps" \
-  '[ "$status_rl" = 0 ] && grep -qx "No differences" "$T/rl-out" && grep -Fqx "  tag v0.1 of the source is left behind, as planned" "$T/rl-out" && grep -Fqx "   note: only the archive keeps what the plan left behind: branch wip/idea, tag v0.1, release v0.1" "$T/rl-out" && [ "$(grep -e "^2\. Archive" -e "note: only the archive" -e "^gh api -X PATCH repos/ada-example/tool -f name=tool-archive$" "$T/rl-out" | cut -c1-12 | tr "\n" "|")" = "2. Archive t|   note: onl|gh api -X PA|" ] || { cat "$T/rl-out"; exit 1; }'
+check "replay.py passes leave_behind to the plan, carries the tag, and names in its last step what only the archive keeps" \
+  '[ "$status_rl" = 0 ] && grep -qx "No differences" "$T/rl-out" && grep -Fqx "  release v0.1 of the source is left behind, as planned" "$T/rl-out" && ! grep -q "^  tag v0.1 " "$T/rl-out" && grep -Eqx "  tags +1" "$T/rl-out" && grep -qx "plan-replay.py: warning: .*/leave-behind accepts tag v0.1, which the replay does not leave behind" "$T/rl-out" && grep -Fqx "   note: only the archive keeps what the plan left behind: branch wip/idea, release v0.1" "$T/rl-out" && [ "$(grep -e "^2\. Archive" -e "note: only the archive" -e "^gh api -X PATCH repos/ada-example/tool -f name=tool-archive$" "$T/rl-out" | cut -c1-12 | tr "\n" "|")" = "2. Archive t|   note: onl|gh api -X PA|" ] || { cat "$T/rl-out"; exit 1; }'
 
 # RS: run files whose switches are no true or false, and one with no_tags
 # without no_releases, each of which stops before anything is read or written.
@@ -1976,6 +2071,23 @@ check "replay.py passes the switches to the plan, names them before the confirma
   '[ "$status_rf" = 0 ] && grep -qx "No differences" "$T/rf-out" && [ "$(grep -A 1 -x "  turned off in the run file: tags, releases and reviews; the replay carries none of them, and only the archive keeps them" "$T/rf-out" | tail -n 1 | cut -c1-5)" = "Type " ] && for line in "tag v0.1 of the source is left behind: tags are turned off" "release v0.1 of the source is left behind: releases are turned off" "reviews are turned off: the event file plans no review as a comment" "branch wip/idea of the source is left behind, as planned"; do grep -Fqx "  $line" "$T/rf-out" || { echo "no note: $line"; exit 1; }; done && ! grep -q "/reviews" "$T/rf/calls" && ! grep -q "turned off" "$T/rl-out" || { cat "$T/rf-out"; exit 1; }'
 check "replay.py names in its last step what only the archive keeps of the kinds the run file turns off" \
   'grep -Fqx "   note: only the archive keeps what the plan left behind: branch wip/idea, tag v0.1, release v0.1" "$T/rf-out" && grep -Fqx "   note: only the archive keeps the tags of the source, since the plan turned tags off" "$T/rf-out" && grep -Fqx "   note: only the archive keeps the releases of the source, since the plan turned releases off" "$T/rf-out" && ! grep -q "since the plan turned tags off" "$T/rl-out" && ! grep -q "since the plan turned releases off" "$T/rl-out" && grep -Fqx "   note: only the archive keeps the reviews of the pull requests, since the plan turned reviews off" "$T/rf-out" && ! grep -q "keeps the reviews" "$T/rl-out" || { cat "$T/rf-out"; exit 1; }'
+
+# RP: RL's source, with a run file that turns only the releases off; RQ: RL's
+# source without its release, with a run file that turns tags and releases
+# off. Each accepts the branch it leaves behind.
+replay_setup "$T/rp"
+cp "$T/rl-api/repos_ada-example_tool_releases-1.json" "$T/rp-api/"
+run_file "$T/runs-p/tool.run.json" "$T/backup-rp" "clone_url=\"$T/source-extra.git\"" 'leave_behind=["branch wip/idea"]' 'no_releases=true'
+one "$T/rp" ada-example/tool-replay-20261116 "$T/runs-p/tool.run.json" >"$T/rp-out" 2>&1
+status_rp=$?
+replay_setup "$T/rq"
+run_file "$T/runs-q/tool.run.json" "$T/backup-rq" "clone_url=\"$T/source-extra.git\"" 'leave_behind=["branch wip/idea"]' 'no_tags=true' 'no_releases=true'
+one "$T/rq" ada-example/tool-replay-20261116 "$T/runs-q/tool.run.json" >"$T/rq-out" 2>&1
+status_rq=$?
+check "replay.py with no_releases alone carries the tags, notes the releases as turned off, and names in its last step the releases and not the tags" \
+  '[ "$status_rp" = 0 ] && grep -qx "No differences" "$T/rp-out" && [ "$(git --git-dir="$T/rp/repo.git" for-each-ref --format="%(refname)" refs/tags/)" = refs/tags/v0.1 ] && grep -Fqx "  release v0.1 of the source is left behind: releases are turned off" "$T/rp-out" && grep -Fqx "   note: only the archive keeps what the plan left behind: branch wip/idea, release v0.1" "$T/rp-out" && grep -Fqx "   note: only the archive keeps the releases of the source, since the plan turned releases off" "$T/rp-out" && ! grep -q "turned tags off\|^  tag v0.1 \|keeps the tags" "$T/rp-out" && grep -qx "  turned off in the run file: releases; the replay carries none of them, and only the archive keeps them" "$T/rp-out" || { cat "$T/rp-out"; exit 1; }'
+check "replay.py with no_tags and no_releases, on a source without a release, names in its last step the tags turned off and not the releases" \
+  '[ "$status_rq" = 0 ] && grep -qx "No differences" "$T/rq-out" && [ -z "$(git --git-dir="$T/rq/repo.git" for-each-ref refs/tags/)" ] && grep -Fqx "   note: only the archive keeps what the plan left behind: branch wip/idea, tag v0.1" "$T/rq-out" && grep -Fqx "   note: only the archive keeps the tags of the source, since the plan turned tags off" "$T/rq-out" && ! grep -q "turned releases off\|keeps the releases" "$T/rq-out" || { cat "$T/rq-out"; exit 1; }'
 
 printf '\n%s passed, %s failed\n' "$passed" "$failed"
 [ "$failed" = 0 ]
