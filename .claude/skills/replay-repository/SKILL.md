@@ -23,7 +23,7 @@ Record there too where the run file, the mirror and the event file lie on the ow
 
 Ask these in one round, each with your recommendation, before planning, and record each answer on the run's issue. Each answer that names a field becomes that field of the run file, as "Replaying with one command" names them.
 
-1. **Replay or rewrite**: replay into a new repository, or rewrite the identities in place. Recommend the replay for the reasons of `docs/decisions/0001-replay-into-a-new-repository.md`. For a rewrite, follow `rewrite/README.md` instead of these steps.
+1. **Replay or rewrite**: replay into a new repository, or rewrite the identities in place. Recommend the replay for the reasons the opening paragraph of `replay/README.md` gives, before "Replaying with one command". For a rewrite, follow `rewrite/README.md` instead of these steps.
 2. **Identities**, for `mailmap`: list every identity of the source as author and as committer, with the commands of the next section, and ask which are the owner's, what becomes of `GitHub <noreply@github.com>` as the committer of changes made on github.com, of Claude as a committer, and of any test identity.
 3. **Merge commits**, for `keep_merges`: squash merges, or merge commits kept.
 4. **Types**, for `no_types` and `types`: typed titles, or titles as they are; with types, the owner confirms the types table and the squash summaries of the Plan section.
