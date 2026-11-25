@@ -18,6 +18,11 @@ applies them. Reads GitHub through gh api with GET requests only. Prints
 every title it changed, every squash message it wrote, what it leaves
 behind, and the totals.
 
+A default branch named master becomes main in the target, and so does the
+base of each pull request and the target_commitish of each draft release that
+name it; texts that name master stay as they are. A source with a branch main
+beside its default branch master stops the plan.
+
 The replay carries each tag that names a commit it recreates, under a name
 git tag accepts, lightweight or annotated as in the source, an annotated one
 with its message and its tagger mapped through <mailmap>. It carries each
@@ -65,6 +70,10 @@ FORMAT = 1
 SWITCHES = ("tags", "releases", "reviews")
 # The kind of left_behind each switch accepts whole.
 SWITCH_OF = {"tag": "tags", "release": "releases"}
+# The name the target's default branch takes for the source's, as #71 records
+# the owner's request: older repositories use master, newer ones main, and a
+# replay is where such a repository starts over.
+RENAMED = {"master": "main"}
 TYPES = ("feat", "fix", "docs", "chore", "refactor", "test", "build", "ci", "revert")
 # Branch prefixes that are no type of GW-6 but name one.
 BRANCH_ALIASES = {"feature": "feat", "bugfix": "fix", "hotfix": "fix", "doc": "docs"}
@@ -730,6 +739,13 @@ def plan(mirror, repo, overrides, typed=True, keep_merges=False, off=()):
 
     if not mirror.has(f"refs/heads/{default}"):
         die(f"the mirror has no branch {default}, the default branch of {repo}")
+    target = RENAMED.get(default, default)
+    if target != default and mirror.has(f"refs/heads/{target}"):
+        die(
+            f"the source has a branch {target} beside its default branch {default}, which the"
+            f" replay names {target}; it cannot give two branches one name. Rename or delete the"
+            f" branch {target} in the source, then mirror and plan again"
+        )
     parents = mirror.parents()
     main = mirror.lines("rev-list", "--first-parent", "--reverse", f"refs/heads/{default}")
     main_index = {sha: i for i, sha in enumerate(main)}
@@ -848,7 +864,7 @@ def plan(mirror, repo, overrides, typed=True, keep_merges=False, off=()):
                 "push-commits",
                 utc(c["committer"]["date"]),
                 deps,
-                branch=default,
+                branch=target,
                 commits=[c],
             )
             continue
@@ -892,7 +908,7 @@ def plan(mirror, repo, overrides, typed=True, keep_merges=False, off=()):
             type_from=source,
         )
 
-    names, branch_names = {default}, {}
+    names, branch_names = {default, target}, {}
     for n, b in sorted(branches.items()):
         chain = set(b["chain"])
         outside = {p for c in b["chain"] for p in parents[c] if p not in chain}
@@ -970,8 +986,14 @@ def plan(mirror, repo, overrides, typed=True, keep_merges=False, off=()):
             title, kind, source = retitle(item["title"], lambda n=n: pull_type(n))
             p = pulls[n]
             state = "merged" if p.get("merged_at") else item["state"]
-            if p["base"]["ref"] != default:
-                warn(f"#{n} targets {p['base']['ref']}, a branch the replay does not create")
+            base = target if p["base"]["ref"] == default else p["base"]["ref"]
+            if base == target != default != p["base"]["ref"]:
+                warn(
+                    f"#{n} targets {base}, the name the replay gives the default branch {default};"
+                    f" it is created against that branch"
+                )
+            elif p["base"]["ref"] != default:
+                warn(f"#{n} targets {base}, a branch the replay does not create")
             add(
                 ("create", n),
                 "create-pull",
@@ -982,7 +1004,7 @@ def plan(mirror, repo, overrides, typed=True, keep_merges=False, off=()):
                 type=kind,
                 type_from=source,
                 head=branch_names[n],
-                base=p["base"]["ref"],
+                base=base,
                 draft=bool(p.get("draft")),
                 state=state,
                 **common,
@@ -1103,7 +1125,7 @@ def plan(mirror, repo, overrides, typed=True, keep_merges=False, off=()):
             **r,
         )
     left = left_behind(mirror, info, left_releases, events, left_tags)
-    return default, events, left
+    return default, target, events, left
 
 
 # The longest comment GitHub takes, as its community reports; the REST
@@ -1212,7 +1234,7 @@ def main(argv):
     accepted = LeaveBehind(leave)
 
     mirror = Mirror(mirror_path, mailmap.resolve())
-    default, events, left = plan(mirror, repo, overrides, typed, keep_merges, off)
+    default, target, events, left = plan(mirror, repo, overrides, typed, keep_merges, off)
     accepted.check(left, off)
     events = join_direct_pushes(order(events))
     for unused in overrides.unused(typed):
@@ -1234,6 +1256,9 @@ def main(argv):
         "format": FORMAT,
         "source": repo,
         "default_branch": default,
+        # An event file without target_default_branch was planned before the
+        # rename, with the target's default branch named as the source's.
+        "target_default_branch": target,
         "source_commits": source_commits,
         "left_behind": left,
         "reviews": "reviews" not in off,
@@ -1247,6 +1272,8 @@ def main(argv):
             file.write(json.dumps(line, ensure_ascii=False) + "\n")
     partial.replace(output)
 
+    if target != default:
+        print(f"Default branch: {default} in the source, {target} in the target")
     rows = review(events)
     print(f"Changed titles: {len(rows)}")
     width = max((len(r[0]) for r in rows), default=0)

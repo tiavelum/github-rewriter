@@ -2650,5 +2650,139 @@ check "replay.py with no_releases alone carries the tags, notes the releases as 
 check "replay.py with no_tags and no_releases, on a source without a release, names in its last step the tags turned off and not the releases" \
   '[ "$status_rq" = 0 ] && grep -qx "No differences" "$T/rq-out" && [ -z "$(git --git-dir="$T/rq/repo.git" for-each-ref refs/tags/)" ] && grep -Fqx "   note: only the archive keeps what the plan left behind: branch wip/idea, tag v0.1" "$T/rq-out" && grep -Fqx "   note: only the archive keeps the tags of the source, since the plan turned tags off" "$T/rq-out" && ! grep -q "turned releases off\|keeps the releases" "$T/rq-out" || { cat "$T/rq-out"; exit 1; }'
 
+# The default branch master: MA, the test's source with main renamed to
+# master, whose pull requests are based on master, whose #6 names master in
+# its body and which has a draft for master, planned, replayed into a target
+# and compared; MB, a copy of MA's target whose default branch is master; MC,
+# the same source with a branch main beside master; RMM, MA's source replayed
+# by replay.py into a target that GitHub names master; and A's event file
+# without target_default_branch, as one planned before the rename, checked
+# again and compared.
+mirror_master=$T/mirror-master.git
+cp -R "$mirror" "$mirror_master"
+# to_master <bare repository>: renames its branch main to master.
+to_master() {
+  git --git-dir="$1" update-ref refs/heads/master refs/heads/main &&
+    git --git-dir="$1" update-ref -d refs/heads/main && git --git-dir="$1" symbolic-ref HEAD refs/heads/master
+}
+to_master "$mirror_master"
+# master_api <API folder>: makes master the default branch of that copy of the
+# source's API and the base of its pull requests.
+master_api() {
+  python3 - "$1" <<'EOF'
+import json, sys
+from pathlib import Path
+api, base = Path(sys.argv[1]), "repos_ada-example_tool"
+info = json.loads((api / f"{base}.json").read_text())
+info["default_branch"] = "master"
+(api / f"{base}.json").write_text(json.dumps(info))
+pulls = json.loads((api / f"{base}_pulls-1.json").read_text())
+for p in pulls:
+    p["base"]["ref"] = "master"
+(api / f"{base}_pulls-1.json").write_text(json.dumps(pulls))
+EOF
+}
+cp -R "$T/api-run" "$T/api-master"
+master_api "$T/api-master"
+python3 - "$T/api-master" <<'EOF'
+import json, sys
+from pathlib import Path
+api, base = Path(sys.argv[1]), "repos_ada-example_tool"
+issues = json.loads((api / f"{base}_issues-1.json").read_text())
+for it in issues:
+    if it["number"] == 6:
+        it["body"] = "Seen twice since Merge branch 'master'."
+(api / f"{base}_issues-1.json").write_text(json.dumps(issues))
+(api / f"{base}_releases-1.json").write_text(json.dumps([
+    {"id": 21, "tag_name": "v0.9-rc", "name": "Candidate", "draft": True, "prerelease": False,
+     "target_commitish": "master", "body": "", "author": {"login": "ada-example"},
+     "created_at": "2026-03-08T13:00:00Z", "published_at": None}]))
+EOF
+(FAKE_GH_API=$T/api-master && export FAKE_GH_API && plan --types "$T/types" "$mirror_master" ada-example/tool "$T/mailmap" "$T/master.jsonl") >"$T/master-out" 2>"$T/master-err"
+status_master=$?
+check "plan-replay.py plans a source whose default branch is master without warnings, and says that the target names it main" \
+  '[ "$status_master" = 0 ] && [ ! -s "$T/master-err" ] && [ "$(head -n 1 "$T/master-out")" = "Default branch: master in the source, main in the target" ] && ! grep -q "^Default branch" "$T/plan-out" || { cat "$T/master-err" "$T/master-out"; exit 1; }'
+plan_file=$T/master.jsonl
+pcheck "plan-replay.py records the source's default branch master and the target's main in the header, and plans each push to main and each pull request against main" \
+  'H["default_branch"] == "master" and H["target_default_branch"] == "main" and {e["branch"] for e in of("push-commits")} == {"main"} and {e["base"] for e in of("create-pull")} == {"main"} and len(of("push-commits")) == 3 and len(of("create-pull")) == 3 and (h := json.loads(open(os.path.join(os.path.dirname(sys.argv[1]), "run.jsonl"), encoding="utf-8").readline()))["default_branch"] == h["target_default_branch"] == "main"'
+pcheck "plan-replay.py plans a draft for master as one for the default branch, keeps a text that names master, and plans every other event and the header as for the source with main" \
+  '[(e["tag_name"], e["draft"], e["commit"], e["on_tag"]) for e in of("create-release")] == [("v0.9-rc", True, None, False)] and of("create-issue", 6)[0]["body"] == "Seen twice since Merge branch '"'"'master'"'"'." and (lines := open(os.path.join(os.path.dirname(sys.argv[1]), "run.jsonl"), encoding="utf-8").read().splitlines()) and [{k: v for k, v in e.items() if k != "seq"} | ({"body": "Seen twice."} if (e["kind"], e.get("number")) == ("create-issue", 6) else {}) for e in E if e["kind"] != "create-release"] == [{k: v for k, v in json.loads(line).items() if k != "seq"} for line in lines[1:]] and {k: v for k, v in H.items() if "default_branch" not in k} == {k: v for k, v in json.loads(lines[0]).items() if "default_branch" not in k}'
+# The same source with #3's head branch named main, as a fork may name it, and
+# its draft for refs/heads/master: the head gets another name, so that it
+# cannot push over the replay's main.
+cp -R "$T/api-master" "$T/api-master-head"
+python3 - "$T/api-master-head" <<'EOF'
+import json, sys
+from pathlib import Path
+api, base = Path(sys.argv[1]), "repos_ada-example_tool"
+pulls = json.loads((api / f"{base}_pulls-1.json").read_text())
+for p in pulls:
+    if p["number"] == 3:
+        p["head"]["ref"] = "main"
+(api / f"{base}_pulls-1.json").write_text(json.dumps(pulls))
+releases = json.loads((api / f"{base}_releases-1.json").read_text())
+releases[0]["target_commitish"] = "refs/heads/master"
+(api / f"{base}_releases-1.json").write_text(json.dumps(releases))
+EOF
+(FAKE_GH_API=$T/api-master-head && export FAKE_GH_API && plan --types "$T/types" "$mirror_master" ada-example/tool "$T/mailmap" "$T/master-head.jsonl") >"$T/master-head-out" 2>&1
+plan_file=$T/master-head.jsonl
+pcheck "plan-replay.py gives a pull request whose head branch is named main another name in a source whose default branch is master, and plans a draft for refs/heads/master for the default branch" \
+  'sorted(e["branch"] for e in of("push-branch")) == ["docs/5-notes", "feat/2-thing", "main-3"] and {e["branch"] for e in of("push-commits")} == {"main"} and [(e["tag_name"], e["draft"], e["commit"]) for e in of("create-release")] == [("v0.9-rc", True, None)]'
+plan_file=$T/events.jsonl
+target "$T/gh-ma" ada-example/tool-ma
+(FAKE_GH_API=$T/api-master && export FAKE_GH_API && replay "$T/gh-ma" ada-example/tool-ma --pace 0 --state "$T/ma.state.json" "$T/master.jsonl" "$mirror_master" ada-example/tool-ma) >"$T/ma-out" 2>&1
+status_ma=$?
+compare_api "$T/api-master" "$T/gh-ma" --state "$T/ma.state.json" "$T/master.jsonl" "$mirror_master" ada-example/tool-ma >"$T/cmp-ma-out" 2>&1
+status_cmp_ma=$?
+cp -R "$T/gh-ma" "$T/gh-mb"
+git --git-dir="$T/gh-mb/repo.git" update-ref refs/heads/master refs/heads/main
+echo '{"default_branch": "master"}' >"$T/gh-mb/settings.json"
+compare_api "$T/api-master" "$T/gh-mb" --state "$T/ma.state.json" "$T/master.jsonl" "$mirror_master" ada-example/tool-ma >"$T/cmp-mb-out" 2>&1
+status_cmp_mb=$?
+check "run-replay.py replays a source whose default branch is master into main, and says so in its totals" \
+  '[ "$status_ma" = 0 ] && grep -Fqx "  default branch: master in the source, main in the target" "$T/ma-out" && grep -q " 3 commits to main, now at " "$T/ma-out" && grep -q "#2 pull request feat/2-thing into main$" "$T/ma-out" && ! grep -q "default branch:" "$T/a-out" || { cat "$T/ma-out"; exit 1; }'
+rcheck "run-replay.py pushes the source's master to main, creates each pull request against main and the draft for master for main, keeps a text that names master, and creates no branch master" "$T/gh-ma" "$T/ma.state.json" \
+  'git("for-each-ref", "--format=%(refname)", "refs/heads/") == "refs/heads/docs/5-notes\nrefs/heads/feat/2-thing\nrefs/heads/fix/3-parser\nrefs/heads/main" and git("rev-parse", "main") == M[S["C5"]] and {it["base"] for it in items.values() if it["kind"] == "pull"} == {"main"} and [(r["tag_name"], r["draft"], r["target_commitish"]) for r in load("releases", [])] == [("v0.9-rc", True, "main")] and items[6]["body"] == "Seen twice since Merge branch '"'"'master'"'"'."'
+check "compare-replay.py compares the source's master with the target's main, notes it, and finds no difference" \
+  '[ "$status_cmp_ma" = 0 ] && grep -qx "No differences" "$T/cmp-ma-out" && grep -Fqx "  default branch master of the source is main in the target, as planned" "$T/cmp-ma-out" && grep -Eqx "  commits on main +7" "$T/cmp-ma-out" && grep -Eqx "  branches +4" "$T/cmp-ma-out" && ! grep -q "^  branch main " "$T/cmp-ma-out" && ! grep -q "default branch" "$T/cmp-a-out" || { cat "$T/cmp-ma-out"; exit 1; }'
+check "compare-replay.py names a target whose default branch is master where the plan names main" \
+  '[ "$status_cmp_mb" = 1 ] && grep -Fqx "  the default branch is master, planned main" "$T/cmp-mb-out" && grep -Fqx "  branch master is in the target, but in no event" "$T/cmp-mb-out" && grep -qx "Differences: 2" "$T/cmp-mb-out" && ! grep -q "as planned" "$T/cmp-mb-out" || { cat "$T/cmp-mb-out"; exit 1; }'
+mirror_both=$T/mirror-both.git
+cp -R "$mirror_master" "$mirror_both"
+git --git-dir="$mirror_both" update-ref refs/heads/main "$C1"
+(FAKE_GH_API=$T/api-master && export FAKE_GH_API && plan "$mirror_both" ada-example/tool "$T/mailmap" "$T/both.jsonl") >"$T/both-out" 2>&1
+status_both=$?
+check "plan-replay.py stops, and writes no event file, at a source with a branch main beside its default branch master, and names both" \
+  '[ "$status_both" = 1 ] && [ ! -e "$T/both.jsonl" ] && grep -Fqx "plan-replay.py: the source has a branch main beside its default branch master, which the replay names main; it cannot give two branches one name. Rename or delete the branch main in the source, then mirror and plan again" "$T/both-out" && [ "$(wc -l <"$T/both-out")" -eq 1 ] || { cat "$T/both-out"; exit 1; }'
+git clone -q --mirror "$T/source.git" "$T/source-master.git"
+to_master "$T/source-master.git"
+replay_setup "$T/rmm"
+master_api "$T/rmm-api"
+run_file "$T/runs-mm/tool.run.json" "$T/backup-rmm" "clone_url=\"$T/source-master.git\""
+(FAKE_GH_DEFAULT=master && export FAKE_GH_DEFAULT && one "$T/rmm" ada-example/tool-replay-20261116 "$T/runs-mm/tool.run.json") >"$T/rmm-out" 2>&1
+status_rmm=$?
+check "replay.py replays a source whose default branch is master into main, says so before the confirmation, makes main the default branch where GitHub names master, and the comparison finds no difference" \
+  '[ "$status_rmm" = 0 ] && grep -Fqx "  5. run run-replay.py --pace 0 --final-name ada-example/tool, and make main the default branch where GitHub names another; the source'"'"'s master becomes main" "$T/rmm-out" && grep -Fqx "  default branch main, where GitHub had named it master" "$T/rmm-out" && [ ! -e "$T/rmm/rejected" ] && grep -qx "No differences" "$T/rmm-out" && python3 -c "import json, sys; sys.exit(json.load(open(sys.argv[1]))[\"default_branch\"] != \"main\")" "$T/rmm/settings.json" && [ "$(git --git-dir="$T/rmm/repo.git" for-each-ref --format="%(refname:short)" refs/heads/ | tr "\n" " ")" = "docs/5-notes main " ] && ! grep -q "becomes main" "$T/rw-out" || { cat "$T/rmm-out" "$T/rmm/rejected" 2>&1; exit 1; }'
+check "replay.py names in its last step the replay's main beside the source's master, and prints no command that deletes main" \
+  'grep -Fqx "   note: the replay'"'"'s default branch is main, where the source'"'"'s is master" "$T/rmm-out" && grep -Fqx "gh api -X DELETE repos/ada-example/tool/git/refs/heads/docs/5-notes" "$T/rmm-out" && ! grep -q "refs/heads/main$" "$T/rmm-out" && ! grep -q "default branch is main" "$T/ra-out" || { cat "$T/rmm-out"; exit 1; }'
+python3 - "$T/run.jsonl" "$T/old-default.jsonl" "$T/a.state.json" "$T/old-default.state.json" <<'EOF'
+import hashlib, json, sys
+lines = open(sys.argv[1], encoding="utf-8").read().splitlines()
+header = json.loads(lines[0])
+del header["target_default_branch"]
+text = "\n".join([json.dumps(header, ensure_ascii=False), *lines[1:]]) + "\n"
+open(sys.argv[2], "w", encoding="utf-8").write(text)
+state = json.load(open(sys.argv[3], encoding="utf-8"))
+state["events"] = hashlib.sha256(text.encode()).hexdigest()
+json.dump(state, open(sys.argv[4], "w", encoding="utf-8"))
+EOF
+writes_old_default=$(writes "$T/gh-a" | wc -l)
+replay "$T/gh-a" ada-example/tool-new --pace 0 --state "$T/old-default.state.json" "$T/old-default.jsonl" "$mirror" ada-example/tool-new >"$T/old-default-out" 2>&1
+status_old_default=$?
+compare "$T/gh-a" --state "$T/old-default.state.json" "$T/old-default.jsonl" "$mirror" ada-example/tool-new >"$T/cmp-old-default-out" 2>&1
+status_cmp_old_default=$?
+check "run-replay.py and compare-replay.py take an event file planned before the rename, without target_default_branch, as before, with the source's default branch as the target's" \
+  '[ "$status_old_default$status_cmp_old_default" = 00 ] && grep -q "^All 23 events of the replay .* are done" "$T/old-default-out" && [ "$(writes "$T/gh-a" | wc -l)" -eq "$writes_old_default" ] && diff "$T/cmp-a-out" "$T/cmp-old-default-out" || { cat "$T/old-default-out" "$T/cmp-old-default-out"; exit 1; }'
+
 printf '\n%s passed, %s failed\n' "$passed" "$failed"
 [ "$failed" = 0 ]

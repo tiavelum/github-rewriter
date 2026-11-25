@@ -355,7 +355,10 @@ class Replay:
         self.sign_options, self.key_note, self.steady_key = [], "", True
         self.api = Api(pace)
         self.header, self.events, self.digest = load_events(events_path)
-        self.default = self.header["default_branch"]
+        # The target's default branch, main for a source's master; an event
+        # file planned before the rename names only the source's.
+        self.source_default = self.header["default_branch"]
+        self.default = self.header.get("target_default_branch", self.source_default)
         self.sources = sorted(set(self.header["source_commits"]))
         self.creates = {
             e["number"]: e for e in self.events if e["kind"] in ("create-issue", "create-pull")
@@ -619,7 +622,7 @@ class Replay:
         if refs and info.get("default_branch") != self.default:
             raise ReplayError(
                 f"the default branch of {self.slug} is {info.get('default_branch')}, the"
-                f" source's {self.default}; set it with: gh api -X PATCH repos/{self.slug}"
+                f" replay's {self.default}; set it with: gh api -X PATCH repos/{self.slug}"
                 f" -f default_branch={self.default}"
             )
         return (newest[0]["number"] if newest else 0), refs
@@ -707,6 +710,11 @@ class Replay:
             rows.append(("tags to sign", sum(self.signs_tag(e) for e in left)))
         for name, value in rows:
             print(f"  {name:<25}{value:>6}")
+        if self.default != self.source_default:
+            print(
+                f"  default branch: {self.source_default} in the source,"
+                f" {self.default} in the target"
+            )
         if self.sign:
             print(
                 f"  signed: the commits committed and the tags tagged by {self.sign},"

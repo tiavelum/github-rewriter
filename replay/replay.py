@@ -468,7 +468,12 @@ class OneCommand:
             "create": f"create {self.target}, private and empty",
             "settings": f"turn Actions off in it{deletes if self.deletes else ''}",
             "replay": f"run run-replay.py {' '.join(self.run_options())}, and make {self.default}"
-            " the default branch where GitHub names another",
+            " the default branch where GitHub names another"
+            + (
+                f"; the source's {self.source_default} becomes {self.default}"
+                if self.default != self.source_default
+                else ""
+            ),
             "compare": "compare the replay with the source with compare-replay.py",
             "links": f"move sub-issue links: {len(links)}",
             "commands": "print the commands that archive the source and rename the replay",
@@ -546,8 +551,9 @@ class OneCommand:
         self.set_default(pushed=True)
 
     def set_default(self, pushed):
-        """Gives the target the source's default branch where GitHub named
-        another one at the creation. GitHub's documentation leaves open whether
+        """Gives the target the default branch the plan names, main for a
+        source's master, where GitHub named another one at the creation.
+        GitHub's documentation leaves open whether
         an empty repository takes a default branch, so this waits until the
         branch exists: after the replay, or before it where it was pushed."""
         info = self.api.expect("GET", f"repos/{self.target}")
@@ -672,6 +678,11 @@ class OneCommand:
             f"gh api -X DELETE repos/{self.final}/git/refs/heads/{branch}"
             for branch in self.extra_branches()
         ]
+        if self.default != self.source_default:
+            notes.append(
+                f"the replay's default branch is {self.default}, where the source's is"
+                f" {self.source_default}"
+            )
         left = self.left_behind()
         if left:
             notes.append(f"only the archive keeps what the plan left behind: {', '.join(left)}")
@@ -737,7 +748,8 @@ class OneCommand:
         listed = run(["git", "ls-remote", "--heads", remote])
         if listed.returncode:
             raise ReplayError(f"git ls-remote of {self.target} failed: {listed.stderr.strip()}")
-        return {line.split("\trefs/heads/", 1)[1] for line in listed.stdout.splitlines()}
+        # Only a newline ends a line: git allows other Unicode breaks in a name.
+        return {line.split("\trefs/heads/", 1)[1] for line in listed.stdout.split("\n") if line}
 
     def plan_header(self):
         with self.events.open(encoding="utf-8") as file:
@@ -753,7 +765,8 @@ class OneCommand:
         return [k for k in SWITCHES if self.cfg[f"no_{k}"]]
 
     def extra_branches(self):
-        """The branches of the target that the mirror of the source lacks."""
+        """The branches of the target that the mirror of the source lacks, the
+        source's default branch taken under the target's name."""
         target = self.target_branches(self.api.expect("GET", f"repos/{self.target}"))
         source = run(
             [
@@ -765,19 +778,26 @@ class OneCommand:
                 "refs/heads/",
             ]
         )
-        return sorted(target - set(source.stdout.split()))
+        # Only a newline ends a name: git allows other Unicode blanks in one.
+        names = {x for x in source.stdout.split("\n") if x}
+        names = {self.default if x == self.source_default else x for x in names}
+        return sorted(target - names)
 
     def main(self):
         self.step = "check"
         self.check_place()
         resumed = self.load_progress()
         self.info = self.api.expect("GET", f"repos/{self.source}")
-        self.default = self.info["default_branch"]
         self.deletes = bool(self.info.get("delete_branch_on_merge"))
         if not resumed:
             self.check_target_absent()
             self.make_mirror()
             self.plan()
+        # The target's default branch, main for a source's master; an event
+        # file planned before the rename names only the source's.
+        header = self.plan_header()
+        self.source_default = header["default_branch"]
+        self.default = header.get("target_default_branch", self.source_default)
         self.step = "survey"
         self.survey_links()
         self.step = "confirm"
