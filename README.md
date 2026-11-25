@@ -72,7 +72,6 @@ Then paste it into the instructions field of the claude.ai project "github-rewri
 | [`rewrite/`](rewrite/README.md) | The scripts that rewrite the identities of a repository's history in place, one step each, and their test |
 | [`replay/`](replay/README.md) | The scripts that plan the replay of a repository into a new one, with its issues and pull requests under the same numbers, as an event file, apply that file to an empty repository and compare the result with the source, the script that runs them in turn from one run file, and their test |
 | `.claude/skills/` | The skill `replay-repository`, with which Claude takes a replay from the owner's first answers to the replay holding the source's name, using the scripts of [`replay/`](replay/README.md) |
-| `docs/decisions/` | The decisions that constrain every run, such as why a repository is replayed into a new one rather than rewritten or forked |
 | `.github/workflows/` | The workflow that runs the tests on Linux, and the formatters and linters, for every pull request and every push to `main`, and the tests on macOS too for every push to `main` and every pull request labelled `test-macos`, see [Testing a pull request on macOS](#testing-a-pull-request-on-macos) |
 | `project-instructions.md`, `CLAUDE.md` | The rules for Claude working in this repository |
 
