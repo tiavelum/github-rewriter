@@ -18,6 +18,7 @@ from conftest import (
     has_match,
     has_search,
     has_text,
+    recreated,
     run,
 )
 
@@ -32,11 +33,6 @@ def edit_json(path, change):
     value = json.loads(path.read_text(encoding="utf-8"))
     changed = change(value)
     path.write_text(json.dumps(value if changed is None else changed), encoding="utf-8")
-
-
-def recreated(state_file, sha):
-    """The recreated commit of a source commit, from a state file."""
-    return json.loads(Path(state_file).read_text(encoding="utf-8"))["hashes"][sha]
 
 
 def call_lines(target):

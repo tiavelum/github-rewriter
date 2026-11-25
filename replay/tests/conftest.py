@@ -735,6 +735,70 @@ def copy_target(root, target, name):
     return Target(root / name, target.env)
 
 
+def recreated(state_file, sha):
+    """The recreated commit of a source commit, from a state file."""
+    return json.loads(Path(state_file).read_text(encoding="utf-8"))["hashes"][sha]
+
+
+def shell_status(result):
+    """The exit status as the shell test records it with $?: a process that a
+    signal killed, which subprocess reports as minus the signal's number,
+    gets 128 plus that number, such as 137 for a kill -9."""
+    return 128 - result.status if result.status < 0 else result.status
+
+
+def past_header(text):
+    """The text without its lines up to the first empty one after the first,
+    as sed "1,/^$/d" prints it: the message of a tag that cat-file prints."""
+    found = re.findall(r"[^\n]*\n|[^\n]+$", text)
+    for i in range(1, len(found)):
+        if found[i] == "\n":
+            return "".join(found[i + 1 :])
+    return ""
+
+
+def write_hook(target, name, script):
+    """A hook of the target's repository, executable, as cat > and chmod +x make it."""
+    hook = target.repo / "hooks" / name
+    hook.write_text(script, encoding="utf-8")
+    hook.chmod(0o755)
+
+
+def kill_hook(ref):
+    """A post-receive hook that kills the run-replay.py whose push of the ref
+    it receives, once, as a machine that stops right after the push would.
+    It finds the run among the hook's ancestors by its command line, which
+    holds run-replay.py under pytest as under the shell test."""
+    return f"""\
+#!/bin/sh
+grep -q ' {ref}$' || exit 0
+[ ! -e ../killed ] || exit 0
+touch ../killed
+pid=$PPID
+while [ "${{pid:-1}}" -gt 1 ]; do
+  case $(ps -o args= -p "$pid") in
+  *run-replay.py*)
+    kill -9 "$pid"
+    exit 0
+    ;;
+  esac
+  pid=$(ps -o ppid= -p "$pid" | tr -d ' ')
+done
+"""
+
+
+def refuse_hook(ref):
+    """A pre-receive hook that refuses the push of the ref once."""
+    return f"""\
+#!/bin/sh
+grep -q ' {ref}$' || exit 0
+[ ! -e ../refused-once ] || exit 0
+touch ../refused-once
+echo "refused once" >&2
+exit 1
+"""
+
+
 class TargetView:
     """What rexpect of the shell test reads of a target: items by number,
     comments as (number, body), labels and closes from the fake's files, the
@@ -787,12 +851,15 @@ def make_target(root, base_env):
 @pytest.fixture(scope="session")
 def replay(root, target_env):
     """Runs run-replay.py with these arguments against the target, with the
-    answer typed at the confirmation and the FAKE_GH_* variables given, from
-    the session's folder, with the interpreter that runs pytest."""
+    answer typed at the confirmation, the variables given set and those of
+    unset removed, from the session's folder, with the interpreter that runs
+    pytest."""
 
-    def replay(target, answer, *args, merged=False, **variables):
+    def replay(target, answer, *args, merged=False, unset=(), **variables):
         env = {**target_env, "FAKE_GITHUB": str(target.folder)}
         env.update({k: str(v) for k, v in variables.items()})
+        for name in unset:
+            env.pop(name, None)
         script = [sys.executable, REPLAY / "run-replay.py", *args]
         return run(script, env, root, stdin=f"{answer}\n", merged=merged)
 
