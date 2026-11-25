@@ -515,6 +515,32 @@ pcheck "plan-replay.py plans each tag at a recreated commit, lightweight or anno
   '(t := {e["name"]: e for e in of("create-tag")}) and [(e["name"], e["commit"], e["annotated"]) for e in of("create-tag")] == [("v0.1", S["M2"], False), ("v0.1.1", S["F1"], True), ("v0.2", S["C5"], True)] and (t["v0.1"]["message"], t["v0.1"]["tagger"], t["v0.1"]["time"]) == (None, None, None) and (t["v0.2"]["message"], t["v0.2"]["tagger"], t["v0.2"]["time"]) == ("Second, after " + S["C4"][:7] + "\n", {"name": "Ada Example", "email": "ada@example.com", "date": "2026-03-07T15:00:00+02:00"}, "2026-03-07T13:00:00Z") and (t["v0.1.1"]["message"], t["v0.1.1"]["tagger"]) == ("Parser fix\n", {"name": "Bob Example", "email": "bob@example.com", "date": "2026-03-04T10:30:00+00:00"})'
 pcheck "plan-replay.py plans a lightweight tag right after the event that recreates its commit, and an annotated one at its date after that event" \
   '(t := {e["name"]: E.index(e) for e in of("create-tag")}) and t["v0.1"] == E.index(of("merge-pull", 2)[0]) + 1 and t["v0.2"] > E.index(next(e for e in of("push-commits") if S["C5"] in [c["sha"] for c in e["commits"]])) and t["v0.1.1"] > E.index(of("push-branch", 3)[0]) and E[t["v0.1.1"] - 1]["time"] <= E[t["v0.1.1"]]["time"] <= E[t["v0.1.1"] + 1]["time"]'
+# The same source whose latest release, v9.9, is on a tag the mirror lacks, and
+# with a published release v0.1 older than v0.2: v0.2, the newest one the
+# replay carries, takes the place of the latest.
+cp -R "$T/api-extra" "$T/api-latest-left"
+python3 - "$T/api-latest-left" <<'EOF'
+import json, sys
+from pathlib import Path
+api, base = Path(sys.argv[1]), "repos_ada-example_tool_releases"
+releases = json.loads((api / f"{base}-1.json").read_text())
+def release(id, tag, created):
+    return {"id": id, "tag_name": tag, "name": tag, "draft": False, "prerelease": False,
+            "target_commitish": "main", "body": "", "author": {"login": "ada-example"},
+            "created_at": created, "published_at": created}
+latest = release(9, "v9.9", "2026-03-09T12:00:00Z")
+releases = [latest, *releases, release(4, "v0.1", "2026-03-01T12:00:00Z")]
+(api / f"{base}-1.json").write_text(json.dumps(releases))
+(api / f"{base}_latest.json").write_text(json.dumps(latest))
+EOF
+cat "$T/leave" - >"$T/leave-latest" <<'EOF'
+release v9.9
+EOF
+plan_extra "$T/api-latest-left" "$T/latest-left.jsonl" --leave-behind "$T/leave-latest" >"$T/latest-left-out" 2>"$T/latest-left-err"
+status_latest_left=$?
+plan_file=$T/latest-left.jsonl
+pcheck "plan-replay.py makes the newest published release it carries the latest where the source's latest release is left behind, and warns of it" \
+  '[(e["tag_name"], e["latest"]) for e in of("create-release") if not e["draft"] and not e["prerelease"]] == [("v0.1", False), ("v0.2", True)] and "v9.9" in [x["name"] for x in H["left_behind"] if x["kind"] == "release"] and "plan-replay.py: warning: the source'"'"'s latest release is left behind; v0.2, the newest one the replay carries, becomes the target'"'"'s latest" in open(os.path.join(os.path.dirname(sys.argv[1]), "latest-left-err"), encoding="utf-8").read().splitlines()'
 plan_file=$T/events.jsonl
 check "plan-replay.py prints what it leaves behind, counts it, the tags, the releases and their assets, and warns of an accepted line that names nothing it leaves behind, a tag or release it carries included" \
   '[ "$status_extra" = 0 ] && grep -qx "Left behind: 2" "$T/extra-out" && grep -Eqx "  left behind +2" "$T/extra-out" && grep -Eqx "  tags +3" "$T/extra-out" && grep -Eqx "  releases +3" "$T/extra-out" && grep -Eqx "  release assets +2" "$T/extra-out" && ! grep -q "^  release  " "$T/extra-out" && for line in "tag v0.1" "tag v0.2" "tag v9" "release v0.2" "release v0.3"; do grep -qx "plan-replay.py: warning: .*/leave accepts $line, which the replay does not leave behind" "$T/extra-err" || { echo "no warning for $line"; exit 1; }; done && [ "$(wc -l <"$T/extra-err")" -eq 5 ] && grep -qx "Left behind: 0" "$T/plan-out" && grep -Eqx "  left behind +0" "$T/plan-out" && grep -Eqx "  tags +0" "$T/plan-out" && grep -Eqx "  releases +0" "$T/plan-out" || { cat "$T/extra-err" "$T/extra-out"; exit 1; }'

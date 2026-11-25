@@ -552,6 +552,17 @@ def source_releases(repo, releases, tags, carried, default, recreated, off=()):
                 "assets": assets,
             }
         )
+    # Where the source's latest release stays behind, the newest carried one by
+    # GitHub's own rule for the latest takes its place, so that the target has
+    # a latest release the comparison can check.
+    published = [k for k in kept if not k["draft"] and not k["prerelease"]]
+    if latest is not None and published and not any(k["latest"] for k in kept):
+        newest = max(published, key=lambda k: (k["created_at"] or "", k["release_id"]))
+        newest["latest"] = True
+        warn(
+            f"the source's latest release is left behind; {newest['tag_name']}, the newest one"
+            " the replay carries, becomes the target's latest"
+        )
     return kept, left
 
 
