@@ -75,11 +75,16 @@ def run(args, env, cwd):
         env=env,
         cwd=cwd,
         capture_output=True,
-        encoding="utf-8",
-        errors="replace",
         check=False,
     )
-    return Result(done.returncode, done.stdout, done.stderr)
+    # Decoded here rather than in text mode, which would turn "\r\n" and a
+    # lone "\r" into "\n", so that a line ending in "\r" fails an exact match
+    # as it does with grep -x.
+    return Result(
+        done.returncode,
+        done.stdout.decode("utf-8", errors="replace"),
+        done.stderr.decode("utf-8", errors="replace"),
+    )
 
 
 class Git:
