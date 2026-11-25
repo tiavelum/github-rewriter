@@ -8,13 +8,17 @@ Use the rewrite when the commits of a repository carry names or addresses that s
 
 ## Getting started
 
-Requires a POSIX shell, git with [git-filter-repo](https://github.com/newren/git-filter-repo) (tested with git 2.43 and git-filter-repo a40bce548d2c), `ssh-keygen` for the signing tests, and Python 3.10 or later and git 2.38 or later for the replay's test; what a replay itself needs is in [replay/README.md](replay/README.md).
+Requires a POSIX shell, git with [git-filter-repo](https://github.com/newren/git-filter-repo) (tested with git 2.43 and git-filter-repo a40bce548d2c), `ssh-keygen` for the signing tests, and Python 3.10 or later and git 2.38 or later for the replay's tests, whose pytest suite also needs [pytest 9.2.0, which runs on Python 3.10 to 3.15](https://pypi.org/project/pytest/9.2.0/) and which the commands below install into a virtual environment of the clone; what a replay itself needs is in [replay/README.md](replay/README.md).
 
 ```bash
 git clone git@github.com:tiavelum/github-rewriter.git ~/vc/github-rewriter
 brew install git-filter-repo
 sh ~/vc/github-rewriter/rewrite/test-history-rewrite.sh
 sh ~/vc/github-rewriter/replay/test-replay.sh
+python3 -m venv ~/vc/github-rewriter/.venv
+~/vc/github-rewriter/.venv/bin/pip install -q \
+  -r ~/vc/github-rewriter/replay/tests/requirements.txt
+~/vc/github-rewriter/.venv/bin/pytest ~/vc/github-rewriter/replay/tests
 ```
 
 The tests run every script in throwaway repositories and contact no server; the first ends with:
@@ -27,6 +31,12 @@ The second ends with:
 
 ```
 199 passed, 0 failed
+```
+
+The pytest suite, which takes over the checks of the second a part at a time, ends with a line such as:
+
+```
+============================== 31 passed in 3.20s ==============================
 ```
 
 To rewrite a repository, follow the steps in [rewrite/README.md](rewrite/README.md); to replay it into a new one with one command, those in [replay/README.md](replay/README.md). To have Claude prepare, plan and check a replay with you, ask it to replay the repository: Claude Code finds the skill in `.claude/skills/` of a clone of this repository, and the Claude app once it is uploaded as below.

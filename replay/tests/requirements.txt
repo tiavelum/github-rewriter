@@ -1,0 +1,11 @@
+# What the suite installs, every package pinned, pytest's own dependencies
+# included, so that each run installs the same versions (TL-14). The marked
+# three only Python 3.10 needs: later versions bring what they backport.
+pytest==9.2.0
+iniconfig==2.3.1
+packaging==26.4
+pluggy==1.7.0
+Pygments==2.21.0
+exceptiongroup==1.3.2; python_version < "3.11"
+tomli==2.5.0; python_version < "3.11"
+typing-extensions==4.16.0; python_version < "3.11"

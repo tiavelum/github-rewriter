@@ -63,6 +63,16 @@ jobs:
       - name: Test the replay scripts
         run: sh replay/test-replay.sh
 
+      # The pytest suite takes over the checks of test-replay.sh a part at a
+      # time, so both run until it holds every check and the shell test is
+      # removed (#70). The virtual environment is the one "Getting started"
+      # makes, since Homebrew's Python refuses pip install outside one.
+      - name: Test the replay scripts with pytest
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install -q -r replay/tests/requirements.txt
+          .venv/bin/pytest replay/tests
+
       # The formatters and the linters gate every Python and shell file
       # (TL-23, TL-33); their result does not depend on the runner, so one
       # runs them. shfmt takes its options from .editorconfig.
