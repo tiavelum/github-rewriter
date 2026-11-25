@@ -8,14 +8,17 @@ source's API from JSON files the fixtures write. GitHub is never contacted,
 and the developer's own git configuration is not read.
 """
 
+import hashlib
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -587,6 +590,42 @@ def read_plan():
 TOOL = "ada-example/tool"
 
 
+@pytest.fixture(scope="session")
+def plan_gh(source_gh):
+    """The fake gh of the four plans of planned, and of the other checks of
+    plan-replay.py on the source but the check of the fake itself, whose log
+    the check of the calls to gh reads."""
+    return source_gh("plan-gh")
+
+
+@pytest.fixture(scope="session")
+def planned(root, source, plan, plan_gh):
+    """The four plans of the source that the checks of plan-replay.py read,
+    events.jsonl first, made in the order of the shell test, since the check
+    of the calls to gh reads the log of all four; later checks read what the
+    first printed, as the shell test reads plan-out."""
+    s, gh = source, plan_gh
+    files = SimpleNamespace(
+        events=root / "events.jsonl",
+        plain=root / "plain.jsonl",
+        merges=root / "merges.jsonl",
+        plain_typed=root / "plain-typed.jsonl",
+    )
+    main = plan("--types", s.types, s.mirror, TOOL, s.mailmap, files.events, env=gh.env)
+    plain = plan(
+        "--no-types", "--types", s.summaries, s.mirror, TOOL, s.mailmap, files.plain, env=gh.env
+    )
+    merges = plan(
+        "--keep-merges", "--types", s.types, s.mirror, TOOL, s.mailmap, files.merges, env=gh.env
+    )
+    plain_typed = plan(
+        "--no-types", "--types", s.types, s.mirror, TOOL, s.mailmap, files.plain_typed, env=gh.env
+    )
+    return SimpleNamespace(
+        files=files, main=main, plain=plain, merges=merges, plain_typed=plain_typed
+    )
+
+
 @dataclass(frozen=True)
 class Planned:
     """A plan the session makes once: its event file, the API folder it was
@@ -829,3 +868,364 @@ def view(read_plan, run_plan):
         return TargetView(target, state_file, plan)
 
     return view
+
+
+# A tag name with a no-break space, which git allows in a ref's name.
+NBSP_TAG = "sp\N{NO-BREAK SPACE}ace"
+
+
+def as_committer(person, date):
+    """The environment that makes git record that person and date as the
+    committer, and so as the tagger of an annotated tag."""
+    return {
+        "GIT_COMMITTER_NAME": person[0],
+        "GIT_COMMITTER_EMAIL": person[1],
+        "GIT_COMMITTER_DATE": date,
+    }
+
+
+@pytest.fixture(scope="session")
+def mirror_extra(root, source, base_env):
+    """mirror-extra.git, what a replay leaves behind: a copy of the mirror with
+    a lightweight tag v0.1 at the squash merge of #2, an annotated v0.2 at a
+    direct commit, by Ada's old address and naming a commit by its hash, and
+    an annotated v0.1.1 at the commit of #3's branch, by Bob; and four
+    branches, those of #2 and #3 at their pull requests' heads, that of #5 at
+    another commit than its pull request's head, and wip/idea, the head of no
+    pull request."""
+    h = source.hashes
+    mirror = root / "mirror-extra.git"
+    shutil.copytree(source.mirror, mirror, symlinks=True)
+    git = Git(base_env, root)
+    branches = {"wip/idea": "C5", "feat/2-thing": "B2", "fix/3-parser": "F1", "docs/5-notes": "N1"}
+    for branch, name in branches.items():
+        git("--git-dir", mirror, "update-ref", f"refs/heads/{branch}", h[name])
+    git("--git-dir", mirror, "tag", "v0.1", h["M2"])
+    git(
+        *("--git-dir", mirror, "tag", "-a", "v0.2", "-m", f"Second, after {h['C4'][:7]}", h["C5"]),
+        env=as_committer(ADA_OLD, "2026-03-07T15:00:00+02:00"),
+    )
+    git(
+        *("--git-dir", mirror, "tag", "-a", "v0.1.1", "-m", "Parser fix", h["F1"]),
+        env=as_committer(BOB, "2026-03-04T10:30:00+00:00"),
+    )
+    return mirror
+
+
+def release(release_id, tag, name, draft, prerelease, target, body, created, published):
+    """A release as GitHub lists it, by ada-example."""
+    return {
+        "id": release_id,
+        "tag_name": tag,
+        "name": name,
+        "draft": draft,
+        "prerelease": prerelease,
+        "target_commitish": target,
+        "body": body,
+        "author": {"login": "ada-example"},
+        "created_at": created,
+        "published_at": published,
+    }
+
+
+RELEASES = f"{API_BASE}_releases"
+
+
+@pytest.fixture(scope="session")
+def api_extra(root, run_plan, hashes):
+    """api-extra: a copy of the API of run.jsonl with three releases: v0.2,
+    published and the latest, whose body names a commit by its hash, with two
+    assets, one without a digest; v0.1.1, a pre-release; and v0.3, a draft for
+    main, whose tag the source lacks."""
+    folder = root / "api-extra"
+    shutil.copytree(run_plan.api, folder)
+    c4 = hashes["C4"]
+    releases = [
+        release(2, "v0.3", "Next", True, False, "main", "Planned.", "2026-03-08T13:00:00Z", None),
+        release(
+            *(1, "v0.2", "Second", False, False, "main", f"Built from {c4[:7]}."),
+            *("2026-03-07T12:00:00Z", "2026-03-07T15:00:00Z"),
+        ),
+        release(
+            *(3, "v0.1.1", "Parser fix", False, True, "fix/3-parser", ""),
+            *("2026-03-04T09:00:00Z", "2026-03-04T11:00:00Z"),
+        ),
+    ]
+    (folder / f"{RELEASES}-1.json").write_text(json.dumps(releases), encoding="utf-8")
+    (folder / f"{RELEASES}_latest.json").write_text(json.dumps(releases[1]), encoding="utf-8")
+    assets = []
+    for asset_id, name, label, kind, digested in (
+        (11, "tool.tar.gz", "", "application/gzip", True),
+        (12, "notes.txt", "Release notes", "text/plain", False),
+    ):
+        data = (folder / f"{RELEASES}_assets_{asset_id}.bin").read_bytes()
+        digest = "sha256:" + hashlib.sha256(data).hexdigest() if digested else None
+        assets.append(
+            {
+                "id": asset_id,
+                "name": name,
+                "label": label,
+                "content_type": kind,
+                "size": len(data),
+                "state": "uploaded",
+                "digest": digest,
+            }
+        )
+    (folder / f"{RELEASES}_1_assets-1.json").write_text(json.dumps(assets), encoding="utf-8")
+    return folder
+
+
+@pytest.fixture(scope="session")
+def api_extra_del(root, api_extra):
+    """api-extra-del: the same source deleting head branches on merge."""
+    folder = root / "api-extra-del"
+    shutil.copytree(api_extra, folder)
+    (folder / f"{API_BASE}.json").write_text(
+        '{"default_branch": "main", "delete_branch_on_merge": true}\n', encoding="utf-8"
+    )
+    return folder
+
+
+@pytest.fixture(scope="session")
+def leave(root):
+    """$T/leave: a file of --leave-behind that accepts the two branches the
+    plans of mirror-extra.git leave behind, two tags and two releases they
+    carry, and a tag the source lacks."""
+    path = root / "leave"
+    path.write_text(
+        "# left to the archive\nbranch docs/5-notes\nbranch wip/idea\ntag v0.1\ntag v0.2\n"
+        "release v0.2\nrelease v0.3\ntag v9\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+@pytest.fixture(scope="session")
+def leave_branches(root):
+    """leave-branches: a file of --leave-behind that accepts those two branches alone."""
+    path = root / "leave-branches"
+    path.write_text("branch docs/5-notes\nbranch wip/idea\n", encoding="utf-8")
+    return path
+
+
+@pytest.fixture(scope="session")
+def plan_extra(source, plan, source_gh, mirror_extra):
+    """Plans mirror-extra.git, or another mirror where one is given, against
+    the API folder given, into the event file given, with --types and the
+    options given, as plan_extra, plan_odd, plan_msg and plan_drafts of the
+    shell test do; merged as run() takes it."""
+    gh = source_gh("extra-gh")
+
+    def plan_extra(api, events, *options, mirror=None, merged=False):
+        mirror = mirror or mirror_extra
+        return plan(
+            *("--types", source.types, *options, mirror, TOOL, source.mailmap, events),
+            env=gh.using(FAKE_GH_API=api),
+            merged=merged,
+        )
+
+    return plan_extra
+
+
+@pytest.fixture(scope="session")
+def extra_plan(root, api_extra, leave, plan_extra):
+    """extra.jsonl: the plan of mirror-extra.git that carries three tags and
+    three releases and leaves behind two branches, as $T/leave accepts them;
+    its standard output and error apart."""
+    events = root / "extra.jsonl"
+    return Planned(events, api_extra, plan_extra(api_extra, events, "--leave-behind", leave))
+
+
+@dataclass(frozen=True)
+class Pasted:
+    """A plan that stops at what no --leave-behind accepts, its standard error
+    apart; the file of --leave-behind made of the lines it printed; and the
+    plan made again with that file, its output and error in one."""
+
+    stop: Planned
+    leave: Path
+    planned: Planned
+
+
+def leave_lines(text):
+    """The lines of a stop's message that name what the replay leaves behind,
+    each with its newline, as grep '^  [a-z]* ' prints them."""
+    return "".join(f"{line}\n" for line in lines(text) if re.match(r"  [a-z]* ", line))
+
+
+@pytest.fixture(scope="session")
+def plan_pasted(root, plan_extra):
+    """Plans a mirror against an API folder into the event file stop, writes
+    the lines it stops with to the file leave, and plans it again with them
+    as --leave-behind into the event file events; all three in the session's
+    folder."""
+
+    def plan_pasted(api, mirror, stop, leave, events):
+        stop, leave, events = root / stop, root / leave, root / events
+        stopped = plan_extra(api, stop, mirror=mirror)
+        leave.write_text(leave_lines(stopped.err), encoding="utf-8")
+        again = plan_extra(api, events, "--leave-behind", leave, mirror=mirror, merged=True)
+        return Pasted(Planned(stop, api, stopped), leave, Planned(events, api, again))
+
+    return plan_pasted
+
+
+@pytest.fixture(scope="session")
+def mirror_odd(root, base_env, hashes, mirror_extra):
+    """mirror-odd.git: mirror-extra.git with a tag v0.3 of the annotated tag
+    v0.2, a tag of a tree, and a tag whose name holds a no-break space, at a
+    commit that only refs/pull/7/head holds, which the replay does not
+    recreate. The first is named v0.3, so that the draft of that name stands
+    on a tag the replay leaves behind."""
+    mirror = root / "mirror-odd.git"
+    shutil.copytree(mirror_extra, mirror, symlinks=True)
+    git = Git(base_env, root)
+    git(
+        "-c",
+        "advice.nestedTag=false",
+        "--git-dir",
+        mirror,
+        "tag",
+        "-a",
+        "v0.3",
+        "-m",
+        "Third",
+        "v0.2",
+    )
+    git("--git-dir", mirror, "tag", "tree-tag", f"{hashes['C5']}^{{tree}}")
+    git("--git-dir", mirror, "tag", NBSP_TAG, hashes["S1"])
+    return mirror
+
+
+# The message of the tag notes: the lines of a signature in its text, which
+# git takes for no signature, since text follows them.
+NOTES_MESSAGE = (
+    "Release notes\n\n-----BEGIN PGP SIGNATURE-----\nthis is documentation\n"
+    "-----END PGP SIGNATURE-----\n\nmore text after\n"
+)
+
+
+@pytest.fixture(scope="session")
+def mirror_msg(root, base_env, hashes, mirror_extra):
+    """mirror-msg.git: mirror-extra.git with an annotated tag notes by Bob,
+    whose message, in notes-message of the session's folder, holds the lines
+    of a signature in its text; and two tags that git tag refuses to create,
+    set with update-ref: HEAD, annotated, and -x, lightweight."""
+    mirror = root / "mirror-msg.git"
+    shutil.copytree(mirror_extra, mirror, symlinks=True)
+    message = root / "notes-message"
+    message.write_text(NOTES_MESSAGE, encoding="utf-8")
+    git = Git(base_env, root)
+    git(
+        *("--git-dir", mirror, "tag", "-a", "-F", message, "notes", hashes["C5"]),
+        env=as_committer(BOB, "2026-03-07T16:00:00+00:00"),
+    )
+    notes = git("--git-dir", mirror, "rev-parse", "refs/tags/notes")
+    git("--git-dir", mirror, "update-ref", "refs/tags/HEAD", notes)
+    git("--git-dir", mirror, "update-ref", "refs/tags/-x", hashes["C5"])
+    return mirror
+
+
+@pytest.fixture(scope="session")
+def msg_plans(api_extra, mirror_msg, plan_pasted):
+    """The plan of mirror-msg.git that stops, msg-stop.jsonl, and the plan with
+    the lines it printed as --leave-behind, msg.jsonl."""
+    return plan_pasted(api_extra, mirror_msg, "msg-stop.jsonl", "leave-msg", "msg.jsonl")
+
+
+@pytest.fixture(scope="session")
+def off_plan(root, api_extra, leave_branches, plan_extra):
+    """off.jsonl: the plan of mirror-extra.git with --no-tags --no-releases,
+    whose --leave-behind accepts its branches alone; its standard output and
+    error apart."""
+    events = root / "off.jsonl"
+    options = ("--no-tags", "--no-releases", "--leave-behind", leave_branches)
+    return Planned(events, api_extra, plan_extra(api_extra, events, *options))
+
+
+@pytest.fixture(scope="session")
+def api_drafts(root, api_extra, hashes):
+    """api-drafts: api-extra with two more drafts whose tags the source lacks,
+    v0.9 for a commit the replay recreates, named by a prefix of its hash,
+    with an asset whose name needs percent-encoding in a URL, and v1.0-rc for
+    the branch wip/idea, which it does not push; a draft on the tag v0.2,
+    beside the published release of that tag; a published release on v0.1,
+    published after v0.2, which stays the latest; and an asset of v0.2 that an
+    upload left in the state starter."""
+    folder = root / "api-drafts"
+    shutil.copytree(api_extra, folder)
+    page = folder / f"{RELEASES}-1.json"
+    releases = json.loads(page.read_text(encoding="utf-8"))
+    c4 = hashes["C4"]
+    for release_id, tag, name, target, created in (
+        (4, "v0.9", "Tidied", c4[:9], "2026-03-06T12:00:00Z"),
+        (5, "v1.0-rc", "Candidate", "wip/idea", "2026-03-06T12:00:00Z"),
+        (6, "v0.2", "Second, again", "main", "2026-03-07T12:00:00Z"),
+    ):
+        releases.append(
+            {
+                "id": release_id,
+                "tag_name": tag,
+                "name": name,
+                "draft": True,
+                "prerelease": False,
+                "target_commitish": target,
+                "body": "",
+                "created_at": created,
+                "published_at": None,
+            }
+        )
+    releases.append(
+        {
+            "id": 7,
+            "tag_name": "v0.1",
+            "name": "First",
+            "draft": False,
+            "prerelease": False,
+            "target_commitish": "main",
+            "body": "",
+            "created_at": "2026-03-02T10:00:00Z",
+            "published_at": "2026-03-09T10:00:00Z",
+        }
+    )
+    page.write_text(json.dumps(releases), encoding="utf-8")
+    assets = folder / f"{RELEASES}_1_assets-1.json"
+    listed = json.loads(assets.read_text(encoding="utf-8"))
+    listed.append(
+        {
+            "id": 13,
+            "name": "broken.zip",
+            "label": "",
+            "content_type": "application/zip",
+            "size": 0,
+            "state": "starter",
+            "digest": None,
+        }
+    )
+    assets.write_text(json.dumps(listed), encoding="utf-8")
+    data = b"Tidied up\n"
+    (folder / f"{RELEASES}_assets_14.bin").write_bytes(data)
+    asset = {
+        "id": 14,
+        "name": "notes+v0.9.txt",
+        "label": "",
+        "content_type": "text/plain",
+        "size": len(data),
+        "state": "uploaded",
+        "digest": "sha256:" + hashlib.sha256(data).hexdigest(),
+    }
+    (folder / f"{RELEASES}_4_assets-1.json").write_text(json.dumps([asset]), encoding="utf-8")
+    return folder
+
+
+@pytest.fixture(scope="session")
+def drafts_plan(root, api_drafts, leave_branches, plan_extra):
+    """drafts.jsonl: the plan of mirror-extra.git against api-drafts, whose
+    --leave-behind, leave-drafts, accepts its branches and the draft
+    v1.0-rc; its standard output and error apart."""
+    leave = root / "leave-drafts"
+    leave.write_text(
+        leave_branches.read_text(encoding="utf-8") + "release v1.0-rc\n", encoding="utf-8"
+    )
+    events = root / "drafts.jsonl"
+    return Planned(events, api_drafts, plan_extra(api_drafts, events, "--leave-behind", leave))

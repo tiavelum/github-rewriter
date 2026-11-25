@@ -1,7 +1,6 @@
 """The checks of plan-replay.py against the source of the session."""
 
 import re
-from types import SimpleNamespace
 
 import pytest
 
@@ -14,35 +13,10 @@ def has_match(pattern, lines):
 
 
 @pytest.fixture(scope="module")
-def gh(source_gh):
-    """The fake gh of every plan of this module but the check of the fake itself."""
-    return source_gh("plan-gh")
-
-
-@pytest.fixture(scope="module")
-def planned(root, source, plan, gh):
-    """The plans that the checks below read, made in the order of the shell
-    test, since the check of the calls to gh reads the log of all four."""
-    s = source
-    files = SimpleNamespace(
-        events=root / "events.jsonl",
-        plain=root / "plain.jsonl",
-        merges=root / "merges.jsonl",
-        plain_typed=root / "plain-typed.jsonl",
-    )
-    main = plan("--types", s.types, s.mirror, TOOL, s.mailmap, files.events, env=gh.env)
-    plain = plan(
-        "--no-types", "--types", s.summaries, s.mirror, TOOL, s.mailmap, files.plain, env=gh.env
-    )
-    merges = plan(
-        "--keep-merges", "--types", s.types, s.mirror, TOOL, s.mailmap, files.merges, env=gh.env
-    )
-    plain_typed = plan(
-        "--no-types", "--types", s.types, s.mirror, TOOL, s.mailmap, files.plain_typed, env=gh.env
-    )
-    return SimpleNamespace(
-        files=files, main=main, plain=plain, merges=merges, plain_typed=plain_typed
-    )
+def gh(plan_gh):
+    """The fake gh of every plan of this module but the check of the fake
+    itself: that of planned, in conftest.py, whose log one check reads."""
+    return plan_gh
 
 
 @pytest.fixture(scope="module")
