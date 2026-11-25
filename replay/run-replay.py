@@ -20,10 +20,11 @@ write; anything else stops without writing. --confirmed gives that answer
 instead, for replay.py, which asked for it before it started this run.
 Writes to GitHub through gh api and git push only, at least --pace seconds
 apart (default 1), and waits out GitHub's rate limits; tags it creates in the
-work repository and pushes. Each release's assets it downloads from the
-source into the folder next to the state file, with .downloads for
-.state.json, and uploads to the new release; each download is removed once
-uploaded. --with-times appends the original creation time to each body and
+work repository and pushes. Each release it creates as a draft; its assets
+it downloads from the source into the folder next to the state file, with
+.downloads for .state.json, and uploads to the draft, each download removed
+once uploaded; then it publishes the release where the source has it
+published. --with-times appends the original creation time to each body and
 comment. --sign signs each recreated commit whose committer
 has <address>, and each annotated tag whose tagger has it, with the signing
 key of your git configuration, after checking that GitHub knows the key as
@@ -332,6 +333,14 @@ def commits(count):
 def utc_text(stamp):
     moment = datetime.fromisoformat(stamp.replace("Z", "+00:00")).astimezone(timezone.utc)
     return moment.strftime("%Y-%m-%d %H:%M UTC")
+
+
+def release_label(e, planned):
+    """How a message names the release of event e: by its tag, and by its
+    kind where another release of planned has that tag."""
+    what = "draft" if e["draft"] else "pre-release" if e["prerelease"] else "published"
+    shared = sum(x["tag_name"] == e["tag_name"] for x in planned) > 1
+    return f"release {e['tag_name']}" + (f" ({what})" if shared else "")
 
 
 class Replay:
@@ -1102,16 +1111,20 @@ class Replay:
     # Releases
 
     def create_release(self, e):
-        """Creates the release on its tag, or a draft at the recreated commit
-        or the default branch its target_commitish names, the source's latest
-        release as the latest one; then downloads each asset from the source
-        and uploads it. Records the release before its first asset and each
-        asset once uploaded, so that a resumed run takes over what is done: a
-        release found under its tag, an asset found uploaded whole; another
-        asset of that name, which a failed upload leaves, it removes and
-        uploads again."""
+        """Creates the release as a draft, on its tag, or for a draft of the
+        source at the recreated commit or the default branch its
+        target_commitish names; downloads each asset from the source and
+        uploads it; then publishes a release the source has published, the
+        source's latest release as the latest one, since GitHub refuses an
+        asset for a published release that is immutable. Records the release
+        before its first asset, each asset once uploaded and the publication,
+        so that a resumed run takes over what is done: a release found under
+        its tag, an asset found uploaded whole, a release found published;
+        another asset of that name, which a failed upload leaves, it removes
+        and uploads again."""
         key, tag = str(e["release_id"]), e["tag_name"]
         record, notes = self.releases.get(key), []
+        recorded = record is not None
         if record is None and self.resumed_at == e["seq"]:
             taken = {r["id"] for r in self.releases.values()}
             found = [
@@ -1120,7 +1133,12 @@ class Replay:
                 if r.get("tag_name") == tag and r.get("id") not in taken
             ]
             if found:
-                record = {"id": found[0]["id"], "upload_url": found[0]["upload_url"], "assets": {}}
+                record = {
+                    "id": found[0]["id"],
+                    "upload_url": found[0]["upload_url"],
+                    "assets": {},
+                    "published": False,
+                }
                 notes.append("found created")
         if record is None:
             if e["commit"] and e["commit"] not in self.hashes:
@@ -1133,18 +1151,24 @@ class Replay:
                 "target_commitish": self.hashes[e["commit"]] if e["commit"] else self.default,
                 "name": e["name"],
                 "body": self.stamped(self.text(e["body"]), e["published_at"] or e["created_at"]),
-                "draft": e["draft"],
+                "draft": True,
                 "prerelease": e["prerelease"],
-                # GitHub makes each new release the latest unless told otherwise.
-                "make_latest": "true" if e["latest"] else "false",
             }
             data = self.api.expect("POST", f"repos/{self.slug}/releases", body, ok=(201,))
-            record = {"id": data["id"], "upload_url": data["upload_url"], "assets": {}}
+            record = {
+                "id": data["id"],
+                "upload_url": data["upload_url"],
+                "assets": {},
+                "published": False,
+            }
         self.releases[key] = record
         self.save_state()
         existing, taken, removed = None, 0, 0
         for asset in e["assets"]:
             if str(asset["id"]) in record["assets"]:
+                # A stop between the record of an upload and the removal of
+                # its download leaves the download behind.
+                (self.downloads / str(asset["id"])).unlink(missing_ok=True)
                 continue
             if self.resumed_at == e["seq"]:
                 if existing is None:
@@ -1170,6 +1194,20 @@ class Replay:
             path.unlink()
         if self.downloads.is_dir() and not any(self.downloads.iterdir()):
             self.downloads.rmdir()
+        if not e["draft"] and not record.get("published"):
+            # The answer of a publication may have been lost. GitHub documents
+            # the list, not Get a release, as giving drafts to those who push.
+            listed = {}
+            if recorded:
+                listed = {r["id"]: r for r in self.api.pages(f"repos/{self.slug}/releases")}
+            if listed.get(record["id"], {}).get("draft") is False:
+                notes.append("found published")
+            else:
+                # GitHub makes each newly published release the latest unless told otherwise.
+                body = {"draft": False, "make_latest": "true" if e["latest"] else "false"}
+                self.api.expect("PATCH", f"repos/{self.slug}/releases/{record['id']}", body)
+            record["published"] = True
+            self.save_state()
         if taken:
             notes.append(f"{taken} found uploaded")
         if removed:
@@ -1210,8 +1248,9 @@ class Replay:
 
     def download(self, tag, asset):
         """The asset's content from the source, in the folder of the downloads,
-        checked against what GitHub lists for it; a whole one that a stopped
-        run left there is taken again."""
+        checked against what GitHub lists for it; one that a stopped run left
+        there is taken again where it passes the same check, and downloaded
+        again otherwise."""
         self.downloads.mkdir(exist_ok=True)
         path = self.downloads / str(asset["id"])
         if path.is_file() and self.unlike(path, asset) is None:
@@ -1346,24 +1385,28 @@ class Replay:
 
     def release_problems(self):
         """How the target's releases differ from the planned ones the state
-        file records: each with the planned tag, kind and assets, the latest
-        one as the latest, and no other."""
+        file records, each found by its id, so that a draft and a published
+        release of one tag are both checked: each with the planned tag, kind
+        and assets, the latest one as the latest, and no other."""
         found = {r["id"]: r for r in self.api.pages(f"repos/{self.slug}/releases")}
+        planned = [e for e in self.events if e["kind"] == "create-release"]
+        latest = None
+        if any(e["latest"] for e in planned):
+            status, data = self.api.call("GET", f"repos/{self.slug}/releases/latest")
+            latest = data if status == 200 else None
         problems, recorded = [], set()
-        for e in self.events:
-            if e["kind"] != "create-release":
-                continue
-            tag = e["tag_name"]
+        for e in planned:
+            tag, at = e["tag_name"], release_label(e, planned)
             record = self.releases.get(str(e["release_id"]))
             r = found.get(record["id"]) if record else None
             if r is None:
-                problems.append(f"release {tag} is missing")
+                problems.append(f"{at} is missing")
                 continue
             recorded.add(r["id"])
             kind = (bool(r.get("draft")), bool(r.get("prerelease")))
             if r.get("tag_name") != tag or kind != (e["draft"], e["prerelease"]):
                 problems.append(
-                    f"release {tag} is on {r.get('tag_name')}, draft {kind[0]} and pre-release"
+                    f"{at} is on {r.get('tag_name')}, draft {kind[0]} and pre-release"
                     f" {kind[1]}, planned draft {e['draft']} and pre-release {e['prerelease']}"
                 )
             names = sorted(
@@ -1371,14 +1414,12 @@ class Replay:
                 for a in self.api.pages(f"repos/{self.slug}/releases/{r['id']}/assets")
                 if a.get("state") == "uploaded"
             )
-            planned = sorted(a["name"] for a in e["assets"])
-            if names != planned:
-                problems.append(f"release {tag} has the assets {names}, planned {planned}")
-            if e["latest"]:
-                status, latest = self.api.call("GET", f"repos/{self.slug}/releases/latest")
-                named = (latest or {}).get("tag_name") if status == 200 else None
-                if named != tag:
-                    problems.append(f"the latest release is {named or 'none'}, planned {tag}")
+            assets = sorted(a["name"] for a in e["assets"])
+            if names != assets:
+                problems.append(f"{at} has the assets {names}, planned {assets}")
+            if e["latest"] and (latest or {}).get("id") != r["id"]:
+                named = (latest or {}).get("tag_name") or "none"
+                problems.append(f"the latest release is {named}, planned {tag}")
         problems += [
             f"release {r.get('tag_name')} is not in the plan"
             for i, r in sorted(found.items())

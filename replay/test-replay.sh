@@ -624,26 +624,40 @@ check "plan-replay.py warns of a line of --leave-behind for a tag or release a s
 
 # Drafts: a copy of api-extra with two more drafts whose tags the source
 # lacks, v0.9 for a commit the replay recreates, named by a prefix of its
-# hash, and v1.0-rc for the branch wip/idea, which it does not push; and an
-# asset of v0.2 that an upload left in the state starter. Planned without and
-# with a line for v1.0-rc, and replayed into UD.
+# hash, with an asset whose name needs percent-encoding in a URL, and v1.0-rc
+# for the branch wip/idea, which it does not push; a draft on the tag v0.2,
+# beside the published release of that tag; a published release on v0.1,
+# published after v0.2, which stays the latest; and an asset of v0.2 that an
+# upload left in the state starter. Planned without and with a line for
+# v1.0-rc, and replayed into UD.
 cp -R "$T/api-extra" "$T/api-drafts"
 python3 - "$T/api-drafts" "$C4" <<'EOF'
-import json, sys
+import hashlib, json, sys
 from pathlib import Path
 api, c4 = Path(sys.argv[1]), sys.argv[2]
-page = api / "repos_ada-example_tool_releases-1.json"
+base = "repos_ada-example_tool_releases"
+page = api / f"{base}-1.json"
 releases = json.loads(page.read_text())
-for id, tag, name, target in ((4, "v0.9", "Tidied", c4[:9]), (5, "v1.0-rc", "Candidate", "wip/idea")):
+for id, tag, name, target, created in ((4, "v0.9", "Tidied", c4[:9], "2026-03-06T12:00:00Z"),
+                                       (5, "v1.0-rc", "Candidate", "wip/idea", "2026-03-06T12:00:00Z"),
+                                       (6, "v0.2", "Second, again", "main", "2026-03-07T12:00:00Z")):
     releases.append({"id": id, "tag_name": tag, "name": name, "draft": True, "prerelease": False,
-                     "target_commitish": target, "body": "", "created_at": "2026-03-06T12:00:00Z",
+                     "target_commitish": target, "body": "", "created_at": created,
                      "published_at": None})
+releases.append({"id": 7, "tag_name": "v0.1", "name": "First", "draft": False, "prerelease": False,
+                 "target_commitish": "main", "body": "", "created_at": "2026-03-02T10:00:00Z",
+                 "published_at": "2026-03-09T10:00:00Z"})
 page.write_text(json.dumps(releases))
-assets = api / "repos_ada-example_tool_releases_1_assets-1.json"
+assets = api / f"{base}_1_assets-1.json"
 listed = json.loads(assets.read_text())
 listed.append({"id": 13, "name": "broken.zip", "label": "", "content_type": "application/zip", "size": 0,
                "state": "starter", "digest": None})
 assets.write_text(json.dumps(listed))
+data = b"Tidied up\n"
+(api / f"{base}_assets_14.bin").write_bytes(data)
+(api / f"{base}_4_assets-1.json").write_text(json.dumps([
+    {"id": 14, "name": "notes+v0.9.txt", "label": "", "content_type": "text/plain", "size": len(data),
+     "state": "uploaded", "digest": "sha256:" + hashlib.sha256(data).hexdigest()}]))
 EOF
 cp "$T/leave-branches" "$T/leave-drafts"
 echo 'release v1.0-rc' >>"$T/leave-drafts"
@@ -656,10 +670,12 @@ status_drafts_stop=$?
 plan_drafts "$T/leave-drafts" "$T/drafts.jsonl" >"$T/drafts-out" 2>"$T/drafts-err"
 status_drafts=$?
 check "plan-replay.py stops at a draft whose target_commitish names neither the default branch nor a commit it recreates, and warns of an asset an upload left half done" \
-  '[ "$status_drafts_stop$status_drafts" = 10 ] && [ ! -e "$T/drafts-stop.jsonl" ] && grep -q "^plan-replay.py: the replay leaves behind 1 of" "$T/drafts-stop-err" && grep -Eqx "  release  v1\.0-rc +# draft, named '"'"'Candidate'"'"'; its target_commitish '"'"'wip/idea'"'"' is neither the default branch nor a commit the replay recreates" "$T/drafts-stop-err" && grep -Fqx "plan-replay.py: warning: asset broken.zip of release v0.2 is starter, not uploaded; left out" "$T/drafts-err" && grep -Eqx "  releases +4" "$T/drafts-out" && grep -Eqx "  release assets +2" "$T/drafts-out" || { cat "$T/drafts-stop-err" "$T/drafts-err" "$T/drafts-out"; exit 1; }'
+  '[ "$status_drafts_stop$status_drafts" = 10 ] && [ ! -e "$T/drafts-stop.jsonl" ] && grep -q "^plan-replay.py: the replay leaves behind 1 of" "$T/drafts-stop-err" && grep -Eqx "  release  v1\.0-rc +# draft, named '"'"'Candidate'"'"'; its target_commitish '"'"'wip/idea'"'"' is neither the default branch nor a commit the replay recreates" "$T/drafts-stop-err" && grep -Fqx "plan-replay.py: warning: asset broken.zip of release v0.2 is starter, not uploaded; left out" "$T/drafts-err" && grep -Eqx "  releases +6" "$T/drafts-out" && grep -Eqx "  release assets +3" "$T/drafts-out" || { cat "$T/drafts-stop-err" "$T/drafts-err" "$T/drafts-out"; exit 1; }'
 plan_file=$T/drafts.jsonl
 pcheck "plan-replay.py plans a draft for a commit it recreates, named by a prefix of its hash, after the event that recreates it" \
   '(r := next(e for e in of("create-release") if e["tag_name"] == "v0.9")) and (r["commit"], r["on_tag"], r["draft"]) == (S["C4"], False, True) and E.index(r) > E.index(next(e for e in of("push-commits") if S["C4"] in [c["sha"] for c in e["commits"]])) and [x["name"] for x in H["left_behind"] if x["kind"] == "release"] == ["v1.0-rc"]'
+pcheck "plan-replay.py plans a draft and a published release of one tag as two releases, and a release published after the latest one as not the latest" \
+  'sorted((e["release_id"], e["draft"], e["latest"], e["on_tag"]) for e in of("create-release") if e["tag_name"] == "v0.2") == [(1, False, True, True), (6, True, False, True)] and (v := next(e for e in of("create-release") if e["tag_name"] == "v0.1")) and (v["latest"], v["on_tag"], v["commit"]) == (False, True, S["M2"]) and E.index(v) > max(E.index(e) for e in of("create-release") if e["tag_name"] == "v0.2")'
 plan_file=$T/events.jsonl
 
 # The fake gh of the targets: "gh api --include --method M <endpoint>
@@ -700,11 +716,17 @@ plan_file=$T/events.jsonl
 # them: POST releases answers 201 with the release's id and upload_url, makes
 # it the latest unless make_latest is "false" or it is a draft or a
 # pre-release, and creates a published release's missing tag at its
-# target_commitish; GET releases/latest answers 404 where none is the latest;
+# target_commitish; PATCH releases/<id> with draft false publishes a draft
+# as Update a release
+# describes, creating its missing tag and making it the latest as POST does,
+# and answers 200; GET releases/latest answers 404 where none is the latest;
 # an upload, "POST <upload_url without its template>?name=<name>[&label=]"
 # with -H "Content-Type: <type>" and --input <file>, answers 201 with the
 # asset, its size and its sha256 digest, and 422 for a name the release has
-# already; DELETE releases/assets/<id> answers 204. A GET of another
+# already, and, where $FAKE_GITHUB/immutable exists, for a release that is
+# no draft, with the message that reports of GitHub's immutable releases
+# quote, since GitHub's pages name no answer for it; DELETE
+# releases/assets/<id> answers 204. A GET of another
 # repository's releases/assets/<id> with -H "Accept: application/octet-stream"
 # prints the content of <path>.bin in $FAKE_GH_API, as gh does after it
 # follows GitHub's redirect to it. FAKE_GH_HALF makes an upload leave an empty
@@ -956,6 +978,24 @@ def create_release(body, releases):
     return 201, release_view(releases[-1])
 
 
+def update_release(release, body, releases):
+    latest = body.get("make_latest", "true")
+    if latest not in ("true", "false", "legacy"):
+        return invalid("make_latest is not true, false or legacy")
+    tag = body.get("tag_name", release["tag_name"])
+    publish = release["draft"] and body.get("draft") is False
+    if publish and any(r["tag_name"] == tag and not r["draft"] for r in releases):
+        return 422, {"message": "Validation Failed",
+                     "errors": [{"resource": "Release", "code": "already_exists", "field": "tag_name"}]}
+    release.update({k: body[k] for k in ("tag_name", "name", "body", "draft", "prerelease") if k in body})
+    if publish and not rev(f"refs/tags/{tag}"):
+        git("update-ref", f"refs/tags/{tag}", rev(release["target_commitish"]))
+    if publish and latest == "true" and not release["prerelease"]:
+        for r in releases:
+            r["latest"] = r is release
+    return 200, release_view(release)
+
+
 def upload_asset(path, q, call):
     releases = load("releases", [])
     up = re.fullmatch(r"https://uploads\.github\.com/repos/([^/]+/[^/]+)/releases/(\d+)/assets", path)
@@ -964,6 +1004,8 @@ def upload_asset(path, q, call):
         return 404, {"message": "Not Found"}
     if upload_data is None or not request_headers.get("content-type") or not q.get("name"):
         return invalid("an upload needs the name, a Content-Type and the asset's data")
+    if (root / "immutable").exists() and not release["draft"]:
+        return 422, {"message": "Cannot upload assets to an immutable release."}
     if any(a["name"] == q["name"] for a in release.get("assets", [])):
         return 422, {"message": "Validation Failed",
                      "errors": [{"resource": "ReleaseAsset", "code": "already_exists", "field": "name"}]}
@@ -1047,6 +1089,12 @@ def handle(method, endpoint, body):
     elif route == ("GET", "releases", "latest"):
         latest = next((r for r in load("releases", []) if r.get("latest")), None)
         result = (200, release_view(latest)) if latest else (404, {"message": "Not Found"})
+    elif route == ("PATCH", "releases", "N"):
+        releases = load("releases", [])
+        release = next((r for r in releases if r["id"] == int(parts[1])), None)
+        if release:
+            result = update_release(release, body, releases)
+            save("releases", releases)
     elif route == ("GET", "releases", "N", "assets"):
         release = next((r for r in load("releases", []) if r["id"] == int(parts[1])), None)
         result = page(release.get("assets", [])) if release else (404, {"message": "Not Found"})
@@ -1435,6 +1483,7 @@ compare_extra() {
   FAKE_GITHUB=$folder FAKE_GH_API=$T/api-extra PATH=$target_path python3 "$here/compare-replay.py" "$@"
 }
 target "$T/gh-x" ada-example/tool-x
+touch "$T/gh-x/immutable"
 replay "$T/gh-x" ada-example/tool-x --pace 0 "$T/extra.jsonl" "$mirror_extra" ada-example/tool-x >"$T/x-out" 2>&1
 status_x=$?
 compare_extra "$T/gh-x" "$T/extra.jsonl" "$mirror_extra" ada-example/tool-x >"$T/cmp-x-out" 2>&1
@@ -1511,14 +1560,21 @@ check "compare-replay.py notes as left behind a pushed branch that the plan left
 check "compare-replay.py names a tag of a tag, a tag of a tree and a tag whose name holds a no-break space, without a traceback" \
   '[ "$status_cmp_x_odd" = 1 ] && grep -qx "Differences: 3" "$T/cmp-x-odd-out" && for name in v0.3 tree-tag "$nbsp"; do grep -Fqx "  tag $name of the source is missing in the target" "$T/cmp-x-odd-out" || { echo "no line for $name"; exit 1; }; done && ! grep -q Traceback "$T/cmp-x-odd-out" || { cat "$T/cmp-x-odd-out"; exit 1; }'
 
-# Releases: X's target, as the run created its releases; RX, a copy of it
-# whose v0.1.1 has another body and whose v0.2 lacks notes.txt and is not the
-# latest, compared, and checked again by run-replay.py from a copy of X's
-# state file; RR, X's replay stopped by an answer lost after the creation of
-# the first release, by one lost after the upload of tool.tar.gz, and by an
-# upload of notes.txt that GitHub leaves half done, and resumed each time;
-# and XT, X's replay with --with-times, compared.
-rcheck "run-replay.py creates each release on its tag, the pre-release and the draft included, with the planned name, the body with its hashes replaced, the source's latest as the latest, and each asset of the source whole" "$T/gh-x" "$T/extra.state.json" \
+# Releases: X's target, which has immutable releases, as the run created its
+# releases; RX, a copy of it whose v0.1.1 has another name and body and is a
+# draft, not a pre-release, whose v0.2 lacks notes.txt, has another size,
+# content type and digest of tool.tar.gz and an asset more, and is not the
+# latest, which lacks v0.3 and has a release v0.4 more, compared, and checked
+# again by run-replay.py from a copy of X's state file; RR, X's replay
+# stopped by an answer lost after the creation of the first release, by one
+# lost after the upload of tool.tar.gz, and by an upload of notes.txt that
+# GitHub leaves half done, and resumed each time, the last time with a
+# download left behind of an asset uploaded and a damaged one of notes.txt;
+# RQ, X's replay stopped where GitHub refuses the publication of v0.2 and by
+# an answer lost after it; RB, X's replay from a source whose tool.tar.gz has
+# other bytes, then whose notes.txt has another size; and XT, X's replay with
+# --with-times, compared.
+rcheck "run-replay.py creates each release on its tag, the pre-release and the draft included, in a target with immutable releases, with the planned name, the body with its hashes replaced, the source's latest as the latest, and each asset of the source whole" "$T/gh-x" "$T/extra.state.json" \
   '(r := {x["tag_name"]: x for x in load("releases", [])}) and sorted(r) == ["v0.1.1", "v0.2", "v0.3"] and [(r[t]["draft"], r[t]["prerelease"], r[t]["latest"]) for t in ("v0.2", "v0.1.1", "v0.3")] == [(False, False, True), (False, True, False), (True, False, False)] and (r["v0.2"]["name"], r["v0.2"]["body"], r["v0.2"]["target_commitish"]) == ("Second", "Built from " + M[S["C4"]][:7] + ".", M[S["C5"]]) and M[S["C4"]][:7] != S["C4"][:7] and r["v0.3"]["target_commitish"] == "main" and [(a["name"], a["label"], a["content_type"], a["state"]) for a in r["v0.2"]["assets"]] == [("tool.tar.gz", "", "application/gzip", "uploaded"), ("notes.txt", "Release notes", "text/plain", "uploaded")] and [(root / "assets" / str(a["id"])).read_bytes() for a in r["v0.2"]["assets"]] == [open(os.path.join(sys.argv[5], "api", "repos_ada-example_tool_releases_assets_" + i + ".bin"), "rb").read() for i in ("11", "12")] and git("tag", "-l") == "v0.1\nv0.1.1\nv0.2"'
 rcheck "run-replay.py records each release and asset in the state file, and removes each download and its folder once uploaded" "$T/gh-x" "$T/extra.state.json" \
   '(v := [a["id"] for x in load("releases", []) if x["tag_name"] == "v0.2" for a in x["assets"]]) and (s := json.loads(open(sys.argv[2]).read())["releases"]) and sorted(s) == ["1", "2", "3"] and s["1"]["assets"] == {"11": v[0], "12": v[1]} and not os.path.exists(os.path.join(sys.argv[5], "extra.downloads"))'
@@ -1531,20 +1587,26 @@ import json, sys
 releases = json.load(open(sys.argv[1]))
 for r in releases:
     if r["tag_name"] == "v0.1.1":
-        r["body"] = "Changed."
+        r.update(body="Changed.", name="Other", draft=True, prerelease=False)
     if r["tag_name"] == "v0.2":
         r["assets"] = [a for a in r["assets"] if a["name"] != "notes.txt"]
+        r["assets"][0].update(size=12, content_type="application/x-tar", digest="sha256:" + "0" * 64)
+        r["assets"].append({"id": 599, "name": "extra.txt", "label": "", "content_type": "text/plain",
+                            "size": 3, "state": "uploaded", "digest": None})
         r["latest"] = False
+releases = [r for r in releases if r["tag_name"] != "v0.3"]
+releases.append({"id": 9, "tag_name": "v0.4", "name": "Later", "draft": False, "prerelease": False,
+                 "latest": False, "assets": []})
 json.dump(releases, open(sys.argv[1], "w"))
 EOF
 compare_extra "$T/gh-rx" --state "$T/rx.state.json" "$T/extra.jsonl" "$mirror_extra" ada-example/tool-x >"$T/cmp-rx-out" 2>&1
 status_cmp_rx=$?
 replay "$T/gh-rx" ada-example/tool-x --pace 0 --state "$T/rx.state.json" "$T/extra.jsonl" "$mirror_extra" ada-example/tool-x >"$T/rx-out" 2>&1
 status_rx=$?
-check "compare-replay.py names a release with another body, one that lacks an asset, and one that is not the latest as planned" \
-  '[ "$status_cmp_rx" = 1 ] && grep -Fqx "  release v0.1.1: the body differs; they part at character 1: '"'"'Changed.'"'"', the source'"'"'s '"'"''"'"'" "$T/cmp-rx-out" && grep -Fqx "  release v0.2: asset notes.txt is missing in the target" "$T/cmp-rx-out" && grep -Fqx "  release v0.2: latest false, planned true" "$T/cmp-rx-out" && grep -qx "Differences: 3" "$T/cmp-rx-out" && grep -Eqx "  release assets +1" "$T/cmp-rx-out" || { cat "$T/cmp-rx-out"; exit 1; }'
-check "run-replay.py checks the target's releases after the last event, and stops at an asset it lacks and a latest release that differs" \
-  '[ "$status_rx" = 1 ] && grep -Fq "run-replay.py: ada-example/tool-x differs from the plan: release v0.2 has the assets ['"'"'tool.tar.gz'"'"'], planned ['"'"'notes.txt'"'"', '"'"'tool.tar.gz'"'"']; the latest release is none, planned v0.2" "$T/rx-out" || { cat "$T/rx-out"; exit 1; }'
+check "compare-replay.py names a release with another name, body, draft and pre-release, one that lacks an asset, has another, and has one of another size, content type and digest, one that is not the latest as planned, one it lacks, and one the source lacks" \
+  '[ "$status_cmp_rx" = 1 ] && for line in "release v0.1.1: name '"'"'Other'"'"', planned '"'"'Parser fix'"'"'" "release v0.1.1: the body differs; they part at character 1: '"'"'Changed.'"'"', the source'"'"'s '"'"''"'"'" "release v0.1.1: draft true, planned false" "release v0.1.1: pre-release false, planned true" "release v0.2: latest false, planned true" "release v0.2: asset extra.txt is in the target, not in the source" "release v0.2: asset notes.txt is missing in the target" "release v0.2: asset tool.tar.gz: size 12, the source'"'"'s 11" "release v0.2: asset tool.tar.gz: content type application/x-tar, the source'"'"'s application/gzip" "release v0.3 of the source is missing in the target" "release v0.4 is in the target, not in the source"; do grep -Fqx "  $line" "$T/cmp-rx-out" || { echo "no line: $line"; exit 1; }; done && grep -Eqx "  release v0\.2: asset tool\.tar\.gz: digest sha256:0{64}, the source'"'"'s sha256:[0-9a-f]{64}" "$T/cmp-rx-out" && grep -qx "Differences: 12" "$T/cmp-rx-out" && grep -Eqx "  release assets +2" "$T/cmp-rx-out" || { cat "$T/cmp-rx-out"; exit 1; }'
+check "run-replay.py checks the target's releases after the last event, and stops at a release of another kind, one with other assets, a latest release that differs, a release it lacks and one more" \
+  '[ "$status_rx" = 1 ] && grep -Fq "run-replay.py: ada-example/tool-x differs from the plan: release v0.1.1 is on v0.1.1, draft True and pre-release False, planned draft False and pre-release True; release v0.2 has the assets ['"'"'extra.txt'"'"', '"'"'tool.tar.gz'"'"'], planned ['"'"'notes.txt'"'"', '"'"'tool.tar.gz'"'"']; the latest release is none, planned v0.2; release v0.3 is missing; release v0.4 is not in the plan" "$T/rx-out" || { cat "$T/rx-out"; exit 1; }'
 target "$T/gh-rr" ada-example/tool-x
 uploads=POST\ https://uploads.github.com/repos/ada-example/tool-x/releases/2/assets
 # rr_replay <call whose answer is lost>: one run of RR.
@@ -1556,32 +1618,99 @@ rr_replay() {
 rr_replay "POST repos/ada-example/tool-x/releases"
 rr_replay "$uploads?name=tool.tar.gz"
 rr_replay ""
+# A download of tool.tar.gz, which is recorded as uploaded, as a stop between
+# that record and the download's removal leaves it, and the download of
+# notes.txt, which the stopped run left, damaged.
+cp "$T/api/repos_ada-example_tool_releases_assets_11.bin" "$T/rr.downloads/11"
+printf 'damaged\n' >"$T/rr.downloads/12"
 rr_replay ""
 compare_extra "$T/gh-rr" --state "$T/rr.state.json" "$T/extra.jsonl" "$mirror_extra" ada-example/tool-x >"$T/cmp-rr-out" 2>&1
 status_cmp_rr=$?
-rcheck "run-replay.py resumes a release stopped after its creation and between two uploads with one release and each asset once, and removes the asset an upload left half done" "$T/gh-rr" "$T/rr.state.json" \
-  'open(os.path.join(sys.argv[5], "rr-status")).read().split() == ["1", "1", "1", "0"] and sorted(x["tag_name"] for x in load("releases", [])) == ["v0.1.1", "v0.2", "v0.3"] and [(a["name"], a["state"], a["size"]) for x in load("releases", []) if x["tag_name"] == "v0.2" for a in x["assets"]] == [("tool.tar.gz", "uploaded", 11), ("notes.txt", "uploaded", 15)] and len([c for c in open(root / "calls").read().splitlines() if c.split(" ", 2)[1:] == ["DELETE", "repos/ada-example/tool-x/releases/assets/502"]]) == 1 and len([c for c in open(root / "calls").read().splitlines() if " POST repos/ada-example/tool-x/releases" in c]) == 3 and [len([c for c in open(root / "calls").read().splitlines() if c.endswith("/releases/2/assets?name=" + n)]) for n in ("tool.tar.gz", "notes.txt&label=Release%20notes")] == [1, 2]'
+rcheck "run-replay.py resumes a release stopped after the creation of its draft and between two uploads with one release and each asset once, removes the asset an upload left half done and a download left behind, and downloads again one it finds damaged" "$T/gh-rr" "$T/rr.state.json" \
+  'open(os.path.join(sys.argv[5], "rr-status")).read().split() == ["1", "1", "1", "0"] and sorted(x["tag_name"] for x in load("releases", [])) == ["v0.1.1", "v0.2", "v0.3"] and [(a["name"], a["state"], a["size"]) for x in load("releases", []) if x["tag_name"] == "v0.2" for a in x["assets"]] == [("tool.tar.gz", "uploaded", 11), ("notes.txt", "uploaded", 15)] and [(root / "assets" / str(a["id"])).read_bytes() for x in load("releases", []) if x["tag_name"] == "v0.2" for a in x["assets"]][1] == b"Notes for v0.2\n" and len([c for c in open(root / "calls").read().splitlines() if c.split(" ", 2)[1:] == ["DELETE", "repos/ada-example/tool-x/releases/assets/502"]]) == 1 and len([c for c in open(root / "calls").read().splitlines() if " POST repos/ada-example/tool-x/releases" in c]) == 3 and [len([c for c in open(root / "calls").read().splitlines() if c.endswith("/releases/2/assets?name=" + n)]) for n in ("tool.tar.gz", "notes.txt&label=Release%20notes")] == [1, 2] and [len([c for c in open(root / "calls").read().splitlines() if c.split(" ", 2)[1:] == ["GET", "repos/ada-example/tool/releases/assets/" + n]]) for n in ("11", "12")] == [1, 2] and [x["draft"] for x in load("releases", []) if x["tag_name"] in ("v0.1.1", "v0.2")] == [False, False]'
 check "run-replay.py says what it found done when it resumes a release, and the comparison finds no difference" \
   '[ "$status_cmp_rr" = 0 ] && grep -qx "No differences" "$T/cmp-rr-out" && grep -Eq "create-release  v0\.1\.1, pre-release, no assets, found created$" "$T/rr-out" && grep -Eq "create-release  v0\.2, published, latest, 2 assets, 26 bytes, 1 found half uploaded, removed and uploaded again$" "$T/rr-out" && grep -q "run-replay.py: POST https://uploads.github.com/.*name=notes.txt.* answered HTTP 502: Server Error; run the same command again, which removes an asset GitHub left half uploaded and uploads it again$" "$T/rr-out" && [ ! -e "$T/rr.downloads" ] || { cat "$T/rr-out" "$T/cmp-rr-out"; exit 1; }'
+target "$T/gh-rq" ada-example/tool-x
+touch "$T/gh-rq/immutable"
+publish="PATCH repos/ada-example/tool-x/releases/2"
+# rq_replay <call refused> <call whose answer is lost>: one run of RQ, after
+# which its state file and the target's releases are kept as rq-<run>.
+rq_replay() {
+  (FAKE_GH_DENY=$1 FAKE_GH_LOSE=$2 && export FAKE_GH_DENY FAKE_GH_LOSE &&
+    replay "$T/gh-rq" ada-example/tool-x --pace 0 --state "$T/rq.state.json" "$T/extra.jsonl" "$mirror_extra" ada-example/tool-x) >>"$T/rq-out" 2>&1
+  echo $? >>"$T/rq-status"
+  run=$(wc -l <"$T/rq-status" | tr -d ' ')
+  cp "$T/rq.state.json" "$T/rq-$run.state.json"
+  cp "$T/gh-rq/releases.json" "$T/rq-$run-releases.json"
+}
+rq_replay "$publish" ""
+rq_replay "" "$publish"
+rq_replay "" ""
+compare_extra "$T/gh-rq" --state "$T/rq.state.json" "$T/extra.jsonl" "$mirror_extra" ada-example/tool-x >"$T/cmp-rq-out" 2>&1
+status_cmp_rq=$?
+rcheck "run-replay.py publishes a release once its assets are uploaded to its draft, and resumes a stop before and after the publication without a second release, asset or publication" "$T/gh-rq" "$T/rq.state.json" \
+  'open(os.path.join(sys.argv[5], "rq-status")).read().split() == ["1", "1", "0"] and (st := [json.load(open(os.path.join(sys.argv[5], f"rq-{n}.state.json")))["releases"] for n in (1, 2, 3)]) and [(s["1"]["published"], sorted(s["1"]["assets"])) for s in st] == [(False, ["11", "12"]), (False, ["11", "12"]), (True, ["11", "12"])] and (st[0]["3"]["published"], st[2]["2"]["published"]) == (True, False) and (rel := [{x["tag_name"]: x for x in json.load(open(os.path.join(sys.argv[5], f"rq-{n}-releases.json")))} for n in (1, 2, 3)]) and [(r["v0.2"]["draft"], r["v0.2"]["latest"], [a["state"] for a in r["v0.2"]["assets"]]) for r in rel] == [(True, False, ["uploaded"] * 2), (False, True, ["uploaded"] * 2), (False, True, ["uploaded"] * 2)] and sorted(x["tag_name"] for x in load("releases", [])) == ["v0.1.1", "v0.2", "v0.3"] and (calls := [c.split(" ", 2)[1:] for c in open(root / "calls").read().splitlines()]) and calls.count(["PATCH", "repos/ada-example/tool-x/releases/2"]) == 2 and len([c for c in calls if "/releases/2/assets?name=" in c[1]]) == 2'
+check "run-replay.py names a refused publication, says it found a release published after a lost answer, and the comparison finds no difference" \
+  '[ "$status_cmp_rq" = 0 ] && grep -qx "No differences" "$T/cmp-rq-out" && grep -Fq "run-replay.py: PATCH repos/ada-example/tool-x/releases/2 answered HTTP 403: Resource not accessible by personal access token" "$T/rq-out" && grep -Fq "run-replay.py: PATCH repos/ada-example/tool-x/releases/2 answered HTTP 502: Server Error" "$T/rq-out" && grep -Eq "create-release  v0\.2, published, latest, 2 assets, 26 bytes, found published$" "$T/rq-out" || { cat "$T/rq-out" "$T/cmp-rq-out"; exit 1; }'
+cp -R "$T/api" "$T/api-bad"
+bad=$T/api-bad/repos_ada-example_tool_releases_assets
+printf '\037\213\010\000tool\377\000X' >"${bad}_11.bin"
+target "$T/gh-rb" ada-example/tool-x
+# rb_replay: one run of RB.
+rb_replay() {
+  (FAKE_GH_API=$T/api-bad && export FAKE_GH_API &&
+    replay "$T/gh-rb" ada-example/tool-x --pace 0 --state "$T/rb.state.json" "$T/extra.jsonl" "$mirror_extra" ada-example/tool-x) >>"$T/rb-out" 2>&1
+  echo $? >>"$T/rb-status"
+}
+rb_replay
+cp "$T/api/repos_ada-example_tool_releases_assets_11.bin" "${bad}_11.bin"
+printf 'Notes\n' >"${bad}_12.bin"
+rb_replay
+check "run-replay.py stops at a download whose digest or size differs from what GitHub lists, and uploads none of it" \
+  '[ "$(tr "\n" " " <"$T/rb-status")" = "1 1 " ] && grep -Eq "^run-replay.py: the asset tool\.tar\.gz of release v0\.2, downloaded from repos/ada-example/tool/releases/assets/11, has the SHA-256 digest [0-9a-f]{64}, GitHub lists [0-9a-f]{64}; run the same command again to download it again$" "$T/rb-out" && grep -Fq "run-replay.py: the asset notes.txt of release v0.2, downloaded from repos/ada-example/tool/releases/assets/12, has 6 bytes, GitHub lists 15; run the same command again to download it again" "$T/rb-out" && [ "$(grep -c "/releases/2/assets?name=tool\.tar\.gz$" "$T/gh-rb/calls")" -eq 1 ] && ! grep -q "assets?name=notes" "$T/gh-rb/calls" || { cat "$T/rb-out"; exit 1; }'
 target "$T/gh-xt" ada-example/tool-x
 replay "$T/gh-xt" ada-example/tool-x --pace 0 --with-times --state "$T/xt.state.json" "$T/extra.jsonl" "$mirror_extra" ada-example/tool-x >"$T/xt-out" 2>&1
 status_xt=$?
 compare_extra "$T/gh-xt" --with-times --state "$T/xt.state.json" "$T/extra.jsonl" "$mirror_extra" ada-example/tool-x >"$T/cmp-xt-out" 2>&1
 status_cmp_xt=$?
-rcheck "run-replay.py --with-times appends to a release's body the time of its publication, or of a draft's creation" "$T/gh-xt" "$T/xt.state.json" \
+rcheck "run-replay.py --with-times appends to a release's body the time of its publication, or a draft's created_at" "$T/gh-xt" "$T/xt.state.json" \
   '(r := {x["tag_name"]: x["body"] for x in load("releases", [])}) and r["v0.2"] == "Built from " + M[S["C4"]][:7] + ".\n\n_Originally created 2026-03-07 15:00 UTC._" and r["v0.1.1"] == "_Originally created 2026-03-04 11:00 UTC._" and r["v0.3"] == "Planned.\n\n_Originally created 2026-03-08 13:00 UTC._"'
 check "compare-replay.py --with-times finds no difference in a replay with --with-times that carries releases" \
   '[ "$status_xt$status_cmp_xt" = 00 ] && grep -qx "No differences" "$T/cmp-xt-out" || { cat "$T/xt-out" "$T/cmp-xt-out"; exit 1; }'
-# UD: the plan of the drafts, replayed and compared.
+# UD: the plan of the drafts, replayed and compared; and UE, a copy of its
+# target whose draft on v0.2 has another name and is published, compared and
+# checked again by run-replay.py from a copy of UD's state file.
 target "$T/gh-ud" ada-example/tool-x
-replay "$T/gh-ud" ada-example/tool-x --pace 0 --state "$T/ud.state.json" "$T/drafts.jsonl" "$mirror_extra" ada-example/tool-x >"$T/ud-out" 2>&1
+(FAKE_GH_API=$T/api-drafts && export FAKE_GH_API && replay "$T/gh-ud" ada-example/tool-x --pace 0 --state "$T/ud.state.json" "$T/drafts.jsonl" "$mirror_extra" ada-example/tool-x) >"$T/ud-out" 2>&1
 status_ud=$?
-(FAKE_GITHUB=$T/gh-ud FAKE_GH_API=$T/api-drafts PATH=$target_path python3 "$here/compare-replay.py" --state "$T/ud.state.json" "$T/drafts.jsonl" "$mirror_extra" ada-example/tool-x) >"$T/cmp-ud-out" 2>&1
+# compare_drafts <folder> <state file>: compares that target with the drafts' source.
+compare_drafts() {
+  FAKE_GITHUB=$1 FAKE_GH_API=$T/api-drafts PATH=$target_path python3 "$here/compare-replay.py" --state "$2" "$T/drafts.jsonl" "$mirror_extra" ada-example/tool-x
+}
+compare_drafts "$T/gh-ud" "$T/ud.state.json" >"$T/cmp-ud-out" 2>&1
 status_cmp_ud=$?
-rcheck "run-replay.py creates a draft for a commit at the recreated one, and makes no tag of it" "$T/gh-ud" "$T/ud.state.json" \
-  'open(os.path.join(sys.argv[5], "ud-out")).read().count("create-release") == 5 and [(x["draft"], x["target_commitish"]) for x in load("releases", []) if x["tag_name"] == "v0.9"] == [(True, M[S["C4"]])] and "v0.9" not in git("tag", "-l").split()'
-check "compare-replay.py takes a draft for a recreated commit as carried, and notes a draft it cannot place as left behind" \
-  '[ "$status_ud$status_cmp_ud" = 00 ] && grep -qx "No differences" "$T/cmp-ud-out" && grep -Fqx "  release v1.0-rc of the source is left behind, as planned" "$T/cmp-ud-out" || { cat "$T/ud-out" "$T/cmp-ud-out"; exit 1; }'
+cp -R "$T/gh-ud" "$T/gh-ue"
+cp "$T/ud.state.json" "$T/ue.state.json"
+python3 - "$T/gh-ue/releases.json" <<'EOF'
+import json, sys
+releases = json.load(open(sys.argv[1]))
+for r in releases:
+    if r["tag_name"] == "v0.2" and r["draft"]:
+        r.update(name="Changed", draft=False)
+json.dump(releases, open(sys.argv[1], "w"))
+EOF
+compare_drafts "$T/gh-ue" "$T/ue.state.json" >"$T/cmp-ue-out" 2>&1
+status_cmp_ue=$?
+replay "$T/gh-ue" ada-example/tool-x --pace 0 --state "$T/ue.state.json" "$T/drafts.jsonl" "$mirror_extra" ada-example/tool-x >"$T/ue-out" 2>&1
+status_ue=$?
+rcheck "run-replay.py creates a draft for a commit at the recreated one, makes no tag of it, and uploads an asset whose name needs percent-encoding under that name" "$T/gh-ud" "$T/ud.state.json" \
+  'open(os.path.join(sys.argv[5], "ud-out")).read().count("create-release") == 7 and [(x["draft"], x["target_commitish"]) for x in load("releases", []) if x["tag_name"] == "v0.9"] == [(True, M[S["C4"]])] and "v0.9" not in git("tag", "-l").split() and [(a["name"], (root / "assets" / str(a["id"])).read_bytes()) for x in load("releases", []) if x["tag_name"] == "v0.9" for a in x["assets"]] == [("notes+v0.9.txt", b"Tidied up\n")] and any(c.endswith("/assets?name=notes%2Bv0.9.txt") for c in open(root / "calls").read().splitlines())'
+rcheck "run-replay.py publishes a release that is not the source's latest with make_latest false, so that the latest one published before it stays the latest, and creates a draft beside a published release of its tag" "$T/gh-ud" "$T/ud.state.json" \
+  '(r := {(x["tag_name"], x["draft"]): x for x in load("releases", [])}) and (r[("v0.2", False)]["latest"], r[("v0.1", False)]["latest"]) == (True, False) and r[("v0.1", False)]["id"] > r[("v0.2", False)]["id"] and r[("v0.2", True)]["name"] == "Second, again" and len(load("releases", [])) == 6'
+check "compare-replay.py takes a draft for a recreated commit and a draft beside a published release of its tag as carried, and notes a draft it cannot place as left behind" \
+  '[ "$status_ud$status_cmp_ud" = 00 ] && grep -qx "No differences" "$T/cmp-ud-out" && grep -Fqx "  release v1.0-rc of the source is left behind, as planned" "$T/cmp-ud-out" && grep -Eqx "  releases +6" "$T/cmp-ud-out" || { cat "$T/ud-out" "$T/cmp-ud-out"; exit 1; }'
+check "compare-replay.py and run-replay.py check a draft and a published release of one tag each, and name the draft by its kind" \
+  '[ "$status_cmp_ue$status_ue" = 11 ] && grep -Fqx "  release v0.2 (draft): name '"'"'Changed'"'"', planned '"'"'Second, again'"'"'" "$T/cmp-ue-out" && grep -Fqx "  release v0.2 (draft): draft false, planned true" "$T/cmp-ue-out" && grep -qx "Differences: 2" "$T/cmp-ue-out" && grep -Fq "run-replay.py: ada-example/tool-x differs from the plan: release v0.2 (draft) is on v0.2, draft False and pre-release False, planned draft True and pre-release False" "$T/ue-out" || { cat "$T/cmp-ue-out" "$T/ue-out"; exit 1; }'
 
 # TO: the plan with tags and releases turned off, replayed and compared; and
 # a copy of its target that holds the tag v0.1 at the recreated commit and

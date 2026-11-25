@@ -1067,8 +1067,9 @@ def plan(mirror, repo, overrides, typed=True, keep_merges=False, off=()):
             **t,
         )
     # Each release comes after the event of its tag, or of the commit a
-    # draft names, at its publication, or a draft's creation; one that
-    # names the default branch needs only that branch.
+    # draft names, at its publication, or a draft at its created_at, which
+    # GitHub documents as the date of the commit used for the release; a
+    # draft that names the default branch needs only that branch.
     releases, left_releases = source_releases(
         repo,
         gh_pages(f"repos/{repo}/releases"),
