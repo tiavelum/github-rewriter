@@ -729,6 +729,12 @@ class Target:
         return content + refs.out.encode("utf-8")
 
 
+def copy_target(root, target, name):
+    """A copy of the target's folder, as cp -R makes it."""
+    shutil.copytree(target.folder, root / name, symlinks=True)
+    return Target(root / name, target.env)
+
+
 class TargetView:
     """What rexpect of the shell test reads of a target: items by number,
     comments as (number, body), labels and closes from the fake's files, the
@@ -886,6 +892,7 @@ def view(read_plan, run_plan):
 
 
 TOOL_NEW = "ada-example/tool-new"
+TOOL_X = "ada-example/tool-x"
 
 
 # again, lag and e_again are session fixtures, so that the comparisons of A

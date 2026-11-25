@@ -13,22 +13,16 @@ from conftest import (
     NBSP_TAG,
     RELEASES,
     TOOL_NEW,
-    Target,
+    TOOL_X,
+    copy_target,
     has_match,
     has_search,
     has_text,
     run,
 )
 
-TOOL_X = "ada-example/tool-x"
 UPLOADS = "POST https://uploads.github.com/repos/ada-example/tool-x/releases/2/assets"
 PUBLISH = "PATCH repos/ada-example/tool-x/releases/2"
-
-
-def copy_target(root, target, name):
-    """A copy of the target's folder, as cp -R makes it."""
-    shutil.copytree(target.folder, root / name, symlinks=True)
-    return Target(root / name, target.env)
 
 
 def edit_json(path, change):

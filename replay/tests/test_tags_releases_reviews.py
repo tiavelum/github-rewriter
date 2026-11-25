@@ -1,0 +1,845 @@
+"""The checks of the target's tags after a replay, of tags resumed after a
+stop, and of reviews carried as comments: TX, TK, TC, TP, TM and MS, and the
+plans and replays of the source with reviews, RV, RO, RT and NR."""
+
+import hashlib
+import json
+import re
+import shutil
+import time
+from types import SimpleNamespace
+
+import pytest
+from conftest import (
+    API_BASE,
+    TOOL,
+    TOOL_X,
+    Git,
+    Planned,
+    as_committer,
+    copy_target,
+    has_match,
+    has_search,
+    has_text,
+)
+
+ADA = ("Ada Example", "ada@example.com")
+
+
+def shell_status(result):
+    """The exit status as the shell test records it with $?: a process that a
+    signal killed, which subprocess reports as minus the signal's number,
+    gets 128 plus that number, such as 137 for a kill -9."""
+    return 128 - result.status if result.status < 0 else result.status
+
+
+def as_read(text):
+    """The text as open().read() of the shell test's conditions reads it: in
+    universal newlines mode, which turns "\\r\\n" and a lone "\\r" into "\\n"."""
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def past_header(text):
+    """The text without its lines up to the first empty one after the first,
+    as sed "1,/^$/d" prints it: the message of a tag that cat-file prints."""
+    found = re.findall(r"[^\n]*\n|[^\n]+$", text)
+    for i in range(1, len(found)):
+        if found[i] == "\n":
+            return "".join(found[i + 1 :])
+    return ""
+
+
+def write_hook(target, name, script):
+    """A hook of the target's repository, executable, as cat > and chmod +x make it."""
+    hook = target.repo / "hooks" / name
+    hook.write_text(script, encoding="utf-8")
+    hook.chmod(0o755)
+
+
+# A post-receive hook that kills the run-replay.py whose push of the tag @TAG@
+# it receives, once, as a machine that stops right after the push would.
+KILL_HOOK = """\
+#!/bin/sh
+grep -q ' refs/tags/@TAG@$' || exit 0
+[ ! -e ../killed ] || exit 0
+touch ../killed
+pid=$PPID
+while [ "${pid:-1}" -gt 1 ]; do
+  case $(ps -o args= -p "$pid") in
+  *run-replay.py*)
+    kill -9 "$pid"
+    exit 0
+    ;;
+  esac
+  pid=$(ps -o ppid= -p "$pid" | tr -d ' ')
+done
+"""
+
+# A pre-receive hook that refuses the push of the tag v0.2 once.
+REFUSE_HOOK = """\
+#!/bin/sh
+grep -q ' refs/tags/v0.2$' || exit 0
+[ ! -e ../refused-once ] || exit 0
+touch ../refused-once
+echo "refused once" >&2
+exit 1
+"""
+
+
+def tag_refs(run_process, target):
+    """What git for-each-ref refs/tags/ prints of the target's repository."""
+    return run_process("git", "--git-dir", target.repo, "for-each-ref", "refs/tags/")
+
+
+def same_tags(run_process, uninterrupted, resumed):
+    """Whether two targets hold the same three tags, as the shell test diffs
+    the for-each-ref of each, written to a file, after counting the first."""
+    x, other = tag_refs(run_process, uninterrupted), tag_refs(run_process, resumed)
+    assert (x.status, other.status) == (0, 0), x.err + other.err
+    assert x.out.count("\n") == 3, x.out
+    assert x.out == other.out
+
+
+# Tags: TX, a copy of X's target with v0.1 at another commit, v0.2 made anew
+# with another message, and v0.1.1 made lightweight, compared, and checked
+# again by run-replay.py from a copy of X's state file; TK, X's replay killed
+# by a hook of the target's repository right after it pushed v0.2, and
+# resumed; and TC, a copy of TK's target resumed from a state file that
+# records another tag object for v0.2, as a rebuild that differs would leave
+# it.
+
+
+@pytest.fixture(scope="module")
+def changed_tags(root, base_env, extra_plan, mirror_extra, api_extra, replay_x, compare, replay):
+    """TX compared, and checked again by run-replay.py."""
+    target = copy_target(root, replay_x.target, "gh-tx")
+    state = root / "tx.state.json"
+    shutil.copyfile(replay_x.state, state)
+    git, tx = Git(base_env, root), ("--git-dir", target.repo)
+    git(*tx, "tag", "-f", "v0.1", "main")
+    git(
+        *(*tx, "tag", "-f", "-a", "-m", "Another message", "v0.2", "v0.2^{commit}"),
+        env=as_committer(ADA, "1772888400 +0200"),
+    )
+    git(*tx, "tag", "-f", "v0.1.1", "v0.1.1^{commit}")
+    tail = (extra_plan.file, mirror_extra, TOOL_X)
+    compared = compare(target, "--state", state, *tail, api=api_extra)
+    again = replay(target, TOOL_X, "--pace", "0", "--state", state, *tail, merged=True)
+    return SimpleNamespace(target=target, state=state, compared=compared, again=again)
+
+
+@pytest.fixture(scope="module")
+def killed_tag(root, run_process, extra_plan, mirror_extra, make_target, replay):
+    """TK killed and resumed, the output of both runs in one, as the shell
+    test appends it to tk-out; and TC, copied from TK after the kill, with
+    its refs before its run, and resumed."""
+    target = make_target("gh-tk", TOOL_X)
+    write_hook(target, "post-receive", KILL_HOOK.replace("@TAG@", "v0.2"))
+    state = root / "tk.state.json"
+    tail = (extra_plan.file, mirror_extra, TOOL_X)
+
+    def tk_replay(target, state):
+        return replay(target, TOOL_X, "--pace", "0", "--state", state, *tail, merged=True)
+
+    first = tk_replay(target, state)
+    # The killed run's push goes on without it: time to end before the copy.
+    time.sleep(1)
+    copy = copy_target(root, target, "gh-tc")
+    copy_state = root / "tc.state.json"
+    recorded = json.loads(state.read_text(encoding="utf-8")) if state.exists() else {"tags": {}}
+    # Where the killed run saved no tag, the shell test's assert writes no
+    # state file of TC, and only the check of TC fails for it.
+    if "v0.2" in recorded["tags"]:
+        recorded["tags"]["v0.2"] = "0123456789abcdef0123456789abcdef01234567"
+        copy_state.write_text(json.dumps(recorded), encoding="utf-8")
+    tc_refs = run_process("git", "--git-dir", copy.repo, "for-each-ref").out
+    second = tk_replay(target, state)
+    tc = tk_replay(copy, copy_state)
+    return SimpleNamespace(
+        target=target,
+        statuses=[shell_status(r) for r in (first, second)],
+        out_lines=[line for r in (first, second) for line in r.out_lines],
+        out=first.out + second.out,
+        copy=copy,
+        tc_refs=tc_refs,
+        tc=tc,
+    )
+
+
+def test_names_a_tag_elsewhere_a_tag_with_another_message_and_one_lightweight_planned_annotated(
+    hashes, changed_tags
+):
+    """compare-replay.py names a tag at another commit than the recreated one, an annotated tag with another message and a lightweight tag planned annotated"""  # noqa: E501 # the description word for word
+    tx = changed_tags
+    main = tx.target.git("rev-parse", "main")[:7]
+    m2 = json.loads(tx.state.read_text(encoding="utf-8"))["hashes"][hashes["M2"]][:7]
+    r = tx.compared
+    out = r.out_lines
+    assert r.status == 1, r.out
+    elsewhere = f"  tag v0.1 of the source is at {main} in the target, not at the recreated {m2}"
+    assert elsewhere in out, r.out
+    message = "  tag v0.2: the message differs; they part at character 1: 'Another message"
+    assert has_text(message, out), r.out
+    assert "  tag v0.1.1 is lightweight in the target, annotated as planned" in out, r.out
+    assert has_match("Differences: 3", out), r.out
+
+
+def test_checks_the_targets_tags_after_the_last_event_and_stops_at_each_that_differs(
+    changed_tags,
+):
+    """run-replay.py checks the target's tags after the last event, and stops at each that differs from the state file"""  # noqa: E501 # the description word for word
+    r = changed_tags.again
+    differs = (
+        "run-replay.py: ada-example/tool-x differs from the plan: tag v0\\.1 is at [0-9a-f]{7},"
+        " the state file's [0-9a-f]{7}; tag v0\\.1\\.1 is at [0-9a-f]{7}, the state file's"
+        " [0-9a-f]{7}; tag v0\\.2 is at [0-9a-f]{7}, the state file's [0-9a-f]{7}$"
+    )
+    assert r.status == 1, r.out
+    assert has_search(differs, r.out_lines), r.out
+
+
+def test_resumes_a_run_killed_after_a_tags_push_takes_it_over_and_ends_with_the_same_tags(
+    run_process, replay_x, killed_tag
+):
+    """run-replay.py resumes a run killed after it pushed a tag, takes the pushed tag over, and ends with the tags of an uninterrupted run"""  # noqa: E501 # the description word for word
+    tk = killed_tag
+    assert tk.statuses == [137, 0], tk.out
+    found = r"[0-9]+/[0-9]+  create-tag    v0\.2, annotated, at [0-9a-f]{7}, found pushed$"
+    assert has_search(found, tk.out_lines), tk.out
+    same_tags(run_process, replay_x.target, tk.target)
+
+
+def test_stops_before_pushing_where_a_rebuilt_tag_differs_from_the_one_the_state_file_records(
+    run_process, killed_tag
+):
+    """run-replay.py stops before pushing where a rebuilt tag differs from the one the state file records"""  # noqa: E501 # the description word for word
+    tk = killed_tag
+    r = tk.tc
+    out = r.out_lines
+    assert r.status == 1, r.out
+    rebuilt = (
+        "run-replay.py: tag v0\\.2 was rebuilt as [0-9a-f]{7}, but .*/tc.state.json records"
+        " 0123456; it differs from the one the first run made. The run stops before it pushes"
+        " a second tag$"
+    )
+    assert has_search(rebuilt, out), r.out
+    assert has_search("^run-replay.py: stopped in event [0-9]* of [0-9]*", out), r.out
+    # Compared as $(...) gives both, without their final newlines.
+    refs = run_process("git", "--git-dir", tk.copy.repo, "for-each-ref").out
+    assert refs.rstrip("\n") == tk.tc_refs.rstrip("\n")
+
+
+# TP: X's replay killed by a hook of the target's repository right after it
+# pushed the lightweight v0.1, and resumed; then refused its push of v0.2
+# once, and resumed again, with the object for v0.2 the stopped run recorded.
+
+
+@pytest.fixture(scope="module")
+def pushed_tags(root, extra_plan, mirror_extra, make_target, replay):
+    """TP's three runs, and the object for v0.2 that its state file records
+    after the second, empty where it records none."""
+    target = make_target("gh-tp", TOOL_X)
+    write_hook(target, "post-receive", KILL_HOOK.replace("@TAG@", "v0.1"))
+    write_hook(target, "pre-receive", REFUSE_HOOK)
+    state = root / "tp.state.json"
+    tail = (extra_plan.file, mirror_extra, TOOL_X)
+
+    def tp_replay():
+        return replay(target, TOOL_X, "--pace", "0", "--state", state, *tail, merged=True)
+
+    first = tp_replay()
+    # The killed run's push goes on without it: time to end before the resume.
+    time.sleep(1)
+    second = tp_replay()
+    # Empty where the state file is missing, as the shell test's file then is.
+    v02 = (
+        json.loads(state.read_text(encoding="utf-8"))["tags"].get("v0.2", "")
+        if state.exists()
+        else ""
+    )
+    third = tp_replay()
+    runs = [first, second, third]
+    return SimpleNamespace(
+        target=target, runs=runs, statuses=[shell_status(r) for r in runs], v02=v02
+    )
+
+
+def test_resumes_a_run_killed_after_it_pushed_a_lightweight_tag_and_takes_the_tag_over(
+    pushed_tags,
+):
+    """run-replay.py resumes a run killed after it pushed a lightweight tag, and takes the pushed tag over"""  # noqa: E501 # the description word for word
+    tp = pushed_tags
+    second = tp.runs[1]
+    assert tp.statuses == [137, 1, 0], tp.runs[0].out + second.out
+    found = r"[0-9]+/[0-9]+  create-tag    v0\.1, lightweight, at [0-9a-f]{7}, found pushed$"
+    assert has_search(found, second.out_lines), second.out
+
+
+def test_resumes_a_run_stopped_before_a_tags_push_rebuilds_the_recorded_tag_and_pushes_it(
+    run_process, replay_x, pushed_tags
+):
+    """run-replay.py resumes a run stopped before a tag's push, rebuilds the tag the state file records and pushes it, and ends with the tags of an uninterrupted run"""  # noqa: E501 # the description word for word
+    tp = pushed_tags
+    second, third = tp.runs[1], tp.runs[2]
+    assert has_search("^run-replay.py: stopped in event [0-9]* of [0-9]*", second.out_lines)
+    assert has_search("refused once", second.out_lines), second.out
+    assert tp.v02
+    v02 = run_process("git", "--git-dir", tp.target.repo, "rev-parse", "refs/tags/v0.2")
+    assert v02.out.rstrip("\n") == tp.v02
+    pushed = r"[0-9]+/[0-9]+  create-tag    v0\.2, annotated, at [0-9a-f]{7}$"
+    assert has_search(pushed, third.out_lines), third.out
+    same_tags(run_process, replay_x.target, tp.target)
+
+
+@pytest.fixture(scope="module")
+def missing_tag(root, extra_plan, mirror_extra, replay_x, replay):
+    """TM: a copy of X's target without v0.1.1 and with a tag v9 that the
+    plan lacks, checked again by run-replay.py from a copy of X's state file."""
+    target = copy_target(root, replay_x.target, "gh-tm")
+    state = root / "tm.state.json"
+    shutil.copyfile(replay_x.state, state)
+    target.git("update-ref", "-d", "refs/tags/v0.1.1")
+    target.git("tag", "v9", "main")
+    tail = (extra_plan.file, mirror_extra, TOOL_X)
+    return replay(target, TOOL_X, "--pace", "0", "--state", state, *tail, merged=True)
+
+
+def test_names_after_the_last_event_a_planned_tag_it_lacks_and_a_tag_the_plan_lacks(missing_tag):
+    """run-replay.py names after the last event a planned tag the target lacks and a tag of the target the plan lacks"""  # noqa: E501 # the description word for word
+    r = missing_tag
+    differs = (
+        "run-replay.py: ada-example/tool-x differs from the plan: tag v0\\.1\\.1 is missing;"
+        " tag v9 is not in the plan$"
+    )
+    assert r.status == 1, r.out
+    assert has_search(differs, r.out_lines), r.out
+
+
+@pytest.fixture(scope="module")
+def message_tags(msg_plans, mirror_msg, api_extra, make_target, replay, compare):
+    """MS: the plan of the tag messages and names, replayed with its default
+    state file, msg.state.json, and compared."""
+    target = make_target("gh-ms", TOOL_X)
+    tail = (msg_plans.planned.file, mirror_msg, TOOL_X)
+    result = replay(target, TOOL_X, "--pace", "0", *tail, merged=True)
+    compared = compare(target, *tail, api=api_extra)
+    return SimpleNamespace(target=target, result=result, compared=compared)
+
+
+def test_keep_whole_a_tag_message_with_the_lines_of_a_signature_and_leave_refused_names_alone(
+    root, run_process, message_tags
+):
+    """run-replay.py and compare-replay.py keep whole a tag message that holds the lines of a signature, and leave alone a tag whose name git tag refuses"""  # noqa: E501 # the description word for word
+    ms = message_tags
+    notes = run_process("git", "--git-dir", ms.target.repo, "cat-file", "tag", "notes")
+    r, c = ms.result, ms.compared
+    out = c.out_lines
+    assert (r.status, c.status) == (0, 0), r.out + c.out
+    assert past_header(notes.out) == (root / "notes-message").read_text(encoding="utf-8")
+    assert has_match("No differences", out), c.out
+    assert "  tag HEAD of the source is left behind, as planned" in out, c.out
+    assert "  tag -x of the source is left behind, as planned" in out, c.out
+    odd = ("for-each-ref", "refs/tags/HEAD", "refs/tags/-x")
+    assert run_process("git", "--git-dir", ms.target.repo, *odd).out.rstrip("\n") == ""
+
+
+# Reviews: the run's API with five reviews, as GitHub lists them: an approval
+# of #2 without a body, a request for changes on #3 with a comment on a range
+# of lines, a comment on #3 with a reply and a comment on a whole file, a
+# pending review on #3, which only its author sees, and a dismissed review on
+# #5. RV replays its plan; api-reviews-changed lacks the dismissed review and
+# has one more on #2; RO replays the plan without reviews under a header that
+# predates them.
+
+
+def review(review_id, login, body, state, submitted_at, commit_id):
+    """A review as GitHub lists it; a pending one has no submitted_at."""
+    entry = {"id": review_id, "user": {"login": login}, "body": body, "state": state}
+    if submitted_at:
+        entry["submitted_at"] = submitted_at
+    entry["commit_id"] = commit_id
+    return entry
+
+
+def write_api(folder, name, data):
+    """A file of an API folder, its name after the prefix of the source."""
+    (folder / f"{API_BASE}{name}").write_text(json.dumps(data), encoding="utf-8")
+
+
+def read_api(folder, name):
+    return json.loads((folder / f"{API_BASE}{name}").read_text(encoding="utf-8"))
+
+
+REVIEW_COMMENTS = [
+    {
+        "id": 601,
+        "pull_request_review_id": 502,
+        "user": {"login": "ada-example"},
+        "path": "thing.sh",
+        "line": 3,
+        "start_line": 1,
+        "original_line": 3,
+        "side": "LEFT",
+        "subject_type": "line",
+        "in_reply_to_id": None,
+        "body": "This breaks on an empty line.",
+        "created_at": "2026-03-04T13:00:00Z",
+    },
+    {
+        "id": 602,
+        "pull_request_review_id": 503,
+        "user": {"login": "bob-example"},
+        "path": "thing.sh",
+        "line": None,
+        "original_line": 3,
+        "subject_type": "line",
+        "in_reply_to_id": 601,
+        "body": "Agreed.",
+        "created_at": "2026-03-04T14:00:00Z",
+    },
+    {
+        "id": 603,
+        "pull_request_review_id": 503,
+        "user": {"login": "bob-example"},
+        "path": "README.md",
+        "line": None,
+        "original_line": None,
+        "side": "LEFT",
+        "subject_type": "file",
+        "in_reply_to_id": None,
+        "body": "Mention the parser.",
+        "created_at": "2026-03-04T14:00:01Z",
+    },
+    {
+        "id": 604,
+        "pull_request_review_id": 504,
+        "user": {"login": "bob-example"},
+        "path": "thing.sh",
+        "line": 2,
+        "original_line": 2,
+        "subject_type": "line",
+        "in_reply_to_id": None,
+        "body": "Still a draft.",
+        "created_at": "2026-03-04T15:00:00Z",
+    },
+]
+
+
+@pytest.fixture(scope="module")
+def api_reviews(root, run_plan, hashes):
+    """api-reviews: the API of run.jsonl with the five reviews and their
+    review comments."""
+    folder = root / "api-reviews"
+    shutil.copytree(run_plan.api, folder)
+    b2, f1, n1 = hashes["B2"], hashes["F1"], hashes["N1"]
+    write_api(
+        folder,
+        "_pulls_2_reviews-1.json",
+        [review(501, "bob-example", "", "APPROVED", "2026-03-02T15:00:00Z", b2)],
+    )
+    write_api(
+        folder,
+        "_pulls_3_reviews-1.json",
+        [
+            review(
+                *(502, "ada-example", "Handle empty input.", "CHANGES_REQUESTED"),
+                *("2026-03-04T13:00:00Z", f1),
+            ),
+            review(503, "bob-example", "", "COMMENTED", "2026-03-04T14:00:00Z", f1),
+            review(504, "bob-example", "Draft.", "PENDING", None, f1),
+        ],
+    )
+    write_api(
+        folder,
+        "_pulls_5_reviews-1.json",
+        [review(505, "ada-example", "Superseded.", "DISMISSED", "2026-03-07T09:00:00Z", n1)],
+    )
+    write_api(folder, "_pulls_comments-1.json", REVIEW_COMMENTS)
+    return folder
+
+
+@pytest.fixture(scope="module")
+def api_reviews_long(root, api_reviews, hashes):
+    """api-reviews-long: the same API with a review of #5 longer than a
+    comment takes, and a review comment without a review id."""
+    folder = root / "api-reviews-long"
+    shutil.copytree(api_reviews, folder)
+    long_review = review(
+        507, "ada-example", "x" * 65537, "COMMENTED", "2026-03-07T09:00:00Z", hashes["N1"]
+    )
+    write_api(folder, "_pulls_5_reviews-1.json", [long_review])
+    listed = read_api(folder, "_pulls_comments-1.json")
+    listed.append(
+        {
+            "id": 605,
+            "pull_request_review_id": None,
+            "user": {"login": "bob-example"},
+            "path": "thing.sh",
+            "line": 1,
+            "original_line": 1,
+            "subject_type": "line",
+            "in_reply_to_id": None,
+            "body": "Older than reviews.",
+            "created_at": "2026-03-04T16:00:00Z",
+        }
+    )
+    write_api(folder, "_pulls_comments-1.json", listed)
+    return folder
+
+
+@pytest.fixture(scope="module")
+def api_reviews_changed(root, api_reviews, hashes):
+    """api-reviews-changed: api-reviews without the dismissed review, with a
+    body on the approval of #2 and a review more on it, another body on the
+    request for changes on #3 and, on its comment, the text of one of its
+    own review comments, which the plan holds below the place of a body; and
+    without the comment 104 of #6, with a comment 199 more on #1."""
+    folder = root / "api-reviews-changed"
+    shutil.copytree(api_reviews, folder)
+    b2 = hashes["B2"]
+    (folder / f"{API_BASE}_pulls_5_reviews-1.json").write_text("[]\n", encoding="utf-8")
+    write_api(
+        folder,
+        "_pulls_2_reviews-1.json",
+        [
+            review(501, "bob-example", "approved", "APPROVED", "2026-03-02T15:00:00Z", b2),
+            review(506, "ada-example", "Late.", "COMMENTED", "2026-03-09T09:00:00Z", b2),
+        ],
+    )
+    changed = read_api(folder, "_pulls_3_reviews-1.json")
+    changed[0]["body"] = "Reject empty input."
+    changed[1]["body"] = "Agreed."
+    write_api(folder, "_pulls_3_reviews-1.json", changed)
+    kept = [c for c in read_api(folder, "_issues_comments-1.json") if c["id"] != 104]
+    kept.append(
+        {
+            "id": 199,
+            "issue_url": "https://api.github.com/repos/ada-example/tool/issues/1",
+            "body": "Added later.",
+            "user": {"login": "bob-example"},
+            "created_at": "2026-03-10T12:00:00Z",
+        }
+    )
+    write_api(folder, "_issues_comments-1.json", kept)
+    return folder
+
+
+@pytest.fixture(scope="module")
+def review_plans(root, source, plan, source_gh, api_reviews, api_reviews_long):
+    """reviews.jsonl, the plan of the source with reviews, and
+    reviews-long.jsonl, that of api-reviews-long; each with its output and
+    error in one."""
+    s, gh = source, source_gh("reviews-gh")
+
+    def plan_reviews(api, name):
+        events = root / name
+        env = gh.using(FAKE_GH_API=api)
+        result = plan("--types", s.types, s.mirror, TOOL, s.mailmap, events, env=env, merged=True)
+        return Planned(events, api, result)
+
+    return SimpleNamespace(
+        reviews=plan_reviews(api_reviews, "reviews.jsonl"),
+        long=plan_reviews(api_reviews_long, "reviews-long.jsonl"),
+    )
+
+
+def without_header_keys(path, keys):
+    """The text of an event file whose header lacks those keys."""
+    lines = path.read_text(encoding="utf-8").splitlines()
+    header = json.loads(lines[0])
+    for key in keys:
+        del header[key]
+    return "\n".join([json.dumps(header), *lines[1:]]) + "\n"
+
+
+@pytest.fixture(scope="module")
+def reviewed(
+    root,
+    source,
+    run_plan,
+    review_plans,
+    api_reviews,
+    api_reviews_changed,
+    make_target,
+    replay,
+    compare,
+):
+    """RV replayed and compared, and compared against api-reviews-changed; RO,
+    the plan of run.jsonl under a header without reviews, replayed and
+    compared; RT, RV's plan replayed with --with-times and compared; and RV
+    compared under a header written before the switches, without turned_off,
+    with a state file for that header. In the order of the shell test."""
+    events, mirror = review_plans.reviews.file, source.mirror
+    rv_slug = "ada-example/tool-rv"
+    rv = make_target("gh-rv", rv_slug)
+    rv_state = root / "rv.state.json"
+    rv_run = replay(
+        *(rv, rv_slug, "--pace", "0", "--state", rv_state, events, mirror, rv_slug),
+        merged=True,
+        FAKE_GH_API=api_reviews,
+    )
+    rv_tail = ("--state", rv_state, events, mirror, rv_slug)
+    rv_compared = compare(rv, *rv_tail, api=api_reviews)
+    rv_changed = compare(rv, *rv_tail, api=api_reviews_changed)
+
+    old = root / "old-reviews.jsonl"
+    old.write_text(without_header_keys(run_plan.file, ("reviews", "turned_off")), encoding="utf-8")
+    ro_slug = "ada-example/tool-ro"
+    ro = make_target("gh-ro", ro_slug)
+    ro_tail = ("--state", root / "ro.state.json", old, mirror, ro_slug)
+    ro_run = replay(ro, ro_slug, "--pace", "0", *ro_tail, merged=True)
+    ro_compared = compare(ro, *ro_tail, api=api_reviews)
+
+    rt_slug = "ada-example/tool-rt"
+    rt = make_target("gh-rt", rt_slug)
+    rt_tail = ("--with-times", "--state", root / "rt.state.json", events, mirror, rt_slug)
+    rt_run = replay(rt, rt_slug, "--pace", "0", *rt_tail, merged=True, FAKE_GH_API=api_reviews)
+    rt_compared = compare(rt, *rt_tail, api=api_reviews)
+
+    text = without_header_keys(events, ("turned_off",))
+    before = root / "reviews-before.jsonl"
+    before.write_text(text, encoding="utf-8")
+    state = json.loads(rv_state.read_text(encoding="utf-8"))
+    state["events"] = hashlib.sha256(text.encode()).hexdigest()
+    before_state = root / "rv-before.state.json"
+    before_state.write_text(json.dumps(state), encoding="utf-8")
+    rv_before = compare(rv, "--state", before_state, before, mirror, rv_slug, api=api_reviews)
+    return SimpleNamespace(
+        rv=rv,
+        rv_state=rv_state,
+        rv_run=rv_run,
+        rv_compared=rv_compared,
+        rv_changed=rv_changed,
+        ro_run=ro_run,
+        ro_compared=ro_compared,
+        rt_run=rt_run,
+        rt_compared=rt_compared,
+        rv_before=rv_before,
+    )
+
+
+@pytest.fixture(scope="module")
+def no_reviews(root, source, plan, source_gh, api_reviews, make_target, replay, compare):
+    """NR: the plan of the source with reviews under --no-reviews, with a log
+    of its own, replayed with its default state file, noreviews.state.json,
+    and compared."""
+    s, gh = source, source_gh("noreviews-gh")
+    events = root / "noreviews.jsonl"
+    planned = plan(
+        *("--types", s.types, "--no-reviews", s.mirror, TOOL, s.mailmap, events),
+        env=gh.using(FAKE_GH_API=api_reviews),
+        merged=True,
+    )
+    slug = "ada-example/tool-nr"
+    target = make_target("gh-nr", slug)
+    tail = (events, s.mirror, slug)
+    result = replay(target, slug, "--pace", "0", *tail, merged=True)
+    compared = compare(target, *tail, api=api_reviews)
+    return SimpleNamespace(
+        gh=gh,
+        plan=Planned(events, api_reviews, planned),
+        target=target,
+        result=result,
+        compared=compared,
+    )
+
+
+def test_plans_each_submitted_review_as_a_comment_at_its_time_and_leaves_a_pending_one_out(
+    review_plans, read_plan
+):
+    """plan-replay.py plans each submitted review as a comment on its pull request, at its time, and leaves a pending one out"""  # noqa: E501 # the description word for word
+    p = read_plan(review_plans.reviews.file)
+    assert [
+        (e["number"], e["review_id"], e["created_at"])
+        for e in p.of("add-comment")
+        if "review_id" in e
+    ] == [
+        (2, 501, "2026-03-02T15:00:00Z"),
+        (3, 502, "2026-03-04T13:00:00Z"),
+        (3, 503, "2026-03-04T14:00:00Z"),
+        (5, 505, "2026-03-07T09:00:00Z"),
+    ]
+    assert [e.get("review_id", e.get("source_id")) for e in p.of("add-comment", 3)] == [
+        102,
+        502,
+        503,
+    ]
+    assert p.header["reviews"] is True
+    assert len(p.events) == 27
+
+
+def test_writes_a_review_as_its_reviewer_state_commit_body_and_each_comment_under_its_place(
+    review_plans, read_plan, hashes
+):
+    """plan-replay.py writes a review as its reviewer, state, commit, body and each review comment under its file and lines"""  # noqa: E501 # the description word for word
+    p = read_plan(review_plans.reviews.file)
+    b2, f1, n1 = hashes["B2"][:7], hashes["F1"][:7], hashes["N1"][:7]
+    assert [e["body"] for e in p.of("add-comment") if "review_id" in e] == [
+        "_Review by bob-example: approved, on " + b2 + "._",
+        "_Review by ada-example: changes requested, on " + f1 + "._\n\nHandle empty input.\n\n"
+        "**`thing.sh`, lines 1 to 3, before the change**\n\nThis breaks on an empty line.",
+        "_Review by bob-example: commented, on " + f1 + "._\n\n**`thing.sh`, line 3, a reply**"
+        "\n\nAgreed.\n\n**`README.md`, file**\n\nMention the parser.",
+        "_Review by ada-example: dismissed, on " + n1 + "._\n\nSuperseded.",
+    ]
+
+
+def test_warns_of_a_review_longer_than_a_comment_takes_and_of_a_comment_without_a_review_id(
+    review_plans,
+):
+    """plan-replay.py warns of a review longer than a comment takes and of a review comment without a review id"""  # noqa: E501 # the description word for word
+    r = review_plans.long.result
+    out = r.out_lines
+    assert r.status == 0, r.out[:3000]
+    too_long = (
+        "plan-replay.py: warning: review 507 of #5 has 655[0-9]{2} characters, more than the"
+        " 65536 a comment takes; the run stops at it"
+    )
+    assert has_match(too_long, out), r.out[:3000]
+    without_id = "plan-replay.py: warning: 1 review comment without a review id left out"
+    assert without_id in out, r.out[:3000]
+
+
+def test_counts_the_reviews_apart_from_the_comments_and_warns_of_comments_of_an_uncarried_one(
+    review_plans, planned
+):
+    """plan-replay.py counts the reviews apart from the comments, and warns of the review comments of a review it does not carry"""  # noqa: E501 # the description word for word
+    r = review_plans.reviews.result
+    out = r.out_lines
+    assert r.status == 0, r.out
+    warning = (
+        "plan-replay.py: warning: 1 review comment of review 504, which no submitted review of a"
+        " listed pull request has, left out"
+    )
+    assert warning in out, r.out
+    assert has_match("  comments +4", out), r.out
+    assert has_match("  reviews +4", out), r.out
+    assert has_match("  reviews +0", planned.main.out_lines), planned.main.out
+
+
+def test_posts_each_review_as_a_comment_with_the_recreated_hash_of_the_commit_it_names(
+    reviewed, view, hashes
+):
+    """run-replay.py posts each review as a comment, with the recreated hash of the commit it names"""  # noqa: E501 # the description word for word
+    v = view(reviewed.rv, reviewed.rv_state)
+    comments, m = v.comments, v.recreated
+    out = as_read(reviewed.rv_run.out)
+    assert out.count("reviews as comments           4") == 1, out
+    changes = next(c for c in comments if c[1].startswith("_Review by ada-example: changes"))
+    assert comments[comments.index(changes)][0] == 3
+    body = (
+        "_Review by ada-example: changes requested, on " + m[hashes["F1"]][:7] + "._\n\n"
+        "Handle empty input.\n\n**`thing.sh`, lines 1 to 3, before the change**\n\n"
+        "This breaks on an empty line."
+    )
+    assert any(c == (3, body) for c in comments), comments
+    assert len(comments) == 8
+    assert out.count("  comments                      4\n") == 1, out
+
+
+def test_finds_no_difference_in_a_replay_that_carries_the_reviews_as_comments(reviewed):
+    """compare-replay.py finds no difference in a replay that carries the reviews as comments"""
+    r, c = reviewed.rv_run, reviewed.rv_compared
+    out = c.out_lines
+    assert (r.status, c.status) == (0, 0), r.out + c.out
+    assert has_match("No differences", out), c.out
+    assert has_match("  comments +8", out), c.out
+    assert has_match("  reviews as comments +4", out), c.out
+
+
+CHANGED_REVIEW_LINES = (
+    "#5, comment 1: the source has no review 505",
+    "#2: review 506 of the source is not in the event file",
+    "#3, comment 2: the event file lacks the body of the review",
+    "#1: comment 199 of the source is not in the event file",
+    "#6, comment 1: the source has no comment 104",
+    "#2, comment 1: the event file lacks the body of the review",
+    "#3, comment 3: the event file lacks the body of the review",
+)
+
+
+def test_names_a_review_or_comment_gone_one_the_plan_lacks_and_a_review_body_the_plan_lacks(
+    reviewed,
+):
+    """compare-replay.py names a planned review or comment the source no longer has, a review or comment of the source the plan lacks, and a review body the plan lacks"""  # noqa: E501 # the description word for word
+    r = reviewed.rv_changed
+    out = r.out_lines
+    assert r.status == 1, r.out
+    for line in CHANGED_REVIEW_LINES:
+        assert f"  {line}" in out, f"no line: {line}\n{r.out}"
+    assert has_match("Differences: 7", out), r.out
+
+
+def test_finds_no_difference_in_a_replay_with_with_times_that_carries_the_reviews(reviewed):
+    """compare-replay.py finds no difference in a replay with --with-times that carries the reviews"""  # noqa: E501 # the description word for word
+    r, c = reviewed.rt_run, reviewed.rt_compared
+    assert (r.status, c.status) == (0, 0), r.out + c.out
+    assert has_match("No differences", c.out_lines), c.out
+
+
+def test_notes_an_event_file_that_predates_reviews_and_expects_none(reviewed):
+    """compare-replay.py notes an event file that predates reviews, and expects none"""
+    r, c = reviewed.ro_run, reviewed.ro_compared
+    out = c.out_lines
+    assert (r.status, c.status) == (0, 0), r.out + c.out
+    assert "  the event file predates reviews: it plans no review as a comment" in out, c.out
+    assert has_match("No differences", out), c.out
+
+
+def test_without_a_switch_turns_nothing_off_and_carries_the_reviews(review_plans, read_plan):
+    """plan-replay.py without a switch turns nothing off and carries the reviews"""
+    p = read_plan(review_plans.reviews.file)
+    assert p.header["turned_off"] == []
+    assert p.header["reviews"] is True
+    assert len([e for e in p.events if "review_id" in e]) == 4
+
+
+def test_no_reviews_plans_no_review_records_them_turned_off_and_plans_nothing_else_differently(
+    no_reviews, run_plan, read_plan
+):
+    """plan-replay.py --no-reviews plans no review as a comment, records reviews as turned off in the header, and plans nothing else differently"""  # noqa: E501 # the description word for word
+    p = read_plan(no_reviews.plan.file)
+    assert not [e for e in p.events if "review_id" in e]
+    assert p.header["reviews"] is False
+    assert p.header["turned_off"] == ["reviews"]
+    lines = run_plan.file.read_text(encoding="utf-8").splitlines()
+    assert p.events == [json.loads(line) for line in lines[1:]]
+
+
+def test_no_reviews_reads_no_review_and_no_review_comment_from_github_and_warns_of_none(
+    no_reviews,
+):
+    """plan-replay.py --no-reviews reads no review and no review comment from GitHub, and warns of none"""  # noqa: E501 # the description word for word
+    r = no_reviews.plan.result
+    out = r.out_lines
+    calls = no_reviews.gh.calls()
+    assert r.status == 0, r.out
+    assert not has_search("warning", out), r.out
+    assert has_match("  reviews +0", out), r.out
+    assert has_search("^api repos/ada-example/tool/issues/comments", calls), calls
+    assert not has_search("/reviews|pulls/comments", calls), calls
+
+
+def test_notes_reviews_as_turned_off_where_the_plan_turns_them_off_and_reads_none(no_reviews):
+    """compare-replay.py notes reviews as turned off where the plan turns them off, expects none in the target and reads none"""  # noqa: E501 # the description word for word
+    r, c = no_reviews.result, no_reviews.compared
+    out = c.out_lines
+    assert (r.status, c.status) == (0, 0), r.out + c.out
+    assert has_match("No differences", out), c.out
+    note = "  reviews are turned off: the event file plans no review as a comment"
+    assert note in out, c.out
+    assert not has_search("predates reviews", out), c.out
+    assert has_match("  reviews as comments +0", out), c.out
+    assert has_match("  comments +4", out), c.out
+    calls = no_reviews.target.calls()
+    assert not has_search("/reviews", calls), calls
+
+
+def test_compares_an_event_file_whose_header_was_written_before_the_switches_as_before(reviewed):
+    """compare-replay.py compares an event file whose header was written before the switches as before"""  # noqa: E501 # the description word for word
+    r = reviewed.rv_before
+    out = r.out_lines
+    assert r.status == 0, r.out
+    assert has_match("No differences", out), r.out
+    assert has_match("  reviews as comments +4", out), r.out
+    assert not has_search("turned off|predates", out), r.out
