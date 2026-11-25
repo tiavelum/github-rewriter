@@ -19,12 +19,13 @@ Prints the totals and asks for <owner/repo> to be typed before the first
 write; anything else stops without writing. --confirmed gives that answer
 instead, for replay.py, which asked for it before it started this run.
 Writes to GitHub through gh api and git push only, at least --pace seconds
-apart (default 1), and waits out GitHub's rate limits. --with-times appends
-the original creation time to each body and comment. --sign signs each
-recreated commit whose committer has <address> with the signing key of your
-git configuration, after checking that GitHub knows the key as a signing
-key. --final-name fills {pr_url} in squash messages with the URL under the
-name the target will finally carry.
+apart (default 1), and waits out GitHub's rate limits; tags it creates in the
+work repository and pushes. --with-times appends the original creation time
+to each body and comment. --sign signs each recreated commit whose committer
+has <address>, and each annotated tag whose tagger has it, with the signing
+key of your git configuration, after checking that GitHub knows the key as
+a signing key. --final-name fills {pr_url} in squash messages with the URL
+under the name the target will finally carry.
 """
 
 import bisect
@@ -52,6 +53,7 @@ KINDS = (
     "add-comment",
     "merge-pull",
     "close-item",
+    "create-tag",
 )
 # A hash in a text: 7 to 40 lowercase hexadecimal characters, not part of a longer word.
 HASH = re.compile(r"(?<![0-9A-Za-z])[0-9a-f]{7,40}(?![0-9A-Za-z])")
@@ -340,6 +342,10 @@ class Replay:
         }
         self.done, self.highest, self.head = 0, 0, None
         self.hashes, self.numbers, self.heads, self.urls = {}, {}, {}, {}
+        # The object each tag's ref is at, by name: the recreated commit of a
+        # lightweight tag, the tag object of an annotated one.
+        self.tags = {}
+        self.refs = {}
         # The committer date each recreated commit got, by source commit; None
         # for a run started before committer dates were the time of the replay,
         # which keeps the original ones so that it resumes.
@@ -377,6 +383,8 @@ class Replay:
         self.numbers = {int(k): v for k, v in state["numbers"].items()}
         self.heads = {int(k): v for k, v in state["heads"].items()}
         self.urls = {int(k): v for k, v in state["urls"].items()}
+        # Missing in a state file written before tags were carried.
+        self.tags = state.get("tags", {})
         self.finished = state.get("finished", False)
         return True
 
@@ -397,6 +405,7 @@ class Replay:
             "heads": {str(k): v for k, v in sorted(self.heads.items())},
             "urls": {str(k): v for k, v in sorted(self.urls.items())},
             "hashes": self.hashes,
+            "tags": self.tags,
         }
         if self.committer_dates is not None:
             state["committer_dates"] = self.committer_dates
@@ -454,6 +463,7 @@ class Replay:
         known(entries)
         # The key is passed on explicitly, so that the key checked is the key that signs.
         self.sign_options = ["-c", f"gpg.format={form}", f"-S{key}"]
+        self.sign_key = key
 
     def check_ssh_key(self, key):
         if key.startswith("key::"):
@@ -651,6 +661,7 @@ class Replay:
             ("reviews as comments", sum("review_id" in e for e in left)),
             ("merges", count("merge-pull")),
             ("closes", count("close-item")),
+            ("tags", count("create-tag")),
         ]
         if self.sign:
             rows.append(
@@ -663,14 +674,18 @@ class Replay:
                     ),
                 )
             )
+            rows.append(("tags to sign", sum(self.signs_tag(e) for e in left)))
         for name, value in rows:
             print(f"  {name:<25}{value:>6}")
         if self.sign:
-            print(f"  signed: the commits committed by {self.sign}, with {self.key_note}")
+            print(
+                f"  signed: the commits committed and the tags tagged by {self.sign},"
+                f" with {self.key_note}"
+            )
             if not self.steady_key:
                 print(
                     "  this key does not sign a commit the same way twice: a run stopped in a push"
-                    " of signed commits cannot resume"
+                    " of signed commits, or in a signed tag, cannot resume"
                 )
         urls = sum(e["kind"] == "merge-pull" and "{pr_url}" in e["commit_message"] for e in left)
         if urls:
@@ -693,7 +708,9 @@ class Replay:
         # The work repository borrows the mirror's objects instead of copying them.
         (self.work / "objects" / "info" / "alternates").write_text(objects + "\n", encoding="utf-8")
         if resumed and self.head:
-            git(self.work, "fetch", "-q", self.remote, "+refs/heads/*:refs/target/*")
+            # Without --no-tags, git would fetch the target's tags into the
+            # refs/tags/ of the tags this repository builds.
+            git(self.work, "fetch", "-q", "--no-tags", self.remote, "+refs/heads/*:refs/target/*")
 
     def text(self, value):
         """value with each hash that is the prefix of exactly one source commit,
@@ -942,6 +959,7 @@ class Replay:
             self.work,
             "fetch",
             "-q",
+            "--no-tags",
             self.remote,
             f"+refs/heads/{self.default}:refs/target/{self.default}",
         )
@@ -985,6 +1003,81 @@ class Replay:
             self.api.expect("PATCH", f"repos/{self.slug}/issues/{n}", fields)
         return f"#{n} closed{said}{note}"
 
+    # Tags
+
+    def signs_tag(self, e):
+        return (
+            self.sign is not None
+            and e["kind"] == "create-tag"
+            and e["annotated"]
+            and e["tagger"]["email"] == self.sign
+        )
+
+    def create_tag(self, e):
+        """Creates the tag in the work repository at the recreated commit, an
+        annotated one with the planned message, tagger and date, and pushes
+        it; records the object its ref is at before the push, so that a
+        resumed run can check it rebuilds the same tag. A signed tag's
+        message gets a final line break where it has text and lacks one."""
+        name, commit = e["name"], self.hashes.get(e["commit"])
+        if commit is None:
+            raise ReplayError(
+                f"tag {name} names {e['commit'][:7]}, which no earlier event recreated"
+            )
+        signed = self.signs_tag(e)
+        if e["annotated"]:
+            t = e["tagger"]
+            env = dict(
+                os.environ,
+                GIT_COMMITTER_NAME=t["name"],
+                GIT_COMMITTER_EMAIL=t["email"],
+                GIT_COMMITTER_DATE=git_date(t["date"]),
+            )
+            # tag.gpgSign would sign every annotated tag, and the default
+            # cleanup would change the message.
+            args = ["-c", "tag.gpgSign=false", "-c", "tag.forceSignAnnotated=false"]
+            if signed:
+                args += [*self.sign_options[:2], "tag", "-u", self.sign_key]
+            else:
+                args += ["tag", "-a"]
+            # Without "--", a name that starts with a dash would be an option.
+            args += ["-f", "--cleanup=verbatim", "-F", "-", "--", name, commit]
+            message = self.text(e["message"])
+            if signed and message and not message.endswith("\n"):
+                # git appends the signature right after the message, and
+                # verify-tag finds it only at the start of a line.
+                message += "\n"
+            git(self.work, *args, stdin=message, env=env)
+            sha = git(self.work, "rev-parse", f"refs/tags/{name}")
+        else:
+            sha = commit
+        recorded = self.tags.get(name)
+        if recorded and recorded != sha:
+            why = (
+                "its signature differs from the one the first run made: the signing key signs"
+                " differently each time, or it is another key"
+                if signed
+                else "it differs from the one the first run made"
+            )
+            raise ReplayError(
+                f"tag {name} was rebuilt as {sha[:7]}, but {self.state_path} records"
+                f" {recorded[:7]}; {why}. The run stops before it pushes a second tag"
+            )
+        self.tags[name] = sha
+        self.save_state()
+        what = "annotated, signed" if signed else "annotated" if e["annotated"] else "lightweight"
+        found = self.refs.get(f"refs/tags/{name}") if self.resumed_at == e["seq"] else None
+        if found == sha:
+            return f"{name}, {what}, at {commit[:7]}, found pushed"
+        if found:
+            raise ReplayError(
+                f"tag {name} is at {found[:7]} in {self.slug}, not at the rebuilt {sha[:7]}"
+            )
+        self.api.before_write()
+        git(self.work, "push", "-q", self.remote, f"{sha}:refs/tags/{name}")
+        self.api.after_write()
+        return f"{name}, {what}, at {commit[:7]}"
+
     # The run
 
     def apply(self, e):
@@ -997,12 +1090,13 @@ class Replay:
             "add-comment": self.add_comment,
             "merge-pull": self.merge_pull,
             "close-item": self.close_item,
+            "create-tag": self.create_tag,
         }[e["kind"]]
         return handler(e)
 
     def reconcile(self):
         """Reopens what a closing keyword closed that the source has open, and
-        stops if anything else differs from the plan."""
+        stops if anything else differs from the plan, its tags included."""
         found = {i["number"]: i for i in self.api.pages(f"repos/{self.slug}/issues?state=all")}
         problems, reopened = [], []
         for n, e in sorted(self.creates.items()):
@@ -1034,10 +1128,36 @@ class Replay:
         labels = {label["name"] for label in self.api.pages(f"repos/{self.slug}/labels")}
         if labels != planned:
             problems.append(f"the labels differ: {', '.join(sorted(labels ^ planned))}")
+        problems += self.tag_problems()
         for n in reopened:
             print(f"  #{n} reopened: a closing keyword closed it, the source has it open")
         if problems:
             raise ReplayError(f"{self.slug} differs from the plan: {'; '.join(problems)}")
+
+    def tag_problems(self):
+        """How the target's tags differ from those the state file records for
+        the planned ones."""
+        result = run(["git", "ls-remote", "--refs", "--tags", self.remote])
+        if result.returncode:
+            raise ReplayError(f"git ls-remote of {self.slug} failed: {result.stderr.strip()}")
+        found = {}
+        # Only a tab ends the hash: git allows other Unicode blanks in a name.
+        for line in result.stdout.split("\n"):
+            sha, _, ref = line.partition("\t")
+            if ref.startswith("refs/tags/"):
+                found[ref[len("refs/tags/") :]] = sha
+        planned = [e["name"] for e in self.events if e["kind"] == "create-tag"]
+        problems = []
+        for name in planned:
+            sha, recorded = found.get(name), self.tags.get(name)
+            if sha is None:
+                problems.append(f"tag {name} is missing")
+            elif sha != recorded:
+                problems.append(
+                    f"tag {name} is at {sha[:7]}, the state file's {(recorded or 'nothing')[:7]}"
+                )
+        problems += [f"tag {name} is not in the plan" for name in sorted(set(found) - set(planned))]
+        return problems
 
     def interrupt(self, signum, frame):
         if self.stopping:
@@ -1056,6 +1176,7 @@ class Replay:
             now_date()
         highest, refs = self.read_target()
         self.check_target(resumed, highest, refs)
+        self.refs = refs
         # Labels the target has, such as GitHub's defaults, are changed only before the first event.
         updated, removed = self.label_changes() if self.done == 0 else ([], [])
         self.summary(resumed, updated, removed)

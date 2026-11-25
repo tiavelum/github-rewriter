@@ -18,18 +18,21 @@ applies them. Reads GitHub through gh api with GET requests only. Prints
 every title it changed, every squash message it wrote, what it leaves
 behind, and the totals.
 
-The replay carries no tag and no release, and no branch other than the
-default branch and those it pushes for pull requests at their source tips.
-The plan stops, and writes no event file, unless the <file> of
---leave-behind accepts each of them with a line of its kind and name:
+The replay carries each tag that names a commit it recreates, under a name
+git tag accepts, lightweight or annotated as in the source, an annotated one
+with its message and its tagger mapped through <mailmap>. It carries no
+other tag, no release, and no branch other than the default branch and
+those it pushes for pull requests at their source tips. The plan stops, and
+writes no event file, unless the <file> of --leave-behind accepts each of
+them with a line of its kind and name:
   tag      v1.0
   release  v1.0
   branch   wip/idea  # a "#" after the name starts a comment
 
 --no-tags, --no-releases and --no-reviews turn off what the replay carries:
-the first two accept every tag or every release as left behind, without a
-line of --leave-behind, and the third plans no review as a comment and reads
-none. --no-tags needs --no-releases, since GitHub creates the missing tag of
+the first two plan no tag or no release and accept every one as left behind,
+without a line of --leave-behind, and the third plans no review as a comment
+and reads none. --no-tags needs --no-releases, since GitHub creates the missing tag of
 a release it creates, so a replay with releases would still carry tags.
 
 Each commit title and pull request title without a type gets one: from
@@ -64,7 +67,8 @@ TYPES = ("feat", "fix", "docs", "chore", "refactor", "test", "build", "ci", "rev
 # Branch prefixes that are no type of GW-6 but name one.
 BRANCH_ALIASES = {"feature": "feat", "bugfix": "fix", "hotfix": "fix", "doc": "docs"}
 # At the same time, an event of a lower rank comes first: a branch is pushed
-# before its pull request is created, and an item exists before it is closed.
+# before its pull request is created, an item exists before it is closed, and
+# a tag, which marks a state reached, comes after all else.
 RANK = {
     "create-label": 0,
     "push-commits": 1,
@@ -74,6 +78,7 @@ RANK = {
     "add-comment": 4,
     "merge-pull": 5,
     "close-item": 6,
+    "create-tag": 7,
 }
 TYPED = re.compile(r"(?P<type>[A-Za-z]+)(?:\([^)]*\))?!?: ")
 ORDINARY_WORD = re.compile(r"[A-Z][a-z]+")
@@ -88,6 +93,30 @@ SENTENCE_END = re.compile(r"[.!?](?=\s)")
 SUMMARY_LENGTH = 300
 # Dates are read raw: git 2.45 changed how %aI writes UTC, "Z" for "+00:00".
 COMMIT_FORMAT = "%H%x1f%T%x1f%aN%x1f%aE%x1f%ad%x1f%cN%x1f%cE%x1f%cd%x1f%B"
+IDENTITY = re.compile(r"^(?P<name>.*) <(?P<email>[^>]*)> (?P<date>\d+ [+-]\d{4})$")
+# The lines that open a signature git appends to a signed tag's message; git
+# takes the last of them as the start of the signature.
+SIGNATURE = re.compile(
+    r"^-----BEGIN (PGP SIGNATURE|PGP MESSAGE|SIGNED MESSAGE|SSH SIGNATURE)-----$", re.M
+)
+
+
+def unsigned(message):
+    """A tag's message without the signature git appended to it, which would
+    not hold for the recreated tag."""
+    # Only where the text from the last opening line on ends with its closing
+    # line: a message may hold such a line in its text.
+    starts = list(SIGNATURE.finditer(message))
+    if starts and message.rstrip("\n").endswith(f"-----END {starts[-1].group(1)}-----"):
+        return message[: starts[-1].start()]
+    return message
+
+
+def refused_tag_name(name):
+    """Whether git tag refuses to create a tag of that name, also after "--":
+    one that starts with a dash, or HEAD, as check_tag_ref() of git's refs.c
+    checks before the format a ref name of the mirror already has."""
+    return name.startswith("-") or name == "HEAD"
 
 
 def die(message):
@@ -223,7 +252,7 @@ class Mirror:
         peeled = self.git(
             "cat-file",
             "--batch-check=%(objectname) %(objecttype)",
-            stdin="".join(f"{name}^{{}}\n" for name, _, _ in listed),
+            stdin="".join(f"{name}^{{}}\n" for name, *_ in listed),
         ).splitlines()
         found = {}
         for (name, sha, kind), line in zip(listed, peeled, strict=True):
@@ -235,6 +264,22 @@ class Mirror:
                 "type": target_type,
             }
         return found
+
+    def tag(self, sha):
+        """The type of the object the tag object sha names, its message
+        without its signature, and its tagger, mapped through the mailmap,
+        with the original date; None as tagger where the tag has none."""
+        # The type comes from the object itself: git 2.50's for-each-ref peels
+        # a tag of a tag through every level in %(*objecttype).
+        head, _, message = self.git("cat-file", "tag", sha).partition("\n\n")
+        fields = dict(x.split(" ", 1) for x in head.split("\n") if " " in x)
+        found = IDENTITY.match(fields.get("tagger", ""))
+        tag = {"names": fields.get("type"), "message": unsigned(message), "tagger": None}
+        if found:
+            mapped = self.git("check-mailmap", f"{found['name']} <{found['email']}>")
+            name, _, email = mapped.rstrip("\n").rpartition(" <")
+            tag["tagger"] = {"name": name, "email": email[:-1], "date": iso_date(found["date"])}
+        return tag
 
 
 class Overrides:
@@ -364,10 +409,53 @@ class LeaveBehind:
             )
 
 
-def left_behind(mirror, info, releases, events, off=()):
+def source_tags(mirror, recreated, off=()):
+    """The tags of the source: those the replay carries, each with the commit
+    it names and, where annotated, its message and mapped tagger; and those
+    it leaves behind, as left_behind() lists them. A tag carries over only
+    where it names a commit the replay recreates, so that it can stand at the
+    recreated one, and only under a name git tag accepts, so that the run can
+    create it; off holds the kinds a switch turns off."""
+    carried, left = [], []
+    for name, ref in sorted(mirror.refs("refs/tags/").items()):
+        sha = ref["peeled"]
+        kind = "annotated" if ref["annotated"] else "lightweight"
+        at = sha[:7] if ref["type"] == "commit" else f"the {ref['type']} {sha[:7]}"
+        tag = mirror.tag(ref["sha"]) if ref["annotated"] and "tags" not in off else None
+        if "tags" in off:
+            reason = f"{kind}, at {at}; tags are turned off"
+        elif ref["type"] != "commit":
+            reason = f"{kind}, at {at}; the replay carries only tags of commits"
+        elif tag and tag["names"] == "tag":
+            reason = f"{kind}, at {at} through another tag; the replay carries no tag of a tag"
+        elif sha not in recreated:
+            reason = f"{kind}, at {at}, a commit the replay does not recreate"
+        elif tag and tag["tagger"] is None:
+            reason = (
+                f"{kind}, at {at}, without a tagger; the replay recreates only one with a tagger"
+            )
+        elif refused_tag_name(name):
+            reason = f"{kind}, at {at}; git tag refuses the name"
+        else:
+            carried.append(
+                {
+                    "name": name,
+                    "commit": sha,
+                    "annotated": ref["annotated"],
+                    "message": tag["message"] if tag else None,
+                    "tagger": tag["tagger"] if tag else None,
+                }
+            )
+            continue
+        left.append({"kind": "tag", "name": name, "sha": sha, "reason": reason})
+    return carried, left
+
+
+def left_behind(mirror, info, releases, events, tags, off=()):
     """The tags, releases and branches of the source that the replay does not
-    carry, each with its kind, name, the commit it names and why; off holds
-    the kinds a switch turns off."""
+    carry, each with its kind, name, the commit it names and why; tags holds
+    the tags left behind, as source_tags() gives them, and off the kinds a
+    switch turns off."""
     default = info["default_branch"]
     deletes = bool(info.get("delete_branch_on_merge"))
     merged = {e["number"] for e in events if e["kind"] == "merge-pull"}
@@ -394,13 +482,7 @@ def left_behind(mirror, info, releases, events, off=()):
         else:
             continue
         left.append({"kind": "branch", "name": name, "sha": tip, "reason": reason})
-    for name, ref in sorted(mirror.refs("refs/tags/").items()):
-        sha = ref["peeled"]
-        kind = "annotated" if ref["annotated"] else "lightweight"
-        at = sha[:7] if ref["type"] == "commit" else f"the {ref['type']} {sha[:7]}"
-        why = "tags are turned off" if "tags" in off else "the replay pushes no tags"
-        reason = f"{kind}, at {at}; {why}"
-        left.append({"kind": "tag", "name": name, "sha": sha, "reason": reason})
+    left += tags
     for r in sorted(releases, key=lambda r: r["tag_name"]):
         what = "draft" if r.get("draft") else "pre-release" if r.get("prerelease") else "published"
         why = "releases are turned off" if "releases" in off else "the replay creates no releases"
@@ -873,7 +955,20 @@ def plan(mirror, repo, overrides, typed=True, keep_merges=False, off=()):
             )
             warn(f"{len(found)} review comment{'s' if len(found) > 1 else ''} {which} left out")
 
-    left = left_behind(mirror, info, gh_pages(f"repos/{repo}/releases"), events, off)
+    # Each tag comes after the event that recreates its commit: an annotated
+    # one at its tagger's date, a lightweight one, which has no date of its
+    # own, right after that event.
+    carried, left_tags = source_tags(mirror, set(main_index) | set(owner), off)
+    for t in carried:
+        add(
+            ("tag", t["name"]),
+            "create-tag",
+            utc(t["tagger"]["date"]) if t["tagger"] else None,
+            [producer(t["commit"])],
+            **t,
+        )
+    releases = gh_pages(f"repos/{repo}/releases")
+    left = left_behind(mirror, info, releases, events, left_tags, off)
     return default, events, left
 
 
@@ -1049,6 +1144,7 @@ def main(argv):
         ("comments", sum(e["kind"] == "add-comment" and "review_id" not in e for e in events)),
         ("reviews", sum("review_id" in e for e in events)),
         ("labels", count("create-label")),
+        ("tags", count("create-tag")),
         ("commits", pushed),
         ("squash merges", merges("squash")),
         ("merge commits", merges("merge")),

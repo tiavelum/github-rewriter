@@ -1,6 +1,6 @@
 # replay
 
-How to replay a GitHub repository into a new, empty one with the scripts of this folder, for the owner of both: every commit, issue, pull request, comment, review and label of the source, reviews as comments, so that the target gets them under the same numbers, with mapped identities and typed titles.
+How to replay a GitHub repository into a new, empty one with the scripts of this folder, for the owner of both: every commit, issue, pull request, comment, review and label of the source, reviews as comments, and its tags, so that the target gets them under the same numbers, with mapped identities and typed titles.
 
 Planning reads the source and writes the replay as an event file; it changes nothing on GitHub. Running applies the event file to the target, after you confirm it, and can stop and resume. Comparing reads the source and the target and names every difference between them; it changes nothing either. `replay.py` takes these three steps in turn from one run file, with the steps around them, and is the way to run a replay; the sections after it describe the steps it takes, which you can also run alone. Each script takes its inputs as arguments; run without arguments, it prints its usage.
 
@@ -167,6 +167,7 @@ Totals:
   comments                    119
   reviews                      22
   labels                       13
+  tags                          0
   commits                      72
   squash merges                27
   merge commits                 0
@@ -200,9 +201,9 @@ Two options, given before the mirror, turn off what the replay changes; without 
 - `--no-types` keeps every title as it is, instead of giving it a type as [How a title gets its type](#how-a-title-gets-its-type) describes.
 - `--keep-merges` keeps the merge commits, as [How pull requests are merged](#how-pull-requests-are-merged) describes.
 
-Three options, given before the mirror, turn off what the replay carries; without them, it carries every review as a comment, and stops at each tag and release it leaves behind, as [What a replay leaves behind](#what-a-replay-leaves-behind) describes:
+Three options, given before the mirror, turn off what the replay carries; without them, it carries every review as a comment and every tag it can place, and stops at each release and each other tag it leaves behind, as [What a replay leaves behind](#what-a-replay-leaves-behind) describes:
 
-- `--no-tags` accepts every tag as left behind, without a line of `--leave-behind`.
+- `--no-tags` plans no tag and accepts every tag as left behind, without a line of `--leave-behind`.
 - `--no-releases` accepts every release as left behind, the same way.
 - `--no-reviews` plans no review as a comment, and reads no review from GitHub.
 
@@ -212,34 +213,40 @@ Three options, given before the mirror, turn off what the replay carries; withou
 
 ## What a replay leaves behind
 
-The replay carries the default branch and the branch of each pull request, at the head the pull request ends with; it pushes no tag and creates no release, so of these only the archive of the source keeps a copy. `plan-replay.py` lists under `Left behind`, each with the reason, what of the source the replay does not carry:
+The replay carries the default branch and the branch of each pull request, at the head the pull request ends with, and each tag that names a commit it recreates, as [What the target ends with](#what-the-target-ends-with) describes; it creates no release, so of these only the archive of the source keeps a copy. `plan-replay.py` lists under `Left behind`, each with the reason, what of the source the replay does not carry:
 
-- Each tag, lightweight or annotated.
+- Each tag it cannot place at a recreated commit, which stays left behind, as [#57](https://github.com/tiavelum/github-rewriter/issues/57) decided, so that each tag of the target names a commit of the replayed history: a tag of a tree or a blob, `the replay carries only tags of commits`; a tag of a tag, `the replay carries no tag of a tag`; a tag of a commit the replay does not recreate, such as one that only a branch left behind holds, `a commit the replay does not recreate`; an annotated tag without a tagger, which `git tag` cannot recreate as it is; and a tag named `HEAD` or with a name that starts with `-`, `git tag refuses the name`, since `git tag` refuses to create such a tag, also after `--`, so that the target gets no tag that git itself would not make.
 - Each release, published, pre-release or draft; GitHub [lists draft releases only to users with push access](https://docs.github.com/en/rest/releases/releases#list-releases), so plan with that access to see them.
 - Each branch other than the default branch that is the head of no pull request, that stands at another commit than the head its pull request ends with, or that is the head of a merged pull request in a source that deletes head branches on merge, since `replay.py` turns that deletion on in the target.
 
-It stops, and writes no event file, unless a file given to `--leave-behind` accepts each of them with a line of its kind and its name; a `#` after the name starts a comment. In a run file of `replay.py`, the same lines stand in `leave_behind`. The message it stops with gives each line to accept, with its reason as such a comment, so that you can copy the lines you accept into the file. This is the message for the test's source with two tags, two releases and two branches the replay does not carry:
+It stops, and writes no event file, unless a file given to `--leave-behind` accepts each of them with a line of its kind and its name; a `#` after the name starts a comment. In a run file of `replay.py`, the same lines stand in `leave_behind`. The message it stops with gives each line to accept, with its reason as such a comment, so that you can copy the lines you accept into the file. This is the message for the test's source with two releases and two branches the replay does not carry, and three tags it carries:
 
 ```
-plan-replay.py: the replay leaves behind 6 of the source's tags, releases and branches that --leave-behind does not accept (leave_behind, in a run file of replay.py). Accept each with its line, so that only the archive of the source keeps it:
+plan-replay.py: the replay leaves behind 4 of the source's tags, releases and branches that --leave-behind does not accept (leave_behind, in a run file of replay.py). Accept each with its line, so that only the archive of the source keeps it:
   branch   docs/5-notes  # at c06a6b4; the replay pushes the head of #5, 59b6f32, under its name
   branch   wip/idea      # at bee64c6, the head of no pull request
-  tag      v0.1          # lightweight, at 91dcb27; the replay pushes no tags
-  tag      v0.2          # annotated, at bee64c6; the replay pushes no tags
   release  v0.2          # published, named 'Second'; the replay creates no releases
   release  v0.3          # draft, named 'Next'; the replay creates no releases
 ```
 
-To accept, say, the tag `v0.1` and the branch `wip/idea`, plan again with them in a file:
+The test's copy of that source with three tags the replay cannot place adds these lines, the first for a name with a no-break space:
+
+```
+  tag      sp ace        # lightweight, at c80fe1c, a commit the replay does not recreate
+  tag      tree-tag      # lightweight, at the tree 8b4215b; the replay carries only tags of commits
+  tag      v0.3          # annotated, at bee64c6 through another tag; the replay carries no tag of a tag
+```
+
+To accept, say, the release `v0.2` and the branch `wip/idea`, plan again with them in a file:
 
 ```sh
-printf '%s\n' 'tag v0.1' 'branch wip/idea' >~/replay-leave-behind
+printf '%s\n' 'release v0.2' 'branch wip/idea' >~/replay-leave-behind
 python3 replay/plan-replay.py --leave-behind ~/replay-leave-behind "$mirror" tiavelum/github-rewriter ~/rewrite-mailmap "${mirror%.git}-left.jsonl"
 ```
 
 It warns of a line that names nothing it leaves behind. The event file's header records what it left behind, so that [Comparing the replay with its source](#comparing-the-replay-with-its-source) notes each as left behind rather than naming it a difference, and step 8 of `replay.py` names them beside the commands that archive the source.
 
-`--no-tags` and `--no-releases`, `no_tags` and `no_releases` in a run file, accept every tag or every release, as [Planning a replay](#planning-a-replay) describes, so that the plan asks for no line of that kind. It still lists each under `Left behind` and in the header, with `tags are turned off` or `releases are turned off` in place of the reason above, such as `lightweight, at 91dcb27; tags are turned off`, and warns of a line of `--leave-behind` that names one, as `accepts tag v0.1, which --no-tags leaves behind already`, without stopping at it.
+`--no-tags` and `--no-releases`, `no_tags` and `no_releases` in a run file, accept every tag or every release, the tags the replay would carry included, as [Planning a replay](#planning-a-replay) describes, so that the plan asks for no line of that kind. It still lists each under `Left behind` and in the header, with `tags are turned off` or `releases are turned off` in place of the reason above, such as `lightweight, at 91dcb27; tags are turned off`, and warns of a line of `--leave-behind` that names one, as `accepts tag v0.1, which --no-tags leaves behind already`, without stopping at it.
 
 ## Running a replay
 
@@ -294,6 +301,7 @@ Replay ada-example/tool into ada-example/tool-replay-20261116-1215: 23 events
   reviews as comments           0
   merges                        2
   closes                        3
+  tags                          0
   {pr_url} in 1 squash message: https://github.com/ada-example/tool-replay-20261116-1215/pull/<number>
   labels the target has and the replay updates: bug
   labels the target has and the replay deletes: enhancement
@@ -331,13 +339,16 @@ Done in this run:
   add-comment                   4
   merge-pull                    2
   close-item                    3
+  create-tag                    0
 https://github.com/ada-example/tool-replay-20261116-1215
 ```
+
+For a source with tags, each tag gets a line such as `24/26  create-tag    v0.2, annotated, at 9d94f69`, with `lightweight` for a lightweight tag, as [What the target ends with](#what-the-target-ends-with) describes.
 
 Six options, given before the event file:
 
 - `--with-times` appends the original creation time to each body and comment, as `_Originally created 2026-03-01 11:00 UTC._` after a blank line; off by default.
-- `--sign <address>` signs, with the signing key of your git configuration, each recreated commit whose mapped committer has that address, as [Running a replay](#running-a-replay) requires; the others stay unsigned, since nobody running the replay holds the key of a commit someone else committed. Off by default.
+- `--sign <address>` signs, with the signing key of your git configuration, each recreated commit whose mapped committer has that address, and each annotated tag whose mapped tagger has it, as [Running a replay](#running-a-replay) requires; the others stay unsigned, since nobody running the replay holds the key of a commit someone else committed or a tag someone else tagged. Off by default.
 - `--final-name <owner/repo>` fills `{pr_url}` with the URL of the pull request under the name the target will carry once it takes over the source's name, such as `https://github.com/tiavelum/github-rewriter/pull/3`, instead of the target's current name; off by default.
 - `--state <file>` keeps the state in that file instead of the one next to the event file.
 - `--confirmed <owner/repo>` takes `<owner/repo>` as the answer to the confirmation instead of asking for it, as `replay.py` gives the answer you typed; any other value stops the run as a wrong answer does.
@@ -349,7 +360,7 @@ For a replay into `tiavelum/github-rewriter-trial` that takes over the source's 
 python3 replay/run-replay.py --sign ada@example.com --final-name tiavelum/github-rewriter "${mirror%.git}-typed.jsonl" "$mirror" tiavelum/github-rewriter-trial
 ```
 
-Before the confirmation, the totals then also say how many commits it signs, with which key, and what `{pr_url}` becomes; each push says how many of its commits it signed. These are the first lines of a signed run of the test, with the path of its throwaway key replaced by `~/.ssh/id_ed25519.pub`:
+Before the confirmation, the totals then also say how many commits and tags it signs, with which key, and what `{pr_url}` becomes; each push says how many of its commits it signed, and each signed tag's line says `signed`. These are the first lines of a signed run of the test, with the path of its throwaway key replaced by `~/.ssh/id_ed25519.pub`:
 
 ```
 Replay ada-example/tool into ada-example/tool-replay-20261116-1215: 23 events
@@ -361,8 +372,10 @@ Replay ada-example/tool into ada-example/tool-replay-20261116-1215: 23 events
   reviews as comments           0
   merges                        2
   closes                        3
+  tags                          0
   commits to sign               9
-  signed: the commits committed by ada@example.com, with the SSH key ~/.ssh/id_ed25519.pub (ssh-ed25519)
+  tags to sign                  0
+  signed: the commits committed and the tags tagged by ada@example.com, with the SSH key ~/.ssh/id_ed25519.pub (ssh-ed25519)
   {pr_url} in 1 squash message: https://github.com/ada-example/tool-replay-20261116-1215/pull/<number>
   labels the target has and the replay updates: bug
   labels the target has and the replay deletes: enhancement
@@ -372,7 +385,7 @@ Type ada-example/tool-replay-20261116-1215 to confirm:   label enhancement delet
  3/23  push-commits  1 commit to main, 1 signed, now at d1d4d85
 ```
 
-With a key other than an Ed25519 SSH key, the totals add `this key does not sign a commit the same way twice: a run stopped in a push of signed commits cannot resume`, as [Stopping and resuming](#stopping-and-resuming) explains.
+With a key other than an Ed25519 SSH key, the totals add `this key does not sign a commit the same way twice: a run stopped in a push of signed commits, or in a signed tag, cannot resume`, as [Stopping and resuming](#stopping-and-resuming) explains.
 
 On a rate limit, an answer 403 or 429, the run waits as [GitHub's guidance on exceeding a rate limit](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api#exceeding-the-rate-limit) says: the seconds of `retry-after`, else up to the time of `x-ratelimit-reset` where `x-ratelimit-remaining` is 0, else a minute, doubled at each retry; it retries the same call at most 5 times and then stops. GitHub allows [no more than 500 content-generating requests per hour](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api#about-secondary-rate-limits), and a replay makes about one per label, item, comment, merge and close, so a large one may stop on the limit; run it again after an hour.
 
@@ -384,16 +397,17 @@ Ctrl-C stops the run after the event in progress; a second Ctrl-C stops it at on
 - After a merge, the tree of the default branch differs from the source's tree after that merge.
 - GitHub refuses a call, answers a write with nothing, or is still rate limited after 5 retries.
 - A commit of the push in progress, rebuilt on resuming, gets another hash than the state file records for it; the run stops before the push, so the target never gets a second history.
+- A tag, rebuilt on resuming, gets another object than the state file records for it, or the target holds it at another; the run stops before the push, so the target never gets a second tag of that name.
 
-To resume, find and remove the cause, and run the same command again, with the same `--sign` and `--final-name`; a state file that records other ones stops the run. It checks the target against the state file: its highest number and the commit its default branch is at must be those the state file records. The event that was in progress may account for one difference, and it checks what of it is done: an item with its planned number and title, a comment that is already the last of its item, a merged pull request, a label that exists and a pushed commit are taken over, not made again. Where the target differs in another way, the run stops and names the difference. Run on a finished replay, it checks the target again.
+To resume, find and remove the cause, and run the same command again, with the same `--sign` and `--final-name`; a state file that records other ones stops the run. It checks the target against the state file: its highest number and the commit its default branch is at must be those the state file records. The event that was in progress may account for one difference, and it checks what of it is done: an item with its planned number and title, a comment that is already the last of its item, a merged pull request, a label that exists, a pushed commit and a pushed tag are taken over, not made again. Where the target differs in another way, the run stops and names the difference. Run on a finished replay, it checks the target again.
 
-A resumed run rebuilds the commits of the push that was in progress, and takes the pushed ones over only where they get the same hashes. An Ed25519 SSH key signs the same commit the same way each time, which the test checks; an OpenPGP signature holds the time it was made, and other SSH keys may sign differently each time, so with such a key a run stopped in a push of signed commits stops again at that push. Replay into a new empty target then, or sign with an Ed25519 SSH key.
+A resumed run rebuilds the commits of the push that was in progress, or the tag, and takes the pushed ones over only where they get the same hashes. An Ed25519 SSH key signs the same commit or tag the same way each time, which the test checks for commits; an OpenPGP signature holds the time it was made, and other SSH keys may sign differently each time, so with such a key a run stopped in a push of signed commits, or in a signed tag, stops again there. Replay into a new empty target then, or sign with an Ed25519 SSH key.
 
 ## The state file
 
-The state file is the event file with `.state.json` for `.jsonl`, such as `~/vc-backup/github-rewriter-2026-11-15-220456-typed.state.json`, unless `--state` names one. It is written after each event, and before each push with the hashes of the commits it pushes, by replacing it, so a stop at any point leaves the last finished event. It holds JSON: the SHA-256 of the event file, `source` and `target`, `sign` and `final_name`, the values of `--sign` and `--final-name` or `null`, `done`, the number of the last finished event, `finished`, whether the target was checked after the last event, `highest`, the target's highest number, `head`, the commit the default branch is at, and the maps `numbers`, from source to target number, `hashes`, from source to target commit, `committer_dates`, from source commit to the committer date its copy got, as a raw git date, so that a resumed run rebuilds the same hashes, `heads`, from pull request to the head of its pushed branch, and `urls`, from pull request to its URL. A state file for another event file or target stops the run. One written before committer dates were the time of the recreation has no `committer_dates`; its run keeps the original committer dates, also when resumed, and the comparison expects them.
+The state file is the event file with `.state.json` for `.jsonl`, such as `~/vc-backup/github-rewriter-2026-11-15-220456-typed.state.json`, unless `--state` names one. It is written after each event, and before each push with the hashes of the commits or the tag it pushes, by replacing it, so a stop at any point leaves the last finished event. It holds JSON: the SHA-256 of the event file, `source` and `target`, `sign` and `final_name`, the values of `--sign` and `--final-name` or `null`, `done`, the number of the last finished event, `finished`, whether the target was checked after the last event, `highest`, the target's highest number, `head`, the commit the default branch is at, and the maps `numbers`, from source to target number, `hashes`, from source to target commit, `committer_dates`, from source commit to the committer date its copy got, as a raw git date, so that a resumed run rebuilds the same hashes, `heads`, from pull request to the head of its pushed branch, `urls`, from pull request to its URL, and `tags`, from tag name to the object its ref is at, the recreated commit of a lightweight tag and the tag object of an annotated one, so that a resumed run checks it rebuilds the same tag. A state file for another event file or target stops the run. One written before committer dates were the time of the recreation has no `committer_dates`; its run keeps the original committer dates, also when resumed, and the comparison expects them. One written before tags were carried has no `tags`, and its event file plans none.
 
-Next to it lies the work repository, with `.work.git` for `.state.json`: a bare repository that borrows the mirror's objects and holds the recreated commits until they are pushed. Keep both until the replay is done and checked; then delete them.
+Next to it lies the work repository, with `.work.git` for `.state.json`: a bare repository that borrows the mirror's objects and holds the recreated commits until they are pushed, and the tags the run creates. Keep both until the replay is done and checked; then delete them.
 
 ## What the target ends with
 
@@ -403,10 +417,11 @@ Next to it lies the work repository, with `.work.git` for `.state.json`: a bare 
 - **Items**: each issue and pull request under its number, with its title, body, labels, assignees, draft state, and the state and state reason it ends in. Each is created open, then merged or closed. A merge closes the issues its pull request names with a closing keyword, as on GitHub; a later close leaves such an issue as it is where the state reason matches, and otherwise reopens and closes it with the planned one, since GitHub [ignores a state reason unless the state changes](https://docs.github.com/en/rest/issues/issues#update-an-issue). After the last event, the run reopens an item the source has open that a merge closed, and stops where any other item, or the labels, differ from the plan.
 - **Comments**: each comment, in the planned order, after its item.
 - **Reviews**: unless `--no-reviews` turns them off, each review of a pull request that its reviewer submitted, as a comment on the pull request at the place of its submission among the other comments, since a replay cannot submit a review for someone else; a pending review, which is [not yet submitted](https://docs.github.com/en/rest/pulls/reviews), is left out, and so are its review comments, of which the plan warns. The comment opens with the reviewer, the review's state and the commit it was made on, such as `_Review by ada-example: changes requested, on 3f2a9c1._`, then holds the review's body and each of its review comments under the file and the line or lines it was made on, `before the change` where the line is one of the file before the pull request changed it, and `a reply` where it answers another. It is a comment, not a review: it is not attached to the diff, so the pull request's files show no review comments, and it is no approval. [decision 0003](../docs/decisions/0003-reviews-as-comments.md) records why.
-- **Hashes**: in every title, body, comment and commit message, a hash of 7 to 40 lowercase hexadecimal characters that is the prefix of exactly one source commit already recreated becomes the prefix of the same length of the new hash.
+- **Tags**: unless `--no-tags` turns them off, each tag of the source that names a commit the replay recreates, at the recreated commit, lightweight or annotated as in the source. An annotated tag keeps its message, its tagger, mapped through the mailmap as authors and committers are, and its original date; with `--sign`, it is signed where its tagger has the given address and unsigned otherwise, as commits are, and a signature the source's tag had does not carry over, since it would not hold for the new tag. A tag it signs whose message has text but no final line break gets one, since git appends the signature right after the message and `git verify-tag` finds it only at the start of a line; an unsigned tag keeps its message byte for byte. The run creates each tag with `git tag` in the work repository and pushes it, as [#57](https://github.com/tiavelum/github-rewriter/issues/57) decided, so that a tag can be signed as the commits are, which [Create a tag object](https://docs.github.com/en/rest/git/tags#create-a-tag-object) of GitHub's API takes no signature for. After the last event, the run stops where the target's tags differ from those it created.
+- **Hashes**: in every title, body, comment, commit message and tag message, a hash of 7 to 40 lowercase hexadecimal characters that is the prefix of exactly one source commit already recreated becomes the prefix of the same length of the new hash.
 - **Branches**: each pull request's branch stays, also after its merge, unless the target deletes head branches on merge.
 
-The target does not get the original times and authors: every item, comment and merge is by the account that runs the replay, at the time of the replay; `--with-times` keeps the creation time in the text. Reviews it gets as comments, as described above, or with `--no-reviews` not at all, so that only the archive keeps them. Nor does it get reactions, milestones or projects, which the plan does not read, an item's history between its creation and its final state, or the tags, releases and branches [What a replay leaves behind](#what-a-replay-leaves-behind) lists. References to items, in this repository or another, and `@` mentions act again: GitHub adds them to the timeline of the item named, and notifies the person mentioned.
+The target does not get the original times and authors: every item, comment and merge is by the account that runs the replay, at the time of the replay; `--with-times` keeps the creation time in the text. Reviews it gets as comments, as described above, or with `--no-reviews` not at all, so that only the archive keeps them. Nor does it get reactions, milestones or projects, which the plan does not read, an item's history between its creation and its final state, or the releases, the branches and the tags [What a replay leaves behind](#what-a-replay-leaves-behind) lists. References to items, in this repository or another, and `@` mentions act again: GitHub adds them to the timeline of the item named, and notifies the person mentioned.
 
 ## Comparing the replay with its source
 
@@ -426,7 +441,8 @@ It needs `gh` signed in with read access to the source and the target, reads Git
 - **Recreated commits**: each commit the state file records, in the target and with the tree of its source commit, and none of those the run built itself committed before one of its parents.
 - **Branches**: the default branch and each pull request's branch, at the head the state file records, without those of merged pull requests where the target deletes head branches on merge.
 - **Pull request heads**: the head of each pull request, `refs/pull/<number>/head`, at the head the state file records, also where its branch is deleted.
-- **Tags, releases and branches of the source**: each branch and tag of the mirror in the target at the commit recreated from the one it names, and each release of the source in the target, read from the mirror and from GitHub rather than from the plan; one the target lacks, or holds at another commit, is a note where the event file's header lists it as left behind, as [What a replay leaves behind](#what-a-replay-leaves-behind) describes, and a difference otherwise. Where the header lists tags or releases as turned off, one of that kind the target lacks is a note that says so, and one the target holds is a difference. A tag or release of the target that the source lacks is a difference.
+- **Tags the replay carries**: each tag the event file plans, at the commit recreated from the one it names, lightweight or annotated as planned, an annotated one naming that commit with the planned message, each hash replaced as for texts, and the planned tagger and date; a signature at the end of the message does not count, and neither does the line break the run puts before it, as [What the target ends with](#what-the-target-ends-with) describes.
+- **Tags, releases and branches of the source**: each branch and each other tag of the mirror in the target at the commit recreated from the one it names, and each release of the source in the target, read from the mirror and from GitHub rather than from the plan; one the target lacks, or holds at another commit, is a note where the event file's header lists it as left behind, as [What a replay leaves behind](#what-a-replay-leaves-behind) describes, and a difference otherwise. Where the header lists tags or releases as turned off, one of that kind the target lacks is a note that says so, and one the target holds is a difference. A tag or release of the target that the source lacks is a difference.
 
 It prints the totals, then notes, which are no differences: who authored the merges, each branch the target keeps that the source no longer has, which [Taking over the source's name](#taking-over-the-sources-name) deletes, each tag, release and branch the plan left behind, as `tag v0.1 of the source is left behind, as planned`, or, of a kind the plan turned off, as `tag v0.1 of the source is left behind: tags are turned off`, `reviews are turned off: the event file plans no review as a comment` where the plan turned them off, and, for an event file planned before the header recorded what a plan leaves behind, that it accepts nothing as left behind. This is its output for the test's replay of `ada-example/tool`:
 
@@ -465,6 +481,14 @@ And this is one of the lines for the same target compared with a source that als
 
 ```
   tag v0.1 of the source is missing in the target
+```
+
+And these are the lines for a replay of the test's source with three tags, whose target then got `v0.1` moved to another commit, `v0.2` made anew with another message, and `v0.1.1` made lightweight:
+
+```
+  tag v0.1 of the source is at 9d94f69 in the target, not at the recreated dbf44bc
+  tag v0.1.1 is lightweight in the target, annotated as planned
+  tag v0.2: the message differs; they part at character 1: 'Another message\n', the source's 'Second, after 7dd6d6e\n'
 ```
 
 Where the state file records the replay unfinished, or belongs to another event file or target, it compares nothing and exits with 2. It cannot see the source's secrets, variables, webhooks, deploy keys and collaborators; check those yourself before the source is archived.
@@ -577,7 +601,7 @@ A pull request that the source closed unmerged gets its branch, is created, and 
 
 ## The event file
 
-The event file holds JSON Lines: the header on the first line, then one event per line in the order they apply. Each event holds what it needs besides the git objects of the mirror: `seq`, counting from 1, `kind`, `time`, the original time in UTC, which labels lack, and the fields of its kind.
+The event file holds JSON Lines: the header on the first line, then one event per line in the order they apply. Each event holds what it needs besides the git objects of the mirror: `seq`, counting from 1, `kind`, `time`, the original time in UTC, `null` for a label and a lightweight tag, which have none, and the fields of its kind.
 
 | `kind` | Means | Fields |
 |---|---|---|
@@ -590,15 +614,17 @@ The event file holds JSON Lines: the header on the first line, then one event pe
 | `add-comment` | Comment on item `number` | `number`, `body`, `author`, `created_at`, and `source_id`, the id of the source's comment, or `review_id`, the id of the review it carries |
 | `merge-pull` | Merge pull request `number` | `number`, `method` (`squash` or `merge`), `source_method` (`squash` or `merge`), `source_commit`, `tree`, `original_title`, `commit_title`, `commit_message`, `type`, `type_from` |
 | `close-item` | Close item `number` | `number`, `state_reason` |
+| `create-tag` | Create tag `name` | `name`, `commit`, the source commit it names, `annotated`, and for an annotated tag `message`, without a signature, and `tagger`, with its mapped `name` and `email` and its original `date`; `message` and `tagger` are `null` for a lightweight tag |
 
 Each commit in `commits` holds `sha`, `tree`, `parents`, `message`, `original_title`, `type`, `type_from` and `author` and `committer`, each with its mapped `name` and `email` and its original `date`. `parents` are source hashes; a commit pushed directly to the default branch keeps only its first parent. `type_from` says where the type came from: `present`, `override`, `branch` or `guess`. `type` and `type_from` are `null` where no type is given: with `--no-types`, and in a `merge-pull` of method `merge`.
 
-Events follow the original times, with these constraints: items are created strictly in number order; a branch is pushed before its pull request is created and after the commit it starts on; the default branch gets its commits in their original order. Where a constraint moves an event before an earlier one, the totals count it under events out of time order: a pull request whose final head merges a commit that the default branch got after the pull request was opened comes after that commit, with the items numbered after it. `state` is the state the item ends in; create every item open and let `close-item` or `merge-pull` change it. Direct commits with no other event between them form one push. A number that the source lacks gets a placeholder issue, closed as not planned.
+Events follow the original times, with these constraints: items are created strictly in number order; a branch is pushed before its pull request is created and after the commit it starts on; the default branch gets its commits in their original order; a tag comes after the event that recreates its commit: an annotated one at its tagger's date, after every other event of that time, and a lightweight one, which has no date of its own, right after that event. Where a constraint moves an event before an earlier one, the totals count it under events out of time order: a pull request whose final head merges a commit that the default branch got after the pull request was opened comes after that commit, with the items numbered after it, and an annotated tag dated before the event that recreates its commit comes right after that event. `state` is the state the item ends in; create every item open and let `close-item` or `merge-pull` change it. Direct commits with no other event between them form one push, so a tag between them splits it. A number that the source lacks gets a placeholder issue, closed as not planned.
 
 ## Known limits
 
 - Reactions, milestones and projects are not read. Reviews and their review comments become comments, as [What the target ends with](#what-the-target-ends-with) describes, so they are no longer attached to the diff, and the comparison checks a review's comment against the text the plan wrote and against the review's body, not its line comments, which it does not read again. A review with all its review comments can be longer than GitHub takes for a comment; the plan warns of one over 65'536 characters, the length [GitHub's community reports](https://github.community/t/maximum-length-for-the-comment-body-in-issues-and-pr/148867), since GitHub's REST documentation names none, and the run stops at it.
-- Tags, releases and branches without a pull request are not carried; the plan stops at each until it is accepted as left behind or its kind turned off, as [What a replay leaves behind](#what-a-replay-leaves-behind) describes. A plan without push access to the source sees no draft release, since GitHub lists drafts only to those who can push, and the comparison checks a release by its tag name alone, not its text, assets or state.
+- Releases, branches without a pull request and the tags a replay cannot place are not carried; the plan stops at each until it is accepted as left behind or its kind turned off, as [What a replay leaves behind](#what-a-replay-leaves-behind) describes. A plan without push access to the source sees no draft release, since GitHub lists drafts only to those who can push, and the comparison checks a release by its tag name alone, not its text, assets or state.
+- A carriage return in a commit or tag message does not survive: the scripts read git's output as text, which turns `\r\n` and a lone `\r` into `\n`, so the recreated message has a line break in its place. The comparison reads the target's messages the same way, so it does not see the difference; bodies and comments, which GitHub's JSON carries, keep theirs.
 - An item is replayed in its final state: one reopened and closed again is closed once, with its labels and assignees as they are now.
 - A pull request without commits of its own, or one whose base is not the default branch, is planned with a warning, since GitHub may refuse to create it; the run then stops at it.
 - A Ctrl-C reaches a running `git` too; the run then stops in the middle of the event, which the next run checks and finishes.
