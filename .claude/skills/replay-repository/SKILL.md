@@ -31,8 +31,8 @@ Ask these in one round, each with your recommendation, before planning, and reco
 6. **Names**, for `source`, `final_name` and `target`: the source, the name the replay takes over at the end, and the day and time of the run, which give the target's temporary name.
 7. **Times**, for `with_times`: whether each body and comment keeps its original creation time.
 8. **Pace and places**, for `pace`, `backup` and `clone_url`: the seconds between two writes, the folder of the mirror and the run's files, and the URL the mirror is cloned from; recommend the defaults of "Replaying with one command", and a URL of the protocol the owner's git uses where that is not SSH.
-9. **Left behind**, for `leave_behind`: list the source's tags, releases and branches other than the default branch, with the commands of the next section. The replay carries every tag whose commit it recreates, every release on a carried tag with its assets, drafts included, and the branch of each pull request; it leaves behind each branch without a pull request and each tag and release it cannot place, as "What a replay leaves behind" describes. Ask which of those only the archive is to keep; where the owner wants one of them in the replay, stop and say so on the run's issue, since the replay cannot carry it.
-10. **Tags, releases and reviews**, for `no_tags`, `no_releases` and `no_reviews`: whether the replay carries each of them; recommend carrying all three, which is the default, and name the combination "Replaying with one command" refuses.
+9. **Left behind**, for `leave_behind`: list the source's tags, releases and branches other than the default branch, with the commands of the next section. The replay carries every tag whose commit it recreates, every release on a carried tag and every draft whose tag the source lacks and whose `target_commitish` it can place, each with its assets, and the branch of each pull request, unless the target deletes head branches on merge; it leaves behind each branch that is the head of no pull request or stands at another commit than that head, and each tag and release it cannot place, as "What a replay leaves behind" describes. Ask which of the ones it leaves behind only the archive is to keep, except for a kind that question 10 turns off; where the owner wants one of them in the replay, stop and say so on the run's issue, since the replay cannot carry it.
+10. **Tags, releases and reviews**, for `no_tags`, `no_releases` and `no_reviews`: whether the replay carries each of them, reviews as comments; recommend carrying all three, which is the default, and name the combination "Replaying with one command" refuses.
 11. **Trial**: recommend a trial into a throwaway private repository first where the run uses an option, such as `sign` or `keep_merges`, that no earlier run's issue in tiavelum/github-rewriter records, or where the source has releases with assets and no earlier run's issue records a replay that carried them, since "Known limits" names what only such a run settles. For it, give `final_name` a throwaway name under the owner, such as `<repo>-trial`, and have the owner run none of the commands `replay.py` prints at its end; the owner deletes the target once its check holds.
 
 ## Survey the source
@@ -50,7 +50,7 @@ List the source's branches, tags and releases, with the owner and name of the so
 
 ```sh
 git -C "$mirror" for-each-ref --format='%(refname:short)' refs/heads/ refs/tags/
-gh api 'repos/<owner>/<repo>/releases?per_page=100' --jq '.[] | "\(.tag_name) \(.draft) \(.prerelease) \(.assets | length)"'
+gh api --paginate 'repos/<owner>/<repo>/releases?per_page=100' --jq '.[] | "\(.tag_name) \(.draft) \(.prerelease) \(.assets | length)"'
 ```
 
 GitHub lists draft releases only to those who can push to the source, so where this session cannot, have the owner run the second command.
