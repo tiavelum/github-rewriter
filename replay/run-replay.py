@@ -20,8 +20,11 @@ write; anything else stops without writing. --confirmed gives that answer
 instead, for replay.py, which asked for it before it started this run.
 Writes to GitHub through gh api and git push only, at least --pace seconds
 apart (default 1), and waits out GitHub's rate limits; tags it creates in the
-work repository and pushes. --with-times appends the original creation time
-to each body and comment. --sign signs each recreated commit whose committer
+work repository and pushes. Each release's assets it downloads from the
+source into the folder next to the state file, with .downloads for
+.state.json, and uploads to the new release; each download is removed once
+uploaded. --with-times appends the original creation time to each body and
+comment. --sign signs each recreated commit whose committer
 has <address>, and each annotated tag whose tagger has it, with the signing
 key of your git configuration, after checking that GitHub knows the key as
 a signing key. --final-name fills {pr_url} in squash messages with the URL
@@ -54,6 +57,7 @@ KINDS = (
     "merge-pull",
     "close-item",
     "create-tag",
+    "create-release",
 )
 # A hash in a text: 7 to 40 lowercase hexadecimal characters, not part of a longer word.
 HASH = re.compile(r"(?<![0-9A-Za-z])[0-9a-f]{7,40}(?![0-9A-Za-z])")
@@ -231,13 +235,19 @@ class Api:
     def after_write(self):
         self.last_write = time.monotonic()
 
-    def call(self, method, endpoint, body=None):
-        """Status and body of one request. A rate limit is waited out and the
-        same call retried; a read is also retried after a server error."""
+    def call(self, method, endpoint, body=None, headers=(), upload=None):
+        """Status and body of one request, with the given headers and, where
+        upload names a file, its content as the body. A rate limit is waited
+        out and the same call retried; a read is also retried after a server
+        error."""
         write = method != "GET"
         args = ["gh", "api", "--include", "--method", method, endpoint]
+        for header in headers:
+            args += ["-H", header]
         payload = None
-        if body is not None:
+        if upload is not None:
+            args += ["--input", str(upload)]
+        elif body is not None:
             args += ["--input", "-"]
             payload = json.dumps(body)
         for attempt in range(RETRIES + 1):
@@ -294,10 +304,10 @@ def default_state_path(events_path):
     return events_path.with_name(stem + ".state.json")
 
 
-def work_path(state_path):
+def work_path(state_path, suffix=".work.git"):
     name = state_path.name
     stem = name[: -len(".state.json")] if name.endswith(".state.json") else name
-    return state_path.with_name(stem + ".work.git")
+    return state_path.with_name(stem + suffix)
 
 
 def load_events(path):
@@ -329,6 +339,7 @@ class Replay:
         with_times, pace, sign, final_name, self.confirmed = options
         self.events_path, self.mirror, self.slug = events_path, mirror, slug
         self.state_path, self.work = state_path, work_path(state_path)
+        self.downloads = work_path(state_path, ".downloads")
         self.with_times = with_times
         self.sign, self.final_name = sign, final_name
         # The options of git commit-tree that sign with the checked key, and what to say of it.
@@ -345,6 +356,10 @@ class Replay:
         # The object each tag's ref is at, by name: the recreated commit of a
         # lightweight tag, the tag object of an annotated one.
         self.tags = {}
+        # Each release created, by the source's release id: its id and
+        # upload_url in the target and the target's id of each asset
+        # uploaded, by the source's asset id.
+        self.releases = {}
         self.refs = {}
         # The committer date each recreated commit got, by source commit; None
         # for a run started before committer dates were the time of the replay,
@@ -385,6 +400,8 @@ class Replay:
         self.urls = {int(k): v for k, v in state["urls"].items()}
         # Missing in a state file written before tags were carried.
         self.tags = state.get("tags", {})
+        # Missing in a state file written before releases were carried.
+        self.releases = state.get("releases", {})
         self.finished = state.get("finished", False)
         return True
 
@@ -406,6 +423,7 @@ class Replay:
             "urls": {str(k): v for k, v in sorted(self.urls.items())},
             "hashes": self.hashes,
             "tags": self.tags,
+            "releases": self.releases,
         }
         if self.committer_dates is not None:
             state["committer_dates"] = self.committer_dates
@@ -662,6 +680,9 @@ class Replay:
             ("merges", count("merge-pull")),
             ("closes", count("close-item")),
             ("tags", count("create-tag")),
+            ("releases", count("create-release")),
+            ("release assets", sum(len(e.get("assets", [])) for e in left)),
+            ("release asset bytes", sum(a["size"] or 0 for e in left for a in e.get("assets", []))),
         ]
         if self.sign:
             rows.append(
@@ -1078,6 +1099,167 @@ class Replay:
         self.api.after_write()
         return f"{name}, {what}, at {commit[:7]}"
 
+    # Releases
+
+    def create_release(self, e):
+        """Creates the release on its tag, or a draft at the recreated commit
+        or the default branch its target_commitish names, the source's latest
+        release as the latest one; then downloads each asset from the source
+        and uploads it. Records the release before its first asset and each
+        asset once uploaded, so that a resumed run takes over what is done: a
+        release found under its tag, an asset found uploaded whole; another
+        asset of that name, which a failed upload leaves, it removes and
+        uploads again."""
+        key, tag = str(e["release_id"]), e["tag_name"]
+        record, notes = self.releases.get(key), []
+        if record is None and self.resumed_at == e["seq"]:
+            taken = {r["id"] for r in self.releases.values()}
+            found = [
+                r
+                for r in self.api.pages(f"repos/{self.slug}/releases")
+                if r.get("tag_name") == tag and r.get("id") not in taken
+            ]
+            if found:
+                record = {"id": found[0]["id"], "upload_url": found[0]["upload_url"], "assets": {}}
+                notes.append("found created")
+        if record is None:
+            if e["commit"] and e["commit"] not in self.hashes:
+                raise ReplayError(
+                    f"release {tag} names {e['commit'][:7]}, which no earlier event recreated"
+                )
+            body = {
+                "tag_name": tag,
+                # GitHub reads it only where the tag is missing, as for a draft.
+                "target_commitish": self.hashes[e["commit"]] if e["commit"] else self.default,
+                "name": e["name"],
+                "body": self.stamped(self.text(e["body"]), e["published_at"] or e["created_at"]),
+                "draft": e["draft"],
+                "prerelease": e["prerelease"],
+                # GitHub makes each new release the latest unless told otherwise.
+                "make_latest": "true" if e["latest"] else "false",
+            }
+            data = self.api.expect("POST", f"repos/{self.slug}/releases", body, ok=(201,))
+            record = {"id": data["id"], "upload_url": data["upload_url"], "assets": {}}
+        self.releases[key] = record
+        self.save_state()
+        existing, taken, removed = None, 0, 0
+        for asset in e["assets"]:
+            if str(asset["id"]) in record["assets"]:
+                continue
+            if self.resumed_at == e["seq"]:
+                if existing is None:
+                    listed = self.api.pages(f"repos/{self.slug}/releases/{record['id']}/assets")
+                    existing = {x["name"]: x for x in listed}
+                found = existing.get(asset["name"])
+                if found and self.uploaded_whole(found, asset):
+                    record["assets"][str(asset["id"])] = found["id"]
+                    self.save_state()
+                    # The download of an upload whose answer was lost.
+                    (self.downloads / str(asset["id"])).unlink(missing_ok=True)
+                    taken += 1
+                    continue
+                if found:
+                    # GitHub refuses a second asset of the same name.
+                    self.api.expect(
+                        "DELETE", f"repos/{self.slug}/releases/assets/{found['id']}", ok=(204,)
+                    )
+                    removed += 1
+            path = self.download(tag, asset)
+            record["assets"][str(asset["id"])] = self.upload(record, asset, path)["id"]
+            self.save_state()
+            path.unlink()
+        if self.downloads.is_dir() and not any(self.downloads.iterdir()):
+            self.downloads.rmdir()
+        if taken:
+            notes.append(f"{taken} found uploaded")
+        if removed:
+            notes.append(f"{removed} found half uploaded, removed and uploaded again")
+        what = "draft" if e["draft"] else "pre-release" if e["prerelease"] else "published"
+        count, size = len(e["assets"]), sum(a["size"] or 0 for a in e["assets"])
+        files = f"{count} asset{'' if count == 1 else 's'}, {size} bytes" if count else "no assets"
+        latest = ", latest" if e["latest"] else ""
+        return f"{tag}, {what}{latest}, {files}" + "".join(f", {note}" for note in notes)
+
+    @staticmethod
+    def uploaded_whole(found, asset):
+        """Whether an asset of the target holds the source's asset whole, as far
+        as GitHub's state, size and digest tell."""
+        digests = (found.get("digest"), asset.get("digest"))
+        return (
+            found.get("state") == "uploaded"
+            and found.get("size") == asset["size"]
+            and (None in digests or digests[0] == digests[1])
+        )
+
+    @staticmethod
+    def unlike(path, asset):
+        """How a downloaded file differs from the size and the SHA-256 digest
+        GitHub lists for the asset, or None."""
+        size = path.stat().st_size
+        if asset["size"] is not None and size != asset["size"]:
+            return f"has {size} bytes, GitHub lists {asset['size']}"
+        algorithm, _, expected = (asset.get("digest") or "").partition(":")
+        if algorithm == "sha256":
+            digest = hashlib.sha256()
+            with path.open("rb") as file:
+                for chunk in iter(lambda: file.read(1 << 20), b""):
+                    digest.update(chunk)
+            if digest.hexdigest() != expected:
+                return f"has the SHA-256 digest {digest.hexdigest()}, GitHub lists {expected}"
+        return None
+
+    def download(self, tag, asset):
+        """The asset's content from the source, in the folder of the downloads,
+        checked against what GitHub lists for it; a whole one that a stopped
+        run left there is taken again."""
+        self.downloads.mkdir(exist_ok=True)
+        path = self.downloads / str(asset["id"])
+        if path.is_file() and self.unlike(path, asset) is None:
+            return path
+        partial = path.with_name(path.name + ".partial")
+        endpoint = f"repos/{self.header['source']}/releases/assets/{asset['id']}"
+        # GitHub answers with the content or a redirect to it, which gh follows.
+        args = ["gh", "api", "-H", "Accept: application/octet-stream", endpoint]
+        try:
+            with partial.open("wb") as out:
+                result = subprocess.run(
+                    args,
+                    stdin=subprocess.DEVNULL,
+                    stdout=out,
+                    stderr=subprocess.PIPE,
+                    env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+                    start_new_session=True,
+                )
+        except FileNotFoundError:
+            raise ReplayError("gh is missing") from None
+        if result.returncode:
+            error = result.stderr.decode("utf-8", errors="replace").strip().splitlines()
+            raise ReplayError(f"GET {endpoint} failed: {error[-1] if error else ''}")
+        problem = self.unlike(partial, asset)
+        if problem:
+            raise ReplayError(
+                f"the asset {asset['name']} of release {tag}, downloaded from {endpoint},"
+                f" {problem}; run the same command again to download it again"
+            )
+        partial.replace(path)
+        return path
+
+    def upload(self, record, asset, path):
+        """Uploads the downloaded file to the release in the target, at the
+        upload_url GitHub gave for it, and returns the new asset."""
+        endpoint = record["upload_url"].split("{", 1)[0] + "?name=" + quote(asset["name"], safe="")
+        if asset["label"]:
+            endpoint += "&label=" + quote(asset["label"], safe="")
+        status, data = self.api.call(
+            "POST", endpoint, headers=[f"Content-Type: {asset['content_type']}"], upload=path
+        )
+        if status != 201:
+            raise ReplayError(
+                f"POST {endpoint} answered HTTP {status}: {message_of(data)}; run the same command"
+                " again, which removes an asset GitHub left half uploaded and uploads it again"
+            )
+        return data
+
     # The run
 
     def apply(self, e):
@@ -1091,12 +1273,14 @@ class Replay:
             "merge-pull": self.merge_pull,
             "close-item": self.close_item,
             "create-tag": self.create_tag,
+            "create-release": self.create_release,
         }[e["kind"]]
         return handler(e)
 
     def reconcile(self):
         """Reopens what a closing keyword closed that the source has open, and
-        stops if anything else differs from the plan, its tags included."""
+        stops if anything else differs from the plan, its tags and releases
+        included."""
         found = {i["number"]: i for i in self.api.pages(f"repos/{self.slug}/issues?state=all")}
         problems, reopened = [], []
         for n, e in sorted(self.creates.items()):
@@ -1129,6 +1313,7 @@ class Replay:
         if labels != planned:
             problems.append(f"the labels differ: {', '.join(sorted(labels ^ planned))}")
         problems += self.tag_problems()
+        problems += self.release_problems()
         for n in reopened:
             print(f"  #{n} reopened: a closing keyword closed it, the source has it open")
         if problems:
@@ -1157,6 +1342,48 @@ class Replay:
                     f"tag {name} is at {sha[:7]}, the state file's {(recorded or 'nothing')[:7]}"
                 )
         problems += [f"tag {name} is not in the plan" for name in sorted(set(found) - set(planned))]
+        return problems
+
+    def release_problems(self):
+        """How the target's releases differ from the planned ones the state
+        file records: each with the planned tag, kind and assets, the latest
+        one as the latest, and no other."""
+        found = {r["id"]: r for r in self.api.pages(f"repos/{self.slug}/releases")}
+        problems, recorded = [], set()
+        for e in self.events:
+            if e["kind"] != "create-release":
+                continue
+            tag = e["tag_name"]
+            record = self.releases.get(str(e["release_id"]))
+            r = found.get(record["id"]) if record else None
+            if r is None:
+                problems.append(f"release {tag} is missing")
+                continue
+            recorded.add(r["id"])
+            kind = (bool(r.get("draft")), bool(r.get("prerelease")))
+            if r.get("tag_name") != tag or kind != (e["draft"], e["prerelease"]):
+                problems.append(
+                    f"release {tag} is on {r.get('tag_name')}, draft {kind[0]} and pre-release"
+                    f" {kind[1]}, planned draft {e['draft']} and pre-release {e['prerelease']}"
+                )
+            names = sorted(
+                a["name"]
+                for a in self.api.pages(f"repos/{self.slug}/releases/{r['id']}/assets")
+                if a.get("state") == "uploaded"
+            )
+            planned = sorted(a["name"] for a in e["assets"])
+            if names != planned:
+                problems.append(f"release {tag} has the assets {names}, planned {planned}")
+            if e["latest"]:
+                status, latest = self.api.call("GET", f"repos/{self.slug}/releases/latest")
+                named = (latest or {}).get("tag_name") if status == 200 else None
+                if named != tag:
+                    problems.append(f"the latest release is {named or 'none'}, planned {tag}")
+        problems += [
+            f"release {r.get('tag_name')} is not in the plan"
+            for i, r in sorted(found.items())
+            if i not in recorded
+        ]
         return problems
 
     def interrupt(self, signum, frame):

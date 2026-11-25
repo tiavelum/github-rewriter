@@ -20,11 +20,13 @@ behind, and the totals.
 
 The replay carries each tag that names a commit it recreates, under a name
 git tag accepts, lightweight or annotated as in the source, an annotated one
-with its message and its tagger mapped through <mailmap>. It carries no
-other tag, no release, and no branch other than the default branch and
-those it pushes for pull requests at their source tips. The plan stops, and
-writes no event file, unless the <file> of --leave-behind accepts each of
-them with a line of its kind and name:
+with its message and its tagger mapped through <mailmap>. It carries each
+release on a tag it carries, with its assets, and each draft whose tag the
+source lacks where its target_commitish names the default branch or a
+commit it recreates. It carries no other tag or release, and no branch other
+than the default branch and those it pushes for pull requests at their
+source tips. The plan stops, and writes no event file, unless the <file> of
+--leave-behind accepts each of them with a line of its kind and name:
   tag      v1.0
   release  v1.0
   branch   wip/idea  # a "#" after the name starts a comment
@@ -68,7 +70,8 @@ TYPES = ("feat", "fix", "docs", "chore", "refactor", "test", "build", "ci", "rev
 BRANCH_ALIASES = {"feature": "feat", "bugfix": "fix", "hotfix": "fix", "doc": "docs"}
 # At the same time, an event of a lower rank comes first: a branch is pushed
 # before its pull request is created, an item exists before it is closed, and
-# a tag, which marks a state reached, comes after all else.
+# a tag, which marks a state reached, comes after all else but the release
+# that stands on it.
 RANK = {
     "create-label": 0,
     "push-commits": 1,
@@ -79,6 +82,7 @@ RANK = {
     "merge-pull": 5,
     "close-item": 6,
     "create-tag": 7,
+    "create-release": 8,
 }
 TYPED = re.compile(r"(?P<type>[A-Za-z]+)(?:\([^)]*\))?!?: ")
 ORDINARY_WORD = re.compile(r"[A-Z][a-z]+")
@@ -160,6 +164,26 @@ def gh_pages(endpoint):
             return entries
         entries.extend(batch)
         page += 1
+
+
+def gh_found(endpoint):
+    """What GitHub answers for endpoint, or None where it answers 404, as for
+    the latest release of a repository that has none."""
+    try:
+        result = subprocess.run(
+            ["gh", "api", endpoint],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except FileNotFoundError:
+        die("gh is missing")
+    if result.returncode == 0:
+        return json.loads(result.stdout)
+    if "(HTTP 404)" in result.stderr:
+        return None
+    die(f"gh api {endpoint} failed: {result.stderr.strip()}")
 
 
 def iso_date(raw):
@@ -451,11 +475,91 @@ def source_tags(mirror, recreated, off=()):
     return carried, left
 
 
-def left_behind(mirror, info, releases, events, tags, off=()):
+def source_releases(repo, releases, tags, carried, default, recreated, off=()):
+    """The releases of the source: those the replay carries, each with what
+    the run needs to recreate it and its assets; and those it leaves behind,
+    as left_behind() lists them. tags holds the names of the mirror's tags,
+    carried the commit of each tag the replay carries, by name, and off the
+    kinds a switch turns off. A release carries over on a tag the replay
+    carries, since GitHub creates a missing tag at the release's
+    target_commitish, which would put it elsewhere; a draft, which GitHub tags
+    only once it is published, carries over without its tag where its
+    target_commitish names the default branch or a commit the replay
+    recreates."""
+    latest = None
+    if releases and "releases" not in off:
+        latest = (gh_found(f"repos/{repo}/releases/latest") or {}).get("id")
+    kept, left = [], []
+    for r in sorted(releases, key=lambda r: (r["tag_name"], r["id"])):
+        tag = r["tag_name"]
+        what = "draft" if r.get("draft") else "pre-release" if r.get("prerelease") else "published"
+        target = r.get("target_commitish") or default
+        commit, why = carried.get(tag), None
+        if "releases" in off:
+            why = "releases are turned off"
+        elif tag in carried:
+            pass
+        elif tag in tags:
+            why = "its tag is left behind"
+        elif not r.get("draft"):
+            why = "the mirror lacks its tag"
+        elif target not in (default, f"refs/heads/{default}"):
+            named = (
+                [c for c in recreated if c.startswith(target)]
+                if re.fullmatch(r"[0-9a-f]{7,40}", target)
+                else []
+            )
+            commit = named[0] if len(named) == 1 else None
+            if commit is None:
+                why = (
+                    f"its target_commitish {target!r} is neither the default branch nor a commit"
+                    " the replay recreates"
+                )
+        if why:
+            reason = f"{what}, named {r.get('name') or tag!r}; {why}"
+            left.append({"kind": "release", "name": tag, "sha": None, "reason": reason})
+            continue
+        assets = []
+        for a in gh_pages(f"repos/{repo}/releases/{r['id']}/assets"):
+            # An upload that failed leaves an asset of no use behind.
+            if a.get("state", "uploaded") != "uploaded":
+                warn(f"asset {a['name']} of release {tag} is {a['state']}, not uploaded; left out")
+                continue
+            assets.append(
+                {
+                    "id": a["id"],
+                    "name": a["name"],
+                    "label": a.get("label") or "",
+                    "content_type": a.get("content_type") or "application/octet-stream",
+                    "size": a.get("size"),
+                    "digest": a.get("digest"),
+                }
+            )
+        kept.append(
+            {
+                "release_id": r["id"],
+                "tag_name": tag,
+                "on_tag": tag in carried,
+                "commit": commit,
+                "name": r.get("name") or "",
+                "body": r.get("body") or "",
+                "draft": bool(r.get("draft")),
+                "prerelease": bool(r.get("prerelease")),
+                "latest": r["id"] == latest,
+                "author": (r.get("author") or {}).get("login"),
+                "created_at": r.get("created_at"),
+                "published_at": r.get("published_at"),
+                "assets": assets,
+            }
+        )
+    return kept, left
+
+
+def left_behind(mirror, info, releases, events, tags):
     """The tags, releases and branches of the source that the replay does not
-    carry, each with its kind, name, the commit it names and why; tags holds
-    the tags left behind, as source_tags() gives them, and off the kinds a
-    switch turns off."""
+    carry, each with its kind, name, the commit it names and why; tags and
+    releases hold those left behind, as source_tags() and source_releases()
+    give them."""
     default = info["default_branch"]
     deletes = bool(info.get("delete_branch_on_merge"))
     merged = {e["number"] for e in events if e["kind"] == "merge-pull"}
@@ -482,13 +586,7 @@ def left_behind(mirror, info, releases, events, tags, off=()):
         else:
             continue
         left.append({"kind": "branch", "name": name, "sha": tip, "reason": reason})
-    left += tags
-    for r in sorted(releases, key=lambda r: r["tag_name"]):
-        what = "draft" if r.get("draft") else "pre-release" if r.get("prerelease") else "published"
-        why = "releases are turned off" if "releases" in off else "the replay creates no releases"
-        reason = f"{what}, named {r.get('name') or r['tag_name']!r}; {why}"
-        left.append({"kind": "release", "name": r["tag_name"], "sha": None, "reason": reason})
-    return left
+    return left + tags + releases
 
 
 def branch_type(ref):
@@ -958,8 +1056,9 @@ def plan(mirror, repo, overrides, typed=True, keep_merges=False, off=()):
     # Each tag comes after the event that recreates its commit: an annotated
     # one at its tagger's date, a lightweight one, which has no date of its
     # own, right after that event.
-    carried, left_tags = source_tags(mirror, set(main_index) | set(owner), off)
-    for t in carried:
+    recreated = set(main_index) | set(owner)
+    tags, left_tags = source_tags(mirror, recreated, off)
+    for t in tags:
         add(
             ("tag", t["name"]),
             "create-tag",
@@ -967,8 +1066,31 @@ def plan(mirror, repo, overrides, typed=True, keep_merges=False, off=()):
             [producer(t["commit"])],
             **t,
         )
-    releases = gh_pages(f"repos/{repo}/releases")
-    left = left_behind(mirror, info, releases, events, left_tags, off)
+    # Each release comes after the event of its tag, or of the commit a
+    # draft names, at its publication, or a draft's creation; one that
+    # names the default branch needs only that branch.
+    releases, left_releases = source_releases(
+        repo,
+        gh_pages(f"repos/{repo}/releases"),
+        set(mirror.refs("refs/tags/")),
+        {t["name"]: t["commit"] for t in tags},
+        default,
+        recreated,
+        off,
+    )
+    for r in releases:
+        if r["on_tag"]:
+            deps = [("tag", r["tag_name"])]
+        else:
+            deps = [producer(r["commit"])] if r["commit"] else [("main", 0)]
+        add(
+            ("release", r["release_id"]),
+            "create-release",
+            utc(r["published_at"] or r["created_at"]),
+            deps,
+            **r,
+        )
+    left = left_behind(mirror, info, left_releases, events, left_tags)
     return default, events, left
 
 
@@ -1145,6 +1267,8 @@ def main(argv):
         ("reviews", sum("review_id" in e for e in events)),
         ("labels", count("create-label")),
         ("tags", count("create-tag")),
+        ("releases", count("create-release")),
+        ("release assets", sum(len(e.get("assets", [])) for e in events)),
         ("commits", pushed),
         ("squash merges", merges("squash")),
         ("merge commits", merges("merge")),
