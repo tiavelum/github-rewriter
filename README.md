@@ -53,7 +53,7 @@ rm -f ~/Downloads/replay-repository.zip
 zip -q -r ~/Downloads/replay-repository.zip replay-repository -x '*.DS_Store'
 ```
 
-Then upload `~/Downloads/replay-repository.zip` in the Claude app under Customize > Skills: +, Create skill, Upload a skill.
+Then upload `~/Downloads/replay-repository.zip` in the Claude app: in the sidebar, open More, which shows the plugins, connectors and skills, then click Add and Upload a skill.
 
 ## After changing the project instructions
 
