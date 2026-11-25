@@ -670,3 +670,4 @@ Events follow the original times, with these constraints: items are created stri
 | `run-replay.py` | Applies the event file to an empty target, the assets of its releases downloaded from the source, and keeps the state file, so that a stopped run resumes |
 | `compare-replay.py` | Compares the finished target with the source, the event file and the state file, read-only, and names every difference |
 | `test-replay.sh` | Tests the scripts of this folder against a source built in a temporary folder and fake GitHub targets, without contacting GitHub |
+| `tests/` | The pytest suite that tests the scripts of this folder, as processes, against the same source and fake `gh` scripts, without contacting GitHub, with its fixtures, the fakes and the pinned requirements; it takes over the checks of `test-replay.sh` a part at a time ([#70](https://github.com/tiavelum/github-rewriter/issues/70)) |
