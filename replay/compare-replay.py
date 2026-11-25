@@ -644,9 +644,13 @@ class Comparison:
         fields = dict(line.split(" ", 1) for line in head.split("\n") if " " in line)
         if fields.get("type") != "commit":
             self.differ(f"tag {name} names a {fields.get('type')} in the target, not a commit")
-        expected = self.text(e["message"])
-        if unsigned(message) != expected:
-            self.differ(f"tag {name}: the message differs; {where(expected, unsigned(message))}")
+        expected, got = self.text(e["message"]), unsigned(message)
+        if got != message and expected and not expected.endswith("\n"):
+            # The run ends such a message with a line break before it signs
+            # it, since verify-tag finds a signature only at a line's start.
+            expected += "\n"
+        if got != expected:
+            self.differ(f"tag {name}: the message differs; {where(expected, got)}")
         t = e["tagger"]
         want_tagger = {"name": t["name"], "email": t["email"], "date": git_date(t["date"])}
         match = IDENTITY.match(fields.get("tagger", ""))

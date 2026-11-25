@@ -1017,7 +1017,8 @@ class Replay:
         """Creates the tag in the work repository at the recreated commit, an
         annotated one with the planned message, tagger and date, and pushes
         it; records the object its ref is at before the push, so that a
-        resumed run can check it rebuilds the same tag."""
+        resumed run can check it rebuilds the same tag. A signed tag's
+        message gets a final line break where it has text and lacks one."""
         name, commit = e["name"], self.hashes.get(e["commit"])
         if commit is None:
             raise ReplayError(
@@ -1039,8 +1040,14 @@ class Replay:
                 args += [*self.sign_options[:2], "tag", "-u", self.sign_key]
             else:
                 args += ["tag", "-a"]
-            args += ["-f", "--cleanup=verbatim", "-F", "-", name, commit]
-            git(self.work, *args, stdin=self.text(e["message"]), env=env)
+            # Without "--", a name that starts with a dash would be an option.
+            args += ["-f", "--cleanup=verbatim", "-F", "-", "--", name, commit]
+            message = self.text(e["message"])
+            if signed and message and not message.endswith("\n"):
+                # git appends the signature right after the message, and
+                # verify-tag finds it only at the start of a line.
+                message += "\n"
+            git(self.work, *args, stdin=message, env=env)
             sha = git(self.work, "rev-parse", f"refs/tags/{name}")
         else:
             sha = commit

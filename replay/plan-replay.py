@@ -18,12 +18,13 @@ applies them. Reads GitHub through gh api with GET requests only. Prints
 every title it changed, every squash message it wrote, what it leaves
 behind, and the totals.
 
-The replay carries each tag that names a commit it recreates, lightweight or
-annotated as in the source, an annotated one with its message and its tagger
-mapped through <mailmap>. It carries no other tag, no release, and no branch
-other than the default branch and those it pushes for pull requests at their
-source tips. The plan stops, and writes no event file, unless the <file> of
---leave-behind accepts each of them with a line of its kind and name:
+The replay carries each tag that names a commit it recreates, under a name
+git tag accepts, lightweight or annotated as in the source, an annotated one
+with its message and its tagger mapped through <mailmap>. It carries no
+other tag, no release, and no branch other than the default branch and
+those it pushes for pull requests at their source tips. The plan stops, and
+writes no event file, unless the <file> of --leave-behind accepts each of
+them with a line of its kind and name:
   tag      v1.0
   release  v1.0
   branch   wip/idea  # a "#" after the name starts a comment
@@ -109,6 +110,13 @@ def unsigned(message):
     if starts and message.rstrip("\n").endswith(f"-----END {starts[-1].group(1)}-----"):
         return message[: starts[-1].start()]
     return message
+
+
+def refused_tag_name(name):
+    """Whether git tag refuses to create a tag of that name, also after "--":
+    one that starts with a dash, or HEAD, as check_tag_ref() of git's refs.c
+    checks before the format a ref name of the mirror already has."""
+    return name.startswith("-") or name == "HEAD"
 
 
 def die(message):
@@ -406,7 +414,8 @@ def source_tags(mirror, recreated, off=()):
     it names and, where annotated, its message and mapped tagger; and those
     it leaves behind, as left_behind() lists them. A tag carries over only
     where it names a commit the replay recreates, so that it can stand at the
-    recreated one; off holds the kinds a switch turns off."""
+    recreated one, and only under a name git tag accepts, so that the run can
+    create it; off holds the kinds a switch turns off."""
     carried, left = [], []
     for name, ref in sorted(mirror.refs("refs/tags/").items()):
         sha = ref["peeled"]
@@ -425,6 +434,8 @@ def source_tags(mirror, recreated, off=()):
             reason = (
                 f"{kind}, at {at}, without a tagger; the replay recreates only one with a tagger"
             )
+        elif refused_tag_name(name):
+            reason = f"{kind}, at {at}; git tag refuses the name"
         else:
             carried.append(
                 {
