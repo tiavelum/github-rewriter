@@ -1,14 +1,7 @@
 """The checks of plan-replay.py against the source of the session."""
 
-import re
-
 import pytest
-from conftest import TOOL
-
-
-def has_match(pattern, lines):
-    """Whether a line matches the extended pattern whole, as grep -Ex finds it."""
-    return any(re.fullmatch(pattern, line) for line in lines)
+from conftest import TOOL, has_match
 
 
 @pytest.fixture(scope="module")

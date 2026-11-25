@@ -6,27 +6,12 @@ from itertools import pairwise
 from types import SimpleNamespace
 
 import pytest
-from conftest import TOOL_NEW
+from conftest import TOOL_NEW, has_match, has_search, has_text
 
 
 def split_lines(text):
     """The lines of text as grep reads them, split at newlines alone."""
     return text.removesuffix("\n").split("\n") if text else []
-
-
-def has_match(pattern, lines):
-    """Whether a line matches the extended pattern whole, as grep -Ex finds it."""
-    return any(re.fullmatch(pattern, line) for line in lines)
-
-
-def has_search(pattern, lines):
-    """Whether the pattern matches in a line, as grep finds it without -x."""
-    return any(re.search(pattern, line) for line in lines)
-
-
-def has_text(text, lines):
-    """Whether a line holds the text, as grep -F finds it without -x."""
-    return any(text in line for line in lines)
 
 
 def first_parent_trees(run_process, git_dir):

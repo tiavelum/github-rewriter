@@ -3,26 +3,10 @@ releases: odd tags, tag messages and drafts, and the switches for tags and
 releases."""
 
 import json
-import re
 import shutil
 
 import pytest
-from conftest import NBSP_TAG, RELEASES, TOOL
-
-
-def has_match(pattern, lines):
-    """Whether a line matches the extended pattern whole, as grep -Ex finds it."""
-    return any(re.fullmatch(pattern, line) for line in lines)
-
-
-def has_search(pattern, lines):
-    """Whether the pattern matches in a line, as grep finds it without -x."""
-    return any(re.search(pattern, line) for line in lines)
-
-
-def has_text(text, lines):
-    """Whether a line holds the text, as grep -F finds it without -x."""
-    return any(text in line for line in lines)
+from conftest import NBSP_TAG, RELEASES, TOOL, has_match, has_search, has_text
 
 
 def count_starting(prefix, lines):

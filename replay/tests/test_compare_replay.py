@@ -9,26 +9,20 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from conftest import NBSP_TAG, RELEASES, TOOL_NEW, Target, run
+from conftest import (
+    NBSP_TAG,
+    RELEASES,
+    TOOL_NEW,
+    Target,
+    has_match,
+    has_search,
+    has_text,
+    run,
+)
 
 TOOL_X = "ada-example/tool-x"
 UPLOADS = "POST https://uploads.github.com/repos/ada-example/tool-x/releases/2/assets"
 PUBLISH = "PATCH repos/ada-example/tool-x/releases/2"
-
-
-def has_match(pattern, lines):
-    """Whether a line matches the pattern whole, as grep -x or grep -Ex finds it."""
-    return any(re.fullmatch(pattern, line) for line in lines)
-
-
-def has_search(pattern, lines):
-    """Whether the pattern matches in a line, as grep finds it without -x."""
-    return any(re.search(pattern, line) for line in lines)
-
-
-def has_text(text, lines):
-    """Whether a line holds the text, as grep -F finds it without -x."""
-    return any(text in line for line in lines)
 
 
 def copy_target(root, target, name):
