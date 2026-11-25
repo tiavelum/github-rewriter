@@ -49,6 +49,21 @@ def lines(text):
     return text.removesuffix("\n").split("\n") if text else []
 
 
+def has_match(pattern, lines):
+    """Whether a line matches the pattern whole, as grep -x or grep -Ex finds it."""
+    return any(re.fullmatch(pattern, line) for line in lines)
+
+
+def has_search(pattern, lines):
+    """Whether the pattern matches in a line, as grep finds it without -x."""
+    return any(re.search(pattern, line) for line in lines)
+
+
+def has_text(text, lines):
+    """Whether a line holds the text, as grep -F finds it without -x."""
+    return any(text in line for line in lines)
+
+
 @dataclass(frozen=True)
 class Result:
     """What a process left: its exit status, standard output and error,
@@ -714,6 +729,12 @@ class Target:
         return content + refs.out.encode("utf-8")
 
 
+def copy_target(root, target, name):
+    """A copy of the target's folder, as cp -R makes it."""
+    shutil.copytree(target.folder, root / name, symlinks=True)
+    return Target(root / name, target.env)
+
+
 class TargetView:
     """What rexpect of the shell test reads of a target: items by number,
     comments as (number, body), labels and closes from the fake's files, the
@@ -871,6 +892,7 @@ def view(read_plan, run_plan):
 
 
 TOOL_NEW = "ada-example/tool-new"
+TOOL_X = "ada-example/tool-x"
 
 
 # again, lag and e_again are session fixtures, so that the comparisons of A
