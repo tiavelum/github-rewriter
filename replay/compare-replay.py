@@ -5,7 +5,9 @@ branch, the branches, tags and releases of the target against those of the
 source, the event file and the state file of
 run-replay.py. A branch, tag or release of the source that the target lacks
 is a note where the event file's header lists it as left behind, and a
-difference otherwise.
+difference otherwise. Where the header lists tags, releases or reviews as
+turned off, it notes that instead, and names any of them the target holds a
+difference.
 
   compare-replay.py [--with-times] [--state <file>] <event file> <mirror> <owner/repo>
 
@@ -212,6 +214,8 @@ class Comparison:
             raise CompareError(f"{events_path} has no header of format {FORMAT}")
         self.header, self.events = lines[0], lines[1:]
         self.source, self.default = self.header["source"], self.header["default_branch"]
+        # Missing in an event file planned before the switches, which turned nothing off.
+        self.turned_off = set(self.header.get("turned_off", []))
         try:
             state = json.loads(state_path.read_text(encoding="utf-8"))
         except (OSError, ValueError) as error:
@@ -403,8 +407,11 @@ class Comparison:
 
     def source_reviews(self):
         """The reviews of the source's pull requests by id, but pending ones,
-        which only their author sees; None for an event file that predates
-        reviews, which plans none."""
+        which only their author sees; None for an event file that turns them
+        off or predates them, which plans none."""
+        if "reviews" in self.turned_off:
+            self.notes.append("reviews are turned off: the event file plans no review as a comment")
+            return None
         if not self.header.get("reviews"):
             self.notes.append("the event file predates reviews: it plans no review as a comment")
             return None
@@ -597,7 +604,9 @@ class Comparison:
     def left_behind(self, refs, source_releases, target_releases):
         """Each branch, tag and release of the source in the target, a branch
         or tag at the commit recreated from the source's; a note where the
-        target lacks one that the header lists as left behind."""
+        target lacks one that the header lists as left behind or whose kind it
+        turns off, and a difference where the target holds one of a kind
+        turned off."""
         if "left_behind" not in self.header:
             self.notes.append(
                 "the event file predates left_behind: it accepts nothing as left behind"
@@ -610,8 +619,15 @@ class Comparison:
             if e["kind"] == "push-branch"
         }
 
+        def off(kind):
+            return f"{kind}s" in self.turned_off and kind in ("tag", "release")
+
         def lacks(kind, name, what):
-            if (kind, name) in left:
+            if off(kind):
+                self.notes.append(
+                    f"{kind} {name} of the source is left behind: {kind}s are turned off"
+                )
+            elif (kind, name) in left:
                 self.notes.append(f"{kind} {name} of the source is left behind, as planned")
             else:
                 self.differ(f"{kind} {name} of the source {what}")
@@ -628,6 +644,8 @@ class Comparison:
                 continue
             if found is None:
                 lacks(kind, name, "is missing in the target")
+            elif off(kind):
+                self.differ(f"{kind} {name} is in the target, though {kind}s are turned off")
             elif found != want:
                 recreated = f"the recreated {want[:7]}" if want else "a recreated commit"
                 lacks(kind, name, f"is at {found[:7]} in the target, not at {recreated}")
@@ -639,6 +657,9 @@ class Comparison:
         target_names = {r["tag_name"] for r in target_releases}
         for name in sorted(source_names - target_names):
             lacks("release", name, "is missing in the target")
+        if off("release"):
+            for name in sorted(source_names & target_names):
+                self.differ(f"release {name} is in the target, though releases are turned off")
         for name in sorted(target_names - source_names):
             self.differ(f"release {name} is in the target, not in the source")
         self.totals += [("tags", len(tags)), ("releases", len(target_releases))]

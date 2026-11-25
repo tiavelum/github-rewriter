@@ -5,17 +5,18 @@ labels from GitHub, and writes the ordered events that run-replay.py applies;
 each review becomes a comment on its pull request.
 
   plan-replay.py [--types <file>] [--no-types] [--keep-merges]
-                 [--leave-behind <file>]
+                 [--leave-behind <file>] [--no-releases [--no-tags]]
+                 [--no-reviews]
                  <mirror> <owner/repo> <mailmap> <event file>
 
 <mirror> is a bare clone with refs/pull/*/head, as backup-mirror.sh makes.
 <mailmap> maps the author and committer of every commit, in git's mailmap
 format. <event file> must not exist yet; it gets JSON Lines: a header that
-lists every source commit the replay recreates and what it leaves behind,
-then one event per line, in the order run-replay.py applies them. Reads
-GitHub through gh api with GET requests only. Prints every title it
-changed, every squash message it wrote, what it leaves behind, and the
-totals.
+lists every source commit the replay recreates, what it leaves behind and
+what it turns off, then one event per line, in the order run-replay.py
+applies them. Reads GitHub through gh api with GET requests only. Prints
+every title it changed, every squash message it wrote, what it leaves
+behind, and the totals.
 
 The replay carries no tag and no release, and no branch other than the
 default branch and those it pushes for pull requests at their source tips.
@@ -24,6 +25,12 @@ The plan stops, and writes no event file, unless the <file> of
   tag      v1.0
   release  v1.0
   branch   wip/idea  # a "#" after the name starts a comment
+
+--no-tags, --no-releases and --no-reviews turn off what the replay carries:
+the first two accept every tag or every release as left behind, without a
+line of --leave-behind, and the third plans no review as a comment and reads
+none. --no-tags needs --no-releases, since GitHub creates the missing tag of
+a release it creates, so a replay with releases would still carry tags.
 
 Each commit title and pull request title without a type gets one: from
 --types, else from the prefix of the pull request's branch, else guessed
@@ -49,6 +56,10 @@ from pathlib import Path
 
 PROG = "plan-replay.py"
 FORMAT = 1
+# What --no-<kind> turns off, in the order the header's turned_off lists it.
+SWITCHES = ("tags", "releases", "reviews")
+# The kind of left_behind each switch accepts whole.
+SWITCH_OF = {"tag": "tags", "release": "releases"}
 TYPES = ("feat", "fix", "docs", "chore", "refactor", "test", "build", "ci", "revert")
 # Branch prefixes that are no type of GW-6 but name one.
 BRANCH_ALIASES = {"feature": "feat", "bugfix": "fix", "hotfix": "fix", "doc": "docs"}
@@ -325,14 +336,21 @@ class LeaveBehind:
                 die(f"{path}:{count}: expected one of {', '.join(self.KINDS)} and a name")
             self.accepted.add((fields[0], fields[1]))
 
-    def check(self, left):
-        """Stops at what the replay leaves behind and the file does not
-        accept; warns of what the file accepts and the replay carries or
-        the source lacks."""
+    def check(self, left, off=()):
+        """Stops at what the replay leaves behind and neither the file nor a
+        switch of off accepts; warns of what the file accepts and the replay
+        carries or the source lacks, and of what a switch accepts already."""
         found = {(x["kind"], x["name"]) for x in left}
-        for kind, name in sorted(self.accepted - found):
-            warn(f"{self.path} accepts {kind} {name}, which the replay does not leave behind")
-        missing = [x for x in left if (x["kind"], x["name"]) not in self.accepted]
+        for kind, name in sorted(self.accepted):
+            if (kind, name) not in found:
+                warn(f"{self.path} accepts {kind} {name}, which the replay does not leave behind")
+            elif SWITCH_OF.get(kind) in off:
+                warn(f"{self.path} accepts {kind} {name}, which --no-{kind}s leaves behind already")
+        missing = [
+            x
+            for x in left
+            if (x["kind"], x["name"]) not in self.accepted and SWITCH_OF.get(x["kind"]) not in off
+        ]
         if missing:
             width = max(len(x["name"]) for x in missing)
             lines = "\n".join(
@@ -346,9 +364,10 @@ class LeaveBehind:
             )
 
 
-def left_behind(mirror, info, releases, events):
+def left_behind(mirror, info, releases, events, off=()):
     """The tags, releases and branches of the source that the replay does not
-    carry, each with its kind, name, the commit it names and why."""
+    carry, each with its kind, name, the commit it names and why; off holds
+    the kinds a switch turns off."""
     default = info["default_branch"]
     deletes = bool(info.get("delete_branch_on_merge"))
     merged = {e["number"] for e in events if e["kind"] == "merge-pull"}
@@ -379,11 +398,13 @@ def left_behind(mirror, info, releases, events):
         sha = ref["peeled"]
         kind = "annotated" if ref["annotated"] else "lightweight"
         at = sha[:7] if ref["type"] == "commit" else f"the {ref['type']} {sha[:7]}"
-        reason = f"{kind}, at {at}; the replay pushes no tags"
+        why = "tags are turned off" if "tags" in off else "the replay pushes no tags"
+        reason = f"{kind}, at {at}; {why}"
         left.append({"kind": "tag", "name": name, "sha": sha, "reason": reason})
     for r in sorted(releases, key=lambda r: r["tag_name"]):
         what = "draft" if r.get("draft") else "pre-release" if r.get("prerelease") else "published"
-        reason = f"{what}, named {r.get('name') or r['tag_name']!r}; the replay creates no releases"
+        why = "releases are turned off" if "releases" in off else "the replay creates no releases"
+        reason = f"{what}, named {r.get('name') or r['tag_name']!r}; {why}"
         left.append({"kind": "release", "name": r["tag_name"], "sha": None, "reason": reason})
     return left
 
@@ -508,7 +529,7 @@ def join_direct_pushes(events):
     return joined
 
 
-def plan(mirror, repo, overrides, typed=True, keep_merges=False):
+def plan(mirror, repo, overrides, typed=True, keep_merges=False, off=()):
     info = gh_get(f"repos/{repo}")
     default = info["default_branch"]
     labels = gh_pages(f"repos/{repo}/labels")
@@ -818,10 +839,10 @@ def plan(mirror, repo, overrides, typed=True, keep_merges=False):
     # a replay cannot submit a review for someone else; a pending review is
     # its author's draft, which GitHub shows nobody else.
     by_review = {}
-    for rc in gh_pages(f"repos/{repo}/pulls/comments"):
+    for rc in [] if "reviews" in off else gh_pages(f"repos/{repo}/pulls/comments"):
         by_review.setdefault(rc.get("pull_request_review_id"), []).append(rc)
     carried = set()
-    for n in sorted(pulls):
+    for n in [] if "reviews" in off else sorted(pulls):
         for r in gh_pages(f"repos/{repo}/pulls/{n}/reviews"):
             if r.get("state") == "PENDING" or not r.get("submitted_at"):
                 continue
@@ -852,7 +873,7 @@ def plan(mirror, repo, overrides, typed=True, keep_merges=False):
             )
             warn(f"{len(found)} review comment{'s' if len(found) > 1 else ''} {which} left out")
 
-    left = left_behind(mirror, info, gh_pages(f"repos/{repo}/releases"), events)
+    left = left_behind(mirror, info, gh_pages(f"repos/{repo}/releases"), events, off)
     return default, events, left
 
 
@@ -923,7 +944,7 @@ def written_messages(events):
 def main(argv):
     if argv[:1] in (["-h"], ["--help"]):
         usage(0)
-    types, typed, keep_merges, leave = None, True, False, None
+    types, typed, keep_merges, leave, off = None, True, False, None, set()
     while argv[:1] and argv[0].startswith("--"):
         option, argv = argv[0], argv[1:]
         if option == "--types" and argv:
@@ -934,6 +955,8 @@ def main(argv):
             keep_merges = True
         elif option == "--leave-behind" and argv:
             leave, argv = Path(argv[0]), argv[1:]
+        elif option.startswith("--no-") and option[len("--no-") :] in SWITCHES:
+            off.add(option[len("--no-") :])
         else:
             usage()
     if len(argv) != 4 or argv[0].startswith("-"):
@@ -941,6 +964,13 @@ def main(argv):
     mirror_path, repo, mailmap, output = Path(argv[0]), argv[1], Path(argv[2]), Path(argv[3])
     if not re.fullmatch(r"[\w.-]+/[\w.-]+", repo):
         usage()
+    if "tags" in off and "releases" not in off:
+        die(
+            "--no-tags needs --no-releases (no_tags needs no_releases, in a run file of"
+            " replay.py): GitHub creates the missing tag of a release it creates, at the commit"
+            " the release's target_commitish names, so a replay with releases would still carry"
+            " tags. Give --no-releases too, or leave out --no-tags"
+        )
     if not mirror_path.is_dir():
         die(f"no mirror at {mirror_path}")
     if not mailmap.is_file():
@@ -953,8 +983,8 @@ def main(argv):
     accepted = LeaveBehind(leave)
 
     mirror = Mirror(mirror_path, mailmap.resolve())
-    default, events, left = plan(mirror, repo, overrides, typed, keep_merges)
-    accepted.check(left)
+    default, events, left = plan(mirror, repo, overrides, typed, keep_merges, off)
+    accepted.check(left, off)
     events = join_direct_pushes(order(events))
     for unused in overrides.unused(typed):
         warn(f"{types} sets {unused}")
@@ -977,7 +1007,10 @@ def main(argv):
         "default_branch": default,
         "source_commits": source_commits,
         "left_behind": left,
-        "reviews": True,
+        "reviews": "reviews" not in off,
+        # An event file without turned_off was planned before the switches,
+        # with every kind on.
+        "turned_off": [k for k in SWITCHES if k in off],
     }
     partial = output.with_name(output.name + ".partial")
     with partial.open("w", encoding="utf-8") as file:
