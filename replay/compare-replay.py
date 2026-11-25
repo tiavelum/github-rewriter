@@ -4,18 +4,22 @@ bodies, comments, the reviews the replay carries as comments, the default
 branch, the branches, tags and releases of the target against those of the
 source, the event file and the state file of run-replay.py; each tag the
 event file carries at the recreated commit, lightweight or annotated as
-planned, an annotated one with the planned message, tagger and date. A
-branch, tag or release of the source that the target lacks is a note where
-the event file's header lists it as left behind, and a difference otherwise.
-Where the header lists tags, releases or reviews as turned off, it notes
-that instead, and names any of them the target holds a difference.
+planned, an annotated one with the planned message, tagger and date; each
+release it carries, as the state file maps it to the target's, under its
+tag, with the planned name, body, kind and latest, and the source's assets by
+name, size, content type and digest. A branch, tag or release of the
+source that the target lacks is a note where the event file's header lists
+it as left behind, and a difference otherwise. Where the header lists tags,
+releases or reviews as turned off, it notes that instead, and names any of
+them the target holds a difference.
 
   compare-replay.py [--with-times] [--state <file>] <event file> <mirror> <owner/repo>
 
 <event file> and <mirror> are those run-replay.py applied; <owner/repo> is
 the target. The state file is <event file> with .state.json for .jsonl
 unless --state names one; it gives the map of source to target commits and
-the --final-name of the run. Give --with-times where the run had it.
+releases and the --final-name of the run. Give --with-times where the run
+had it.
 
 Reads GitHub through gh api with GET requests only, and the target's commits
 with git fetch into a temporary repository that borrows the mirror's objects.
@@ -115,6 +119,18 @@ def gh_pages(endpoint):
         page += 1
 
 
+def gh_found(endpoint):
+    """What GitHub answers for endpoint, or None where it answers 404, as for
+    the latest release of a repository that has none."""
+    result = run(["gh", "api", endpoint])
+    if result.returncode == 0:
+        return json.loads(result.stdout)
+    if "(HTTP 404)" in result.stderr:
+        return None
+    error = result.stderr.strip().splitlines()
+    raise CompareError(f"gh api {endpoint} failed: {error[-1] if error else ''}")
+
+
 def git_date(stamp):
     """An ISO 8601 time as git's raw date, seconds and offset."""
     moment = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
@@ -126,6 +142,14 @@ def git_date(stamp):
 def utc_text(stamp):
     moment = datetime.fromisoformat(stamp.replace("Z", "+00:00")).astimezone(timezone.utc)
     return moment.strftime("%Y-%m-%d %H:%M UTC")
+
+
+def release_label(e, carried):
+    """How a difference names the release of event e: by its tag, and by its
+    kind where another release of carried has that tag."""
+    what = "draft" if e["draft"] else "pre-release" if e["prerelease"] else "published"
+    shared = sum(x["tag_name"] == e["tag_name"] for x in carried) > 1
+    return f"release {e['tag_name']}" + (f" ({what})" if shared else "")
 
 
 def default_state_path(events_path):
@@ -254,6 +278,10 @@ class Comparison:
         self.committer_dates = state.get("committer_dates")
         self.heads = {int(k): v for k, v in state["heads"].items()}
         self.urls = {int(k): v for k, v in state["urls"].items()}
+        # The target's release of each release the run created, by the
+        # source's id; missing in a state file written before releases were
+        # carried, whose event file plans none.
+        self.releases = state.get("releases", {})
         self.sources = sorted(set(self.header["source_commits"]))
         self.differences, self.notes, self.totals = [], [], []
         self.replaced = 0
@@ -663,10 +691,11 @@ class Comparison:
 
     def left_behind(self, work, refs, source_releases, target_releases):
         """Each branch, tag and release of the source in the target, a branch
-        or tag at the commit recreated from the source's, a tag the event file
-        carries as carried_tag() checks it; a note where the target lacks one
-        that the header lists as left behind or whose kind it turns off, and a
-        difference where the target holds one of a kind turned off."""
+        or tag at the commit recreated from the source's, a tag or release the
+        event file carries as carried_tag() and carried_release() check it; a
+        note where the target lacks one that the header lists as left behind
+        or whose kind it turns off, and a difference where the target holds
+        one of a kind turned off."""
         if "left_behind" not in self.header:
             self.notes.append(
                 "the event file predates left_behind: it accepts nothing as left behind"
@@ -719,16 +748,90 @@ class Comparison:
         for ref in tags:
             if ref not in source:
                 self.differ(f"tag {ref[len('refs/tags/') :]} is in the target, not in the source")
-        source_names = {r["tag_name"] for r in source_releases}
-        target_names = {r["tag_name"] for r in target_releases}
-        for name in sorted(source_names - target_names):
-            lacks("release", name, "is missing in the target")
-        if off("release"):
-            for name in sorted(source_names & target_names):
+        # A carried release is found by its id, the source's from the event
+        # file and the target's from the state file, since a draft and a
+        # published release may share a tag; any other by its tag.
+        source_by = {r["id"]: r for r in source_releases}
+        target_by = {r["id"]: r for r in target_releases}
+        carried = [e for e in self.events if e["kind"] == "create-release"]
+        latest = None
+        if carried:
+            latest = (gh_found(f"repos/{self.slug}/releases/latest") or {}).get("id")
+        assets, matched = 0, set()
+        for e in carried:
+            at = release_label(e, carried)
+            record = self.releases.get(str(e["release_id"])) or {}
+            s, t = source_by.pop(e["release_id"], None), target_by.pop(record.get("id"), None)
+            if s is None:
+                self.differ(f"{at} is in the event file, but the source lacks it")
+            elif t is None:
+                self.differ(f"{at} of the source is missing in the target")
+            else:
+                assets += self.carried_release(e, s, t, latest, at)
+        others = {}
+        for t in target_by.values():
+            others.setdefault(t["tag_name"], []).append(t)
+        for s in sorted(source_by.values(), key=lambda r: (r["tag_name"], r["id"])):
+            name = s["tag_name"]
+            if not others.get(name):
+                lacks("release", name, "is missing in the target")
+                continue
+            matched.add(others[name].pop(0)["id"])
+            if off("release"):
                 self.differ(f"release {name} is in the target, though releases are turned off")
-        for name in sorted(target_names - source_names):
-            self.differ(f"release {name} is in the target, not in the source")
-        self.totals += [("tags", len(tags)), ("releases", len(target_releases))]
+        for t in sorted(target_by.values(), key=lambda r: (r["tag_name"], r["id"])):
+            if t["id"] not in matched:
+                self.differ(f"release {t['tag_name']} is in the target, not in the source")
+        self.totals += [
+            ("tags", len(tags)),
+            ("releases", len(target_releases)),
+            ("release assets", assets),
+        ]
+
+    def carried_release(self, e, source, target, latest, at):
+        """A release the event file carries, named at in each difference: its
+        name, body, kind and whether it is latest, the target's latest release
+        having the id latest, as planned, and the source's assets by name,
+        each with its size, content type and digest where both sides report
+        one. Returns the number of assets the target's release holds."""
+        if (target.get("name") or "") != e["name"]:
+            self.differ(f"{at}: name {target.get('name')!r}, planned {e['name']!r}")
+        expected = self.expected_text(e["body"], e["published_at"] or e["created_at"])
+        found = target.get("body") or ""
+        if found != expected:
+            self.differ(f"{at}: the body differs; {where(expected, found)}")
+        for field, label in (("draft", "draft"), ("prerelease", "pre-release")):
+            if bool(target.get(field)) != e[field]:
+                got, planned = (str(x).lower() for x in (bool(target.get(field)), e[field]))
+                self.differ(f"{at}: {label} {got}, planned {planned}")
+        if (latest == target["id"]) != e["latest"]:
+            self.differ(
+                f"{at}: latest {str(not e['latest']).lower()}, planned {str(e['latest']).lower()}"
+            )
+        want = {
+            a["name"]: a
+            for a in gh_pages(f"repos/{self.source}/releases/{source['id']}/assets")
+            if a.get("state", "uploaded") == "uploaded"
+        }
+        got = {a["name"]: a for a in gh_pages(f"repos/{self.slug}/releases/{target['id']}/assets")}
+        for name in sorted(set(want) | set(got)):
+            w, g = want.get(name), got.get(name)
+            if g is None:
+                self.differ(f"{at}: asset {name} is missing in the target")
+                continue
+            if w is None:
+                self.differ(f"{at}: asset {name} is in the target, not in the source")
+                continue
+            if g.get("state", "uploaded") != "uploaded":
+                self.differ(f"{at}: asset {name} is {g['state']} in the target, not uploaded")
+            for field, label in (
+                ("size", "size"),
+                ("content_type", "content type"),
+                ("digest", "digest"),
+            ):
+                if None not in (w.get(field), g.get(field)) and w[field] != g[field]:
+                    self.differ(f"{at}: asset {name}: {label} {g[field]}, the source's {w[field]}")
+        return len(got)
 
     def compare(self):
         target_info = gh_get(f"repos/{self.slug}")
