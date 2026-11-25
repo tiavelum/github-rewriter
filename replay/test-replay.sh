@@ -2707,6 +2707,27 @@ pcheck "plan-replay.py records the source's default branch master and the target
   'H["default_branch"] == "master" and H["target_default_branch"] == "main" and {e["branch"] for e in of("push-commits")} == {"main"} and {e["base"] for e in of("create-pull")} == {"main"} and len(of("push-commits")) == 3 and len(of("create-pull")) == 3 and (h := json.loads(open(os.path.join(os.path.dirname(sys.argv[1]), "run.jsonl"), encoding="utf-8").readline()))["default_branch"] == h["target_default_branch"] == "main"'
 pcheck "plan-replay.py plans a draft for master as one for the default branch, keeps a text that names master, and plans every other event and the header as for the source with main" \
   '[(e["tag_name"], e["draft"], e["commit"], e["on_tag"]) for e in of("create-release")] == [("v0.9-rc", True, None, False)] and of("create-issue", 6)[0]["body"] == "Seen twice since Merge branch '"'"'master'"'"'." and (lines := open(os.path.join(os.path.dirname(sys.argv[1]), "run.jsonl"), encoding="utf-8").read().splitlines()) and [{k: v for k, v in e.items() if k != "seq"} | ({"body": "Seen twice."} if (e["kind"], e.get("number")) == ("create-issue", 6) else {}) for e in E if e["kind"] != "create-release"] == [{k: v for k, v in json.loads(line).items() if k != "seq"} for line in lines[1:]] and {k: v for k, v in H.items() if "default_branch" not in k} == {k: v for k, v in json.loads(lines[0]).items() if "default_branch" not in k}'
+# The same source with #3's head branch named main, as a fork may name it, and
+# its draft for refs/heads/master: the head gets another name, so that it
+# cannot push over the replay's main.
+cp -R "$T/api-master" "$T/api-master-head"
+python3 - "$T/api-master-head" <<'EOF'
+import json, sys
+from pathlib import Path
+api, base = Path(sys.argv[1]), "repos_ada-example_tool"
+pulls = json.loads((api / f"{base}_pulls-1.json").read_text())
+for p in pulls:
+    if p["number"] == 3:
+        p["head"]["ref"] = "main"
+(api / f"{base}_pulls-1.json").write_text(json.dumps(pulls))
+releases = json.loads((api / f"{base}_releases-1.json").read_text())
+releases[0]["target_commitish"] = "refs/heads/master"
+(api / f"{base}_releases-1.json").write_text(json.dumps(releases))
+EOF
+(FAKE_GH_API=$T/api-master-head && export FAKE_GH_API && plan --types "$T/types" "$mirror_master" ada-example/tool "$T/mailmap" "$T/master-head.jsonl") >"$T/master-head-out" 2>&1
+plan_file=$T/master-head.jsonl
+pcheck "plan-replay.py gives a pull request whose head branch is named main another name in a source whose default branch is master, and plans a draft for refs/heads/master for the default branch" \
+  'sorted(e["branch"] for e in of("push-branch")) == ["docs/5-notes", "feat/2-thing", "main-3"] and {e["branch"] for e in of("push-commits")} == {"main"} and [(e["tag_name"], e["draft"], e["commit"]) for e in of("create-release")] == [("v0.9-rc", True, None)]'
 plan_file=$T/events.jsonl
 target "$T/gh-ma" ada-example/tool-ma
 (FAKE_GH_API=$T/api-master && export FAKE_GH_API && replay "$T/gh-ma" ada-example/tool-ma --pace 0 --state "$T/ma.state.json" "$T/master.jsonl" "$mirror_master" ada-example/tool-ma) >"$T/ma-out" 2>&1
