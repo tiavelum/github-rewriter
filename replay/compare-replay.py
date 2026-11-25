@@ -11,7 +11,9 @@ name, size, content type and digest. A branch, tag or release of the
 source that the target lacks is a note where the event file's header lists
 it as left behind, and a difference otherwise. Where the header lists tags,
 releases or reviews as turned off, it notes that instead, and names any of
-them the target holds a difference.
+them the target holds a difference. The source's default branch is compared
+with the target's under the name the plan gives it, main for master, and the
+target's default branch has to be that one.
 
   compare-replay.py [--with-times] [--state <file>] <event file> <mirror> <owner/repo>
 
@@ -254,6 +256,9 @@ class Comparison:
             raise CompareError(f"{events_path} has no header of format {FORMAT}")
         self.header, self.events = lines[0], lines[1:]
         self.source, self.default = self.header["source"], self.header["default_branch"]
+        # The target's default branch, main for a source's master; an event
+        # file planned before the rename names only the source's.
+        self.target_default = self.header.get("target_default_branch", self.default)
         # Missing in an event file planned before the switches, which turned nothing off.
         self.turned_off = set(self.header.get("turned_off", []))
         try:
@@ -505,12 +510,23 @@ class Comparison:
         self.totals.append(("pull request heads", len(pushed)))
 
     def main_branch(self, work, info):
-        """The default branch, step by step: tree, message and identities as planned."""
+        """The default branch, the source's under its name and the target's
+        under the one the plan gives it, step by step: tree, message and
+        identities as planned; and the target's default branch as planned."""
+        named = info.get("default_branch")
+        if named != self.target_default:
+            self.differ(f"the default branch is {named}, planned {self.target_default}")
+        elif self.target_default != self.default:
+            self.notes.append(
+                f"default branch {self.default} of the source is {self.target_default} in the"
+                " target, as planned"
+            )
         source = git(
             self.mirror, "rev-list", "--first-parent", "--reverse", f"refs/heads/{self.default}"
         ).split()
+        branch = self.target_default
         target = git(
-            work, "rev-list", "--first-parent", "--reverse", f"refs/heads/{self.default}"
+            work, "rev-list", "--first-parent", "--reverse", f"refs/heads/{branch}"
         ).split()
         steps = []
         for e in self.events:
@@ -518,10 +534,10 @@ class Comparison:
                 steps += [("commit", c) for c in e["commits"]]
             elif e["kind"] == "merge-pull":
                 steps.append(("merge", e))
-        self.totals.append((f"commits on {self.default}", len(target)))
+        self.totals.append((f"commits on {branch}", len(target)))
         if not len(source) == len(target) == len(steps):
             self.differ(
-                f"{self.default} has {len(target)} first-parent commits, the source {len(source)},"
+                f"{branch} has {len(target)} first-parent commits, the source {len(source)},"
                 f" the event file {len(steps)}"
             )
             return
@@ -530,7 +546,7 @@ class Comparison:
         host = info["html_url"].rsplit("/", 2)[0]
         authors = set()
         for i, ((kind, step), s, t) in enumerate(zip(steps, source, target, strict=True), 1):
-            at = f"{self.default}, step {i} ({t[:7]})"
+            at = f"{branch}, step {i} ({t[:7]})"
             planned_sha = step["sha"] if kind == "commit" else step["source_commit"]
             if planned_sha != s:
                 self.differ(f"{at}: the event file plans {planned_sha[:7]}, the source has {s[:7]}")
@@ -625,7 +641,7 @@ class Comparison:
         }
         merged = {e["number"] for e in self.events if e["kind"] == "merge-pull"}
         deletes = bool(info.get("delete_branch_on_merge"))
-        expected = {self.default}
+        expected = {self.target_default}
         for e in self.events:
             if e["kind"] != "push-branch" or (deletes and e["number"] in merged):
                 continue
@@ -641,7 +657,9 @@ class Comparison:
         for name in sorted(set(found) - expected):
             self.differ(f"branch {name} is in the target, but in no event")
         source = git(self.mirror, "for-each-ref", "--format=%(refname:short)", "refs/heads/")
-        for name in sorted(set(found) - set(source.split("\n"))):
+        # The source's default branch stands in the target under the name the plan gives it.
+        names = {self.target_default if x == self.default else x for x in source.split("\n")}
+        for name in sorted(set(found) - names):
             self.notes.append(f"branch {name} stays in the target; the source no longer has it")
         self.totals.append(("branches", len(found)))
 
