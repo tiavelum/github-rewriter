@@ -31,6 +31,18 @@ The second ends with:
 
 To rewrite a repository, follow the steps in [rewrite/README.md](rewrite/README.md); to replay it into a new one with one command, those in [replay/README.md](replay/README.md). To have Claude prepare, plan and check a replay with you, ask it to replay the repository: Claude Code finds the skill in `.claude/skills/` of a clone of this repository, and the Claude app once it is uploaded as below.
 
+## Testing a pull request on macOS
+
+```bash
+gh pr edit <number> -R tiavelum/github-rewriter --add-label test-macos
+```
+
+This starts the tests on macOS for that pull request, beside those on Linux, and for each later push to it; the run shows the check `test (macos-15)` with its result. Add the label where the change was not tested with the commands of "Getting started" on a Mac, since macOS runs the tests under its own `/bin/sh`, bash 3.2, and the BSD tools, which have found defects that Linux let pass; without it, a pull request waits for no macOS runner, which often queues for longer than the tests take ([#75](https://github.com/tiavelum/github-rewriter/issues/75)). A push to `main` always runs the tests on macOS too, so a defect that only macOS finds shows there after the merge at the latest. To run both on a branch without a pull request:
+
+```bash
+gh workflow run test -R tiavelum/github-rewriter --ref <branch>
+```
+
 ## After changing the skill
 
 Package the skill as a ZIP that holds its folder:
@@ -61,7 +73,7 @@ Then paste it into the instructions field of the claude.ai project "github-rewri
 | [`replay/`](replay/README.md) | The scripts that plan the replay of a repository into a new one, with its issues and pull requests under the same numbers, as an event file, apply that file to an empty repository and compare the result with the source, the script that runs them in turn from one run file, and their test |
 | `.claude/skills/` | The skill `replay-repository`, with which Claude takes a replay from the owner's first answers to the replay holding the source's name, using the scripts of [`replay/`](replay/README.md) |
 | `docs/decisions/` | The decisions that constrain every run, such as why a repository is replayed into a new one rather than rewritten or forked |
-| `.github/workflows/` | The workflow that runs the tests on macOS and Linux, and the formatter and linter on the Python files, for every pull request and every push to `main` |
+| `.github/workflows/` | The workflow that runs the tests on Linux, and the formatters and linters, for every pull request and every push to `main`, and the tests on macOS too for every push to `main` and for a pull request with the label `test-macos`, as [Testing a pull request on macOS](#testing-a-pull-request-on-macos) describes |
 | `project-instructions.md`, `CLAUDE.md` | The rules for Claude working in this repository |
 
 ## License
