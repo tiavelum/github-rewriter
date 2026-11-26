@@ -1,8 +1,9 @@
 """A fake gh that plays GitHub's API for the target in $FAKE_GITHUB, as GitHub's REST pages
 describe it; the FAKE_GH_* variables set up a rate limit, a lost answer, a lag and other cases.
 
-DENY, HALF, INTERRUPT, LAG, LOSE and RATE_LIMIT name a call "<method> <endpoint>" and act once,
-on the first occurrence of it that reaches them, in that target only:
+DENY, HALF, INTERRUPT, LAG, LOSE, NOT_MERGEABLE, PRIMARY_LIMIT, RATE_LIMIT, TOO_MANY and UNSEEN
+name a call "<method> <endpoint>" and act once, on the first occurrence of it that reaches them,
+in that target only:
 
 FAKE_GH_API         the source's API folder: it answers a GET of another repository from it, and
                     takes from it the ids of other repositories' issues for the sub-issue calls
@@ -14,9 +15,19 @@ FAKE_GH_LAG         a list whose first non-empty answer lacks its highest-number
                     every pull request
 FAKE_GH_LOGIN       the login of the account, the owner of user/repos; ada-example where unset
 FAKE_GH_LOSE        a call it does and then answers 502, as when the answer is lost
+FAKE_GH_NOT_MERGEABLE  a merge it answers 405, doing nothing, as run-replay.py expects while
+                    GitHub computes whether the pull request merges, which GitHub's pages
+                    do not describe
 FAKE_GH_NO_SCOPE    where set, a call of user/... answers 404, as to a token without the scope
+FAKE_GH_PRIMARY_LIMIT  a call it answers 403 with x-ratelimit-remaining 0 and a reset a second
+                    later, doing nothing
 FAKE_GH_RATE_LIMIT  a call it answers 403 with Retry-After: 1, doing nothing
 FAKE_GH_SKIP        the number an issue someone else creates takes, just before the next item
+FAKE_GH_TOO_MANY    a call it answers 429 with Retry-After: 1, doing nothing; a 429 without it,
+                    which run-replay.py waits a minute for, runs in no test
+FAKE_GH_UNSEEN      a call it answers 422, doing nothing, as run-replay.py expects where GitHub
+                    does not see a branch pushed just before, which GitHub's pages do not
+                    describe
 
 The files and folders of $FAKE_GITHUB:
 
@@ -67,6 +78,7 @@ REASONS = {
     405: "Method Not Allowed",
     409: "Conflict",
     422: "Unprocessable Entity",
+    429: "Too Many Requests",
     502: "Bad Gateway",
 }
 CLOSING = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?\s+#(\d+)\b", re.I)
@@ -192,6 +204,9 @@ def merge(it, body, items, closes):
         git("update-ref", "-d", f"refs/heads/{it['head']}")
     it.update(state="closed", merged_at="2026-11-01T00:00:00Z", merge_commit_sha=sha)
     closes.append([it["number"], None])
+    # GitHub interprets closing keywords only in a pull request into the default branch; the
+    # fake closes for any base, since plan-replay.py stops at a merge into another branch, so
+    # no replay merges one; it follows GitHub here once plan-replay.py plans such a merge.
     for n in CLOSING.findall(it["body"] + "\n" + message):
         named = items.get(n)
         if named and named["kind"] == "issue":
@@ -260,8 +275,13 @@ def sub_issues(method, repo, n, what, body, q):
     elif method == "POST" and what == "sub_issues":
         child = body["sub_issue_id"]
         held = next((k for k, ids in links.items() if child in ids), None)
+        # GitHub's Add sub-issue: "The sub-issue must belong to the same repository owner as
+        # the parent issue".
+        owner = repo.split("/")[0].lower()
         if child not in by_id or held == key or (held and not body.get("replace_parent")):
             result = invalid("the issue cannot be added as a sub-issue")
+        elif by_id[child]["repository_url"].split("/")[-2].lower() != owner:
+            result = invalid("the sub-issue must belong to the same repository owner as the parent")
         else:
             if held:
                 links[held].remove(child)
@@ -386,6 +406,9 @@ def upload_asset(path, q, call):
             "message": "Validation Failed",
             "errors": [{"resource": "ReleaseAsset", "code": "already_exists", "field": "name"}],
         }
+    # GitHub renames some names on upload without saying to what, so the fake keeps each name
+    # until a trial on GitHub (#129) shows what a renamed one becomes.
+
     # An empty asset in the state starter, as GitHub's page says an upstream failure may leave.
     half = once("FAKE_GH_HALF", call)
     data = b"" if half else upload_data
@@ -531,6 +554,9 @@ def handle(method, endpoint, body):
             sorted(found, key=lambda v: v["number"], reverse=q.get("direction", "desc") == "desc")
         )
     elif route in (("POST", "issues"), ("POST", "pulls")):
+        # GitHub's pulls endpoints take no labels or assignees; the issues endpoints set them.
+        if route[1] == "pulls":
+            body = {k: v for k, v in body.items() if k not in ("labels", "assignees")}
         if any(x not in names for x in body.get("labels", [])):
             result = invalid("label does not exist")
         elif route[1] == "pulls" and not (
@@ -575,6 +601,8 @@ def handle(method, endpoint, body):
         None if parts[0] == "issues" else "pull"
     ):
         it = item()
+        if parts[0] == "pulls":
+            body = {k: v for k, v in body.items() if k not in ("labels", "assignees")}
         if any(x not in names for x in body.get("labels", [])):
             result = invalid("label does not exist")
         else:
@@ -638,6 +666,16 @@ headers = []
 if once("FAKE_GH_RATE_LIMIT", call):
     status, data = 403, {"message": "You have exceeded a secondary rate limit."}
     headers = [("Retry-After", "1")]
+elif once("FAKE_GH_PRIMARY_LIMIT", call):
+    status, data = 403, {"message": "API rate limit exceeded for user ID 1."}
+    headers = [("x-ratelimit-remaining", "0"), ("x-ratelimit-reset", str(int(time.time()) + 1))]
+elif once("FAKE_GH_TOO_MANY", call):
+    status, data = 429, {"message": "Too many requests"}
+    headers = [("Retry-After", "1")]
+elif once("FAKE_GH_NOT_MERGEABLE", call):
+    status, data = 405, {"message": "Pull Request is not mergeable"}
+elif once("FAKE_GH_UNSEEN", call):
+    status, data = invalid("head is not a branch yet")
 elif once("FAKE_GH_DENY", call):
     status, data = 403, {"message": "Resource not accessible by personal access token"}
 # GitHub answers 404 with these headers to a token without the scope.
