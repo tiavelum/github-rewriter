@@ -655,14 +655,13 @@ def recreated(state_file, sha):
 
 
 def shell_status(result):
-    # subprocess gives a process a signal killed minus the signal's number,
-    # where a POSIX shell gives 128 plus it, such as 137 for a kill -9.
+    # subprocess reports a process a signal killed as minus the signal's number; a POSIX shell
+    # reports 128 plus it, such as 137 for a kill -9.
     return 128 - result.status if result.status < 0 else result.status
 
 
 def past_header(text):
-    # The message of a tag that cat-file prints, as sed "1,/^$/d" leaves it:
-    # the first line never ends the header.
+    # The message of a tag as cat-file prints it: the first line never ends the header.
     found = re.findall(r"[^\n]*\n|[^\n]+$", text)
     for i in range(1, len(found)):
         if found[i] == "\n":
@@ -901,6 +900,7 @@ def final_name_again(source, run_plan, replay_final_name, replay_someone_elses_i
     return SimpleNamespace(resumed=resumed, bad_name=bad_name, bad_sign=bad_sign)
 
 
+# git allows a no-break space in a ref's name.
 NBSP_TAG = "sp\N{NO-BREAK SPACE}ace"
 
 
@@ -1004,8 +1004,8 @@ def api_extra_del(root, api_extra):
 
 @pytest.fixture(scope="session")
 def leave(root):
-    # Beside the two branches the plans of mirror-extra.git leave behind, tags
-    # and releases they carry and a tag v9 the source lacks, of which they warn.
+    # Lines for the two branches left behind, for tags and releases the plans carry, and for a
+    # tag v9 the source lacks; the plans warn of the last two kinds.
     path = root / "leave"
     path.write_text(
         "# left to the archive\nbranch docs/5-notes\nbranch wip/idea\ntag v0.1\ntag v0.2\n"

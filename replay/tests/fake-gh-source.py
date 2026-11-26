@@ -40,7 +40,7 @@ def main(args):
         refuse(f"{method} {endpoint}")
     api = Path(os.environ["FAKE_GH_API"])
     path = endpoint.partition("?")[0].replace("/", "_")
-    # The last page= of the query counts, as a greedy match finds it.
+    # The last page= of the query counts.
     page = re.match(r".*[?&]page=([0-9]*)", endpoint)
     if page:
         name = api / f"{path}-{page[1]}.json"

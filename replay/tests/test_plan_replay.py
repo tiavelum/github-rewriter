@@ -234,8 +234,6 @@ def test_prints_every_squash_message_it_writes_for_a_merge_commit(planned):
     assert "      {pr_url}" in main.out_lines
 
 
-# --no-types changes only the first line of the squash merge of #3, to its
-# pull request's title.
 def test_plans_with_no_types_and_with_keep_merges_without_warnings(planned):
     plain, merges = planned.plain, planned.merges
     assert (plain.status, merges.status) == (0, 0), plain.err + merges.err

@@ -598,6 +598,7 @@ if once("FAKE_GH_RATE_LIMIT", call):
     headers = [("Retry-After", "1")]
 elif once("FAKE_GH_DENY", call):
     status, data = 403, {"message": "Resource not accessible by personal access token"}
+# GitHub answers 404 with these headers to a token without the scope.
 elif endpoint.startswith("user/") and os.environ.get("FAKE_GH_NO_SCOPE"):
     status, data = 404, {"message": "Not Found"}
     kind = endpoint.split("?")[0].split("/")[1][:-1]
