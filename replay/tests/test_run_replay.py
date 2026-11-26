@@ -6,12 +6,7 @@ from itertools import pairwise
 from types import SimpleNamespace
 
 import pytest
-from conftest import TOOL_NEW, has_match, has_search, has_text
-
-
-def split_lines(text):
-    """The lines of text as grep reads them, split at newlines alone."""
-    return text.removesuffix("\n").split("\n") if text else []
+from conftest import TOOL_NEW, has_match, has_search, has_text, lines
 
 
 def first_parent_trees(run_process, git_dir):
@@ -228,7 +223,7 @@ def resumed_b(root, source, run_plan, make_target, replay):
         target=target,
         statuses=[r.status for r in runs],
         out=out,
-        out_lines=split_lines(out),
+        out_lines=lines(out),
         dump=target.dump(),
     )
 

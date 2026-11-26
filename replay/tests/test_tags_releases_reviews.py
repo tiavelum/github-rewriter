@@ -4,7 +4,6 @@ plans and replays of the source with reviews, RV, RO, RT and NR."""
 
 import hashlib
 import json
-import re
 import shutil
 import time
 from types import SimpleNamespace
@@ -21,70 +20,21 @@ from conftest import (
     has_match,
     has_search,
     has_text,
+    kill_hook,
     lines,
+    past_header,
+    refuse_hook,
+    shell_status,
+    write_hook,
 )
 
 ADA = ("Ada Example", "ada@example.com")
-
-
-def shell_status(result):
-    """The exit status as the shell test records it with $?: a process that a
-    signal killed, which subprocess reports as minus the signal's number,
-    gets 128 plus that number, such as 137 for a kill -9."""
-    return 128 - result.status if result.status < 0 else result.status
 
 
 def as_read(text):
     """The text as open().read() of the shell test's conditions reads it: in
     universal newlines mode, which turns "\\r\\n" and a lone "\\r" into "\\n"."""
     return text.replace("\r\n", "\n").replace("\r", "\n")
-
-
-def past_header(text):
-    """The text without its lines up to the first empty one after the first,
-    as sed "1,/^$/d" prints it: the message of a tag that cat-file prints."""
-    found = re.findall(r"[^\n]*\n|[^\n]+$", text)
-    for i in range(1, len(found)):
-        if found[i] == "\n":
-            return "".join(found[i + 1 :])
-    return ""
-
-
-def write_hook(target, name, script):
-    """A hook of the target's repository, executable, as cat > and chmod +x make it."""
-    hook = target.repo / "hooks" / name
-    hook.write_text(script, encoding="utf-8")
-    hook.chmod(0o755)
-
-
-# A post-receive hook that kills the run-replay.py whose push of the tag @TAG@
-# it receives, once, as a machine that stops right after the push would.
-KILL_HOOK = """\
-#!/bin/sh
-grep -q ' refs/tags/@TAG@$' || exit 0
-[ ! -e ../killed ] || exit 0
-touch ../killed
-pid=$PPID
-while [ "${pid:-1}" -gt 1 ]; do
-  case $(ps -o args= -p "$pid") in
-  *run-replay.py*)
-    kill -9 "$pid"
-    exit 0
-    ;;
-  esac
-  pid=$(ps -o ppid= -p "$pid" | tr -d ' ')
-done
-"""
-
-# A pre-receive hook that refuses the push of the tag v0.2 once.
-REFUSE_HOOK = """\
-#!/bin/sh
-grep -q ' refs/tags/v0.2$' || exit 0
-[ ! -e ../refused-once ] || exit 0
-touch ../refused-once
-echo "refused once" >&2
-exit 1
-"""
 
 
 def tag_refs(run_process, target):
@@ -135,7 +85,7 @@ def killed_tag(root, run_process, extra_plan, mirror_extra, make_target, replay)
     test appends it to tk-out; and TC, copied from TK after the kill, with
     its refs before its run, and resumed."""
     target = make_target("gh-tk", TOOL_X)
-    write_hook(target, "post-receive", KILL_HOOK.replace("@TAG@", "v0.2"))
+    write_hook(target, "post-receive", kill_hook("refs/tags/v0.2"))
     state = root / "tk.state.json"
     tail = (extra_plan.file, mirror_extra, TOOL_X)
 
@@ -243,8 +193,8 @@ def pushed_tags(root, extra_plan, mirror_extra, make_target, replay):
     """TP's three runs, and the object for v0.2 that its state file records
     after the second, empty where it records none."""
     target = make_target("gh-tp", TOOL_X)
-    write_hook(target, "post-receive", KILL_HOOK.replace("@TAG@", "v0.1"))
-    write_hook(target, "pre-receive", REFUSE_HOOK)
+    write_hook(target, "post-receive", kill_hook("refs/tags/v0.1"))
+    write_hook(target, "pre-receive", refuse_hook("refs/tags/v0.2"))
     state = root / "tp.state.json"
     tail = (extra_plan.file, mirror_extra, TOOL_X)
 
