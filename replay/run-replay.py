@@ -60,33 +60,30 @@ KINDS = (
     "create-tag",
     "create-release",
 )
-# A hash in a text: 7 to 40 lowercase hexadecimal characters, not part of a longer word.
-HASH = re.compile(r"(?<![0-9A-Za-z])[0-9a-f]{7,40}(?![0-9A-Za-z])")
-# A closing keyword for an item of the same repository, which GitHub acts on at a merge.
-CLOSING = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?\s+#(\d+)\b", re.IGNORECASE)
+HASH_IN_TEXT = re.compile(r"(?<![0-9A-Za-z])[0-9a-f]{7,40}(?![0-9A-Za-z])")
+SAME_REPO_CLOSING_KEYWORD = re.compile(
+    r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?\s+#(\d+)\b", re.IGNORECASE
+)
 RETRIES = 5
 # GitHub's guidance for a secondary rate limit without retry-after: wait at
 # least a minute, longer with each retry.
 RATE_LIMIT_WAIT = 60
-# GitHub may answer a read with a server error, and refuse a merge or a pull
-# request right after the push or creation it depends on, until it has
-# caught up; these waits are long enough for that in practice.
+# GitHub may answer a read with a server error, and refuse a merge or a pull request right
+# after what it depends on until it has caught up; these waits have sufficed in practice.
 TRANSIENT_WAIT = 5
 CATCH_UP_WAIT = 3
 # GitHub closes the items a merged pull request names with a closing keyword
 # shortly after the merge; close-item waits this long for that.
 CLOSE_WAIT = 10
 SLUG = re.compile(r"[\w.-]+/[\w.-]+")
-# The scope gh needs to list the signing keys of each gpg.format, and the
-# endpoint that lists them.
-KEY_LISTS = {
+SIGNING_KEY_LISTS = {
     "ssh": ("user/ssh_signing_keys", "read:ssh_signing_key", "SSH signing keys"),
     "openpgp": ("user/gpg_keys", "read:gpg_key", "GPG keys"),
 }
 
 
 class ReplayError(Exception):
-    """Ends the run with a message; the state file keeps the last finished event."""
+    pass
 
 
 def usage(status=2):
@@ -95,8 +92,7 @@ def usage(status=2):
 
 
 def run(args, stdin=None, env=None, new_session=False):
-    # A git call that needs a password fails instead of waiting for one; the
-    # gh calls through here get the variable too.
+    # A git call that needs a password fails instead of waiting for one.
     env = {**(os.environ if env is None else env), "GIT_TERMINAL_PROMPT": "0"}
     try:
         return subprocess.run(
@@ -122,7 +118,7 @@ def git(repo, *args, stdin=None, env=None):
 
 
 def git_date(stamp):
-    """An ISO 8601 time as git's raw date, seconds and offset, so that the offset stays."""
+    # Raw, so that the offset stays.
     moment = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
     minutes = int(moment.utcoffset().total_seconds()) // 60
     sign = "-" if minutes < 0 else "+"
@@ -130,11 +126,8 @@ def git_date(stamp):
 
 
 def now_date():
-    """The time of a recreation as git's raw date, in the machine's offset:
-    SOURCE_DATE_EPOCH where it is set, as reproducible builds set a fixed
-    time, else the clock. A value that is no whole number of seconds, an empty
-    one included, stops the run, as the specification of SOURCE_DATE_EPOCH
-    advises."""
+    # SOURCE_DATE_EPOCH is how reproducible builds fix the time; its specification advises
+    # to stop at a value that is no whole number of seconds, an empty one included.
     fixed = os.environ.get("SOURCE_DATE_EPOCH")
     seconds = int(time.time())
     if fixed is not None:
@@ -151,7 +144,6 @@ def now_date():
 
 
 def parse_response(out):
-    """Status, headers and JSON body of what gh api --include printed."""
     if not out.startswith("HTTP/"):
         return None, {}, None
     end = re.search(r"\r?\n\r?\n", out)
@@ -169,7 +161,6 @@ def parse_response(out):
 
 
 def git_config(name):
-    """A value of the git configuration that git commit-tree would read, or None."""
     result = run(["git", "config", "--get", name])
     return result.stdout.strip() if result.returncode == 0 and result.stdout.strip() else None
 
@@ -179,9 +170,7 @@ def scopes(header):
 
 
 def lacks_scope(headers):
-    """Whether GitHub's answer leaves open that the token lacks the scope the
-    endpoint needs: true unless the token holds one of the scopes it accepts,
-    where an admin: or write: scope also holds its read: scope, as gh counts."""
+    # An admin: or write: scope also holds its read: scope, as gh counts them.
     held = set()
     for scope in scopes(headers.get("x-oauth-scopes")):
         level, _, name = scope.partition(":")
@@ -204,7 +193,6 @@ def message_of(data):
 
 
 def rate_limit_wait(status, headers, data, attempt):
-    """Seconds to wait before retrying a call that hit a rate limit, else None."""
     if status not in (403, 429):
         return None
     if headers.get("retry-after", "").isdigit():
@@ -220,8 +208,6 @@ def rate_limit_wait(status, headers, data, attempt):
 
 
 class Api:
-    """Calls gh api, at least pace seconds after the end of the previous write."""
-
     def __init__(self, pace):
         self.pace = pace
         self.last_write = None
@@ -237,10 +223,6 @@ class Api:
         self.last_write = time.monotonic()
 
     def call(self, method, endpoint, body=None, headers=(), upload=None):
-        """Status and body of one request, with the given headers and, where
-        upload names a file, its content as the body. A rate limit is waited
-        out and the same call retried; a read is also retried after a server
-        error."""
         write = method != "GET"
         args = ["gh", "api", "--include", "--method", method, endpoint]
         for header in headers:
@@ -287,8 +269,7 @@ class Api:
         return data
 
     def pages(self, endpoint):
-        """All entries of a list endpoint, read page by page up to the first
-        empty one, since --paginate fails through some proxies."""
+        # Not --paginate, which fails through some proxies.
         joiner = "&" if "?" in endpoint else "?"
         entries, page = [], 1
         while True:
@@ -336,8 +317,6 @@ def utc_text(stamp):
 
 
 def release_label(e, planned):
-    """How a message names the release of event e: by its tag, and by its
-    kind where another release of planned has that tag."""
     what = "draft" if e["draft"] else "pre-release" if e["prerelease"] else "published"
     shared = sum(x["tag_name"] == e["tag_name"] for x in planned) > 1
     return f"release {e['tag_name']}" + (f" ({what})" if shared else "")
@@ -351,12 +330,10 @@ class Replay:
         self.downloads = work_path(state_path, ".downloads")
         self.with_times = with_times
         self.sign, self.final_name = sign, final_name
-        # The options of git commit-tree that sign with the checked key, and what to say of it.
         self.sign_options, self.key_note, self.steady_key = [], "", True
         self.api = Api(pace)
         self.header, self.events, self.digest = load_events(events_path)
-        # The target's default branch, main for a source's master; an event
-        # file planned before the rename names only the source's.
+        # An event file planned before the rename of master names only the source's.
         self.source_default = self.header["default_branch"]
         self.default = self.header.get("target_default_branch", self.source_default)
         self.sources = sorted(set(self.header["source_commits"]))
@@ -365,23 +342,15 @@ class Replay:
         }
         self.done, self.highest, self.head = 0, 0, None
         self.hashes, self.numbers, self.heads, self.urls = {}, {}, {}, {}
-        # The object each tag's ref is at, by name: the recreated commit of a
-        # lightweight tag, the tag object of an annotated one.
-        self.tags = {}
-        # Each release created, by the source's release id: its id and
-        # upload_url in the target and the target's id of each asset
-        # uploaded, by the source's asset id.
-        self.releases = {}
+        self.tag_shas = {}
+        self.created_releases = {}
         self.refs = {}
-        # The committer date each recreated commit got, by source commit; None
-        # for a run started before committer dates were the time of the replay,
-        # which keeps the original ones so that it resumes.
+        # None from a state file that predates committer dates at the time of the replay:
+        # that run keeps the original ones, so that it resumes.
         self.committer_dates = {}
         self.finished, self.resumed_at, self.closing = False, None, (0.0, set())
         self.stopping, self.current = False, None
         self.counts = {}
-
-    # The state file
 
     def load_state(self):
         if not self.state_path.exists():
@@ -411,9 +380,9 @@ class Replay:
         self.heads = {int(k): v for k, v in state["heads"].items()}
         self.urls = {int(k): v for k, v in state["urls"].items()}
         # Missing in a state file written before tags were carried.
-        self.tags = state.get("tags", {})
+        self.tag_shas = state.get("tags", {})
         # Missing in a state file written before releases were carried.
-        self.releases = state.get("releases", {})
+        self.created_releases = state.get("releases", {})
         self.finished = state.get("finished", False)
         return True
 
@@ -434,8 +403,8 @@ class Replay:
             "heads": {str(k): v for k, v in sorted(self.heads.items())},
             "urls": {str(k): v for k, v in sorted(self.urls.items())},
             "hashes": self.hashes,
-            "tags": self.tags,
-            "releases": self.releases,
+            "tags": self.tag_shas,
+            "releases": self.created_releases,
         }
         if self.committer_dates is not None:
             state["committer_dates"] = self.committer_dates
@@ -446,8 +415,6 @@ class Replay:
             file.flush()
             os.fsync(file.fileno())
         partial.replace(self.state_path)
-
-    # Checks before the first write
 
     def check_mirror(self):
         trees = {c["tree"] for e in self.events for c in e.get("commits", [])}
@@ -463,8 +430,7 @@ class Replay:
             )
 
     def check_signing(self):
-        """Checks the signing key of the git configuration as sign-commits.sh
-        does, and that GitHub knows it as a signing key."""
+        # The same check as rewrite/sign-commits.sh makes.
         key = git_config("user.signingkey")
         if not key:
             raise ReplayError("--sign needs a user.signingkey in your git configuration")
@@ -475,7 +441,7 @@ class Replay:
             known = self.check_gpg_key(key)
         else:
             raise ReplayError(f"--sign signs with gpg.format ssh or openpgp, not {form}")
-        endpoint, scope, what = KEY_LISTS[form]
+        endpoint, scope, what = SIGNING_KEY_LISTS[form]
         entries, page = [], 1
         while True:
             status, data = self.api.call("GET", f"{endpoint}?per_page=100&page={page}")
@@ -601,7 +567,6 @@ class Replay:
         if not (permissions.get("push") or permissions.get("admin")):
             raise ReplayError(f"gh may not write to {self.slug}")
         self.url = info["html_url"]
-        # {pr_url} names the target, or the repository the target will be renamed to.
         host = self.url.rsplit("/", 2)[0]
         self.pr_base = f"{host}/{self.final_name}" if self.final_name else self.url
         protocol = run(["gh", "config", "get", "git_protocol"]).stdout.strip()
@@ -616,9 +581,8 @@ class Replay:
         for line in result.stdout.splitlines():
             sha, _, ref = line.partition("\t")
             refs[ref] = sha
-        # An empty repository may name another default branch than the source's,
-        # since GitHub's documentation leaves open whether one can be set before
-        # it exists; the first push creates the branch, after which it is set.
+        # GitHub's documentation leaves open whether an empty repository's default branch can
+        # be set, so it is checked only once the first push has created the branch.
         if refs and info.get("default_branch") != self.default:
             raise ReplayError(
                 f"the default branch of {self.slug} is {info.get('default_branch')}, the"
@@ -639,9 +603,8 @@ class Replay:
         following = self.events[self.done] if self.done < len(self.events) else None
         kind = following["kind"] if following else None
         problems = []
-        # The event that was running when the last run stopped may have done
-        # part of its work; it checks what it finds, so it may account for one
-        # difference.
+        # The event the last run stopped in may have done part of its work, which it checks
+        # itself, so it may account for one difference.
         if highest != self.highest and not (
             kind in ("create-issue", "create-pull")
             and highest == self.highest + 1 == following["number"]
@@ -736,23 +699,18 @@ class Replay:
         if removed:
             print(f"  labels the target has and the replay deletes: {', '.join(removed)}")
 
-    # Commits
-
     def prepare_work(self, resumed):
         objects = git(self.mirror, "rev-parse", "--path-format=absolute", "--git-path", "objects")
         if not self.work.is_dir():
             git(self.work.parent, "init", "-q", "--bare", self.work.name)
             git(self.work, "config", "gc.auto", "0")
-        # The work repository borrows the mirror's objects instead of copying them.
         (self.work / "objects" / "info" / "alternates").write_text(objects + "\n", encoding="utf-8")
         if resumed and self.head:
             # Without --no-tags, git would fetch the target's tags into the
             # refs/tags/ of the tags this repository builds.
             git(self.work, "fetch", "-q", "--no-tags", self.remote, "+refs/heads/*:refs/target/*")
 
-    def text(self, value):
-        """value with each hash that is the prefix of exactly one source commit,
-        which the replay has recreated, replaced by the new hash's prefix."""
+    def replace_hashes(self, value):
         if not value:
             return value or ""
 
@@ -764,7 +722,7 @@ class Replay:
                 return self.hashes[found[0]][: len(prefix)]
             return prefix
 
-        return HASH.sub(replace, value)
+        return HASH_IN_TEXT.sub(replace, value)
 
     def stamped(self, body, created):
         if not self.with_times or not created:
@@ -796,9 +754,9 @@ class Replay:
         for parent in parents:
             args += ["-p", parent]
         if signed:
-            # -c goes before the command, -S<key> after it.
+            # git takes -c before the subcommand and -S after it.
             args = [*self.sign_options[:2], *args, self.sign_options[2]]
-        sha = git(self.work, *args, stdin=self.text(commit["message"]), env=env)
+        sha = git(self.work, *args, stdin=self.replace_hashes(commit["message"]), env=env)
         recorded = self.hashes.get(commit["sha"])
         if recorded and recorded != sha:
             why = (
@@ -815,17 +773,13 @@ class Replay:
         return sha, signed
 
     def committer_date(self, commit, parents):
-        """The committer date of a recreated commit, as after a rebase: the time
-        of its recreation, but no earlier than the committer date of a parent,
-        since GitHub's clock dates the merges; the one the state file records,
-        where an earlier run recreated the commit; the original one in a run
-        whose state file predates such dates."""
         if self.committer_dates is None:
             return git_date(commit["committer"]["date"])
         recorded = self.committer_dates.get(commit["sha"])
         if recorded:
             return recorded
         seconds, offset = now_date()
+        # No earlier than a parent's, since GitHub's clock dates the merges.
         for parent in parents:
             seconds = max(seconds, int(git(self.work, "show", "-s", "--format=%ct", parent)))
         date = f"{seconds} {offset}"
@@ -833,12 +787,11 @@ class Replay:
         return date
 
     def recreate_all(self, e):
-        """Recreates the commits of a push event and records their hashes before
-        the push, so that a resumed run can check it rebuilds the same ones."""
         sha, signed = None, 0
         for commit in e["commits"]:
             sha, was_signed = self.recreate(commit)
             signed += was_signed
+        # Before the push, so that a resumed run can check it rebuilds the same hashes.
         self.save_state()
         return sha, f", {signed} signed" if self.sign else ""
 
@@ -867,8 +820,6 @@ class Replay:
             f" at {sha[:7]}"
         )
 
-    # Items
-
     def check_number(self, e, data, what):
         got = data.get("number")
         if got != e["number"]:
@@ -893,7 +844,7 @@ class Replay:
 
     def create_issue(self, e):
         n = e["number"]
-        title = self.text(e["title"])
+        title = self.replace_hashes(e["title"])
         if self.highest >= n:
             data = self.api.expect("GET", f"repos/{self.slug}/issues/{n}")
             if data.get("title") != title or "pull_request" in data:
@@ -902,7 +853,7 @@ class Replay:
         else:
             body = {
                 "title": title,
-                "body": self.stamped(self.text(e["body"]), e.get("created_at")),
+                "body": self.stamped(self.replace_hashes(e["body"]), e.get("created_at")),
                 "labels": e["labels"],
                 "assignees": e["assignees"],
             }
@@ -914,7 +865,7 @@ class Replay:
 
     def create_pull(self, e):
         n = e["number"]
-        title = self.text(e["title"])
+        title = self.replace_hashes(e["title"])
         if self.highest >= n:
             data = self.api.expect("GET", f"repos/{self.slug}/pulls/{n}")
             if data.get("title") != title or data["head"]["ref"] != e["head"]:
@@ -925,7 +876,7 @@ class Replay:
         else:
             body = {
                 "title": title,
-                "body": self.stamped(self.text(e["body"]), e.get("created_at")),
+                "body": self.stamped(self.replace_hashes(e["body"]), e.get("created_at")),
                 "head": e["head"],
                 "base": e["base"],
                 "draft": e["draft"],
@@ -951,7 +902,7 @@ class Replay:
 
     def add_comment(self, e):
         n = e["number"]
-        body = self.stamped(self.text(e["body"]), e.get("created_at"))
+        body = self.stamped(self.replace_hashes(e["body"]), e.get("created_at"))
         endpoint = f"repos/{self.slug}/issues/{n}/comments"
         if self.resumed_at == e["seq"]:
             comments = self.api.pages(endpoint)
@@ -964,9 +915,9 @@ class Replay:
         n = e["number"]
         if n not in self.heads or n not in self.urls:
             raise ReplayError(f"#{n} is merged before its branch was pushed or it was created")
-        title = self.text(e["commit_title"])
+        title = self.replace_hashes(e["commit_title"])
         url = f"{self.pr_base}/pull/{n}" if self.final_name else self.urls[n]
-        message = self.text(e["commit_message"]).replace("{pr_url}", url)
+        message = self.replace_hashes(e["commit_message"]).replace("{pr_url}", url)
         sha, note = None, ""
         if self.resumed_at == e["seq"]:
             pull = self.api.expect("GET", f"repos/{self.slug}/pulls/{n}")
@@ -1015,7 +966,10 @@ class Replay:
         self.hashes[e["source_commit"]] = sha
         self.head = sha
         named = self.creates[n].get("body", "") + "\n" + message
-        self.closing = (time.monotonic(), {int(x) for x in CLOSING.findall(named)})
+        self.closing = (
+            time.monotonic(),
+            {int(x) for x in SAME_REPO_CLOSING_KEYWORD.findall(named)},
+        )
         return f"#{n} {e['method']}-merged into {self.default} as {sha[:7]}{note}"
 
     def close_item(self, e):
@@ -1041,8 +995,6 @@ class Replay:
             self.api.expect("PATCH", f"repos/{self.slug}/issues/{n}", fields)
         return f"#{n} closed{said}{note}"
 
-    # Tags
-
     def signs_tag(self, e):
         return (
             self.sign is not None
@@ -1052,11 +1004,6 @@ class Replay:
         )
 
     def create_tag(self, e):
-        """Creates the tag in the work repository at the recreated commit, an
-        annotated one with the planned message, tagger and date, and pushes
-        it; records the object its ref is at before the push, so that a
-        resumed run can check it rebuilds the same tag. A signed tag's
-        message gets a final line break where it has text and lacks one."""
         name, commit = e["name"], self.hashes.get(e["commit"])
         if commit is None:
             raise ReplayError(
@@ -1080,7 +1027,7 @@ class Replay:
                 args += ["tag", "-a"]
             # Without "--", a name that starts with a dash would be an option.
             args += ["-f", "--cleanup=verbatim", "-F", "-", "--", name, commit]
-            message = self.text(e["message"])
+            message = self.replace_hashes(e["message"])
             if signed and message and not message.endswith("\n"):
                 # git appends the signature right after the message, and
                 # verify-tag finds it only at the start of a line.
@@ -1089,7 +1036,7 @@ class Replay:
             sha = git(self.work, "rev-parse", f"refs/tags/{name}")
         else:
             sha = commit
-        recorded = self.tags.get(name)
+        recorded = self.tag_shas.get(name)
         if recorded and recorded != sha:
             why = (
                 "its signature differs from the one the first run made: the signing key signs"
@@ -1101,7 +1048,8 @@ class Replay:
                 f"tag {name} was rebuilt as {sha[:7]}, but {self.state_path} records"
                 f" {recorded[:7]}; {why}. The run stops before it pushes a second tag"
             )
-        self.tags[name] = sha
+        self.tag_shas[name] = sha
+        # Before the push, so that a resumed run can check it rebuilds the same tag.
         self.save_state()
         what = "annotated, signed" if signed else "annotated" if e["annotated"] else "lightweight"
         found = self.refs.get(f"refs/tags/{name}") if self.resumed_at == e["seq"] else None
@@ -1116,25 +1064,12 @@ class Replay:
         self.api.after_write()
         return f"{name}, {what}, at {commit[:7]}"
 
-    # Releases
-
     def create_release(self, e):
-        """Creates the release as a draft, on its tag, or for a draft of the
-        source at the recreated commit or the default branch its
-        target_commitish names; downloads each asset from the source and
-        uploads it; then publishes a release the source has published, the
-        source's latest release as the latest one, since GitHub refuses an
-        asset for a published release that is immutable. Records the release
-        before its first asset, each asset once uploaded and the publication,
-        so that a resumed run takes over what is done: a release found under
-        its tag, an asset found uploaded whole, a release found published;
-        another asset of that name, which a failed upload leaves, it removes
-        and uploads again."""
         key, tag = str(e["release_id"]), e["tag_name"]
-        record, notes = self.releases.get(key), []
+        record, notes = self.created_releases.get(key), []
         recorded = record is not None
         if record is None and self.resumed_at == e["seq"]:
-            taken = {r["id"] for r in self.releases.values()}
+            taken = {r["id"] for r in self.created_releases.values()}
             found = [
                 r
                 for r in self.api.pages(f"repos/{self.slug}/releases")
@@ -1158,7 +1093,10 @@ class Replay:
                 # GitHub reads it only where the tag is missing, as for a draft.
                 "target_commitish": self.hashes[e["commit"]] if e["commit"] else self.default,
                 "name": e["name"],
-                "body": self.stamped(self.text(e["body"]), e["published_at"] or e["created_at"]),
+                "body": self.stamped(
+                    self.replace_hashes(e["body"]), e["published_at"] or e["created_at"]
+                ),
+                # GitHub refuses an asset for a published release that is immutable.
                 "draft": True,
                 "prerelease": e["prerelease"],
             }
@@ -1169,7 +1107,9 @@ class Replay:
                 "assets": {},
                 "published": False,
             }
-        self.releases[key] = record
+        # Saved before the first asset, after each one and after the publication, so that a
+        # resumed run takes over what is done.
+        self.created_releases[key] = record
         self.save_state()
         existing, taken, removed = None, 0, 0
         for asset in e["assets"]:
@@ -1228,8 +1168,6 @@ class Replay:
 
     @staticmethod
     def uploaded_whole(found, asset):
-        """Whether an asset of the target holds the source's asset whole, as far
-        as GitHub's state, size and digest tell."""
         digests = (found.get("digest"), asset.get("digest"))
         return (
             found.get("state") == "uploaded"
@@ -1238,9 +1176,7 @@ class Replay:
         )
 
     @staticmethod
-    def unlike(path, asset):
-        """How a downloaded file differs from the size and the SHA-256 digest
-        GitHub lists for the asset, or None."""
+    def how_download_differs(path, asset):
         size = path.stat().st_size
         if asset["size"] is not None and size != asset["size"]:
             return f"has {size} bytes, GitHub lists {asset['size']}"
@@ -1255,13 +1191,9 @@ class Replay:
         return None
 
     def download(self, tag, asset):
-        """The asset's content from the source, in the folder of the downloads,
-        checked against what GitHub lists for it; one that a stopped run left
-        there is taken again where it passes the same check, and downloaded
-        again otherwise."""
         self.downloads.mkdir(exist_ok=True)
         path = self.downloads / str(asset["id"])
-        if path.is_file() and self.unlike(path, asset) is None:
+        if path.is_file() and self.how_download_differs(path, asset) is None:
             return path
         partial = path.with_name(path.name + ".partial")
         endpoint = f"repos/{self.header['source']}/releases/assets/{asset['id']}"
@@ -1282,7 +1214,7 @@ class Replay:
         if result.returncode:
             error = result.stderr.decode("utf-8", errors="replace").strip().splitlines()
             raise ReplayError(f"GET {endpoint} failed: {error[-1] if error else ''}")
-        problem = self.unlike(partial, asset)
+        problem = self.how_download_differs(partial, asset)
         if problem:
             raise ReplayError(
                 f"the asset {asset['name']} of release {tag}, downloaded from {endpoint},"
@@ -1292,8 +1224,6 @@ class Replay:
         return path
 
     def upload(self, record, asset, path):
-        """Uploads the downloaded file to the release in the target, at the
-        upload_url GitHub gave for it, and returns the new asset."""
         endpoint = record["upload_url"].split("{", 1)[0] + "?name=" + quote(asset["name"], safe="")
         if asset["label"]:
             endpoint += "&label=" + quote(asset["label"], safe="")
@@ -1306,8 +1236,6 @@ class Replay:
                 " again, which removes an asset GitHub left half uploaded and uploads it again"
             )
         return data
-
-    # The run
 
     def apply(self, e):
         handler = {
@@ -1325,9 +1253,6 @@ class Replay:
         return handler(e)
 
     def reconcile(self):
-        """Reopens what a closing keyword closed that the source has open, and
-        stops if anything else differs from the plan, its tags and releases
-        included."""
         found = {i["number"]: i for i in self.api.pages(f"repos/{self.slug}/issues?state=all")}
         problems, reopened = [], []
         for n, e in sorted(self.creates.items()):
@@ -1367,8 +1292,6 @@ class Replay:
             raise ReplayError(f"{self.slug} differs from the plan: {'; '.join(problems)}")
 
     def tag_problems(self):
-        """How the target's tags differ from those the state file records for
-        the planned ones."""
         result = run(["git", "ls-remote", "--refs", "--tags", self.remote])
         if result.returncode:
             raise ReplayError(f"git ls-remote of {self.slug} failed: {result.stderr.strip()}")
@@ -1381,7 +1304,7 @@ class Replay:
         planned = [e["name"] for e in self.events if e["kind"] == "create-tag"]
         problems = []
         for name in planned:
-            sha, recorded = found.get(name), self.tags.get(name)
+            sha, recorded = found.get(name), self.tag_shas.get(name)
             if sha is None:
                 problems.append(f"tag {name} is missing")
             elif sha != recorded:
@@ -1392,10 +1315,6 @@ class Replay:
         return problems
 
     def release_problems(self):
-        """How the target's releases differ from the planned ones the state
-        file records, each found by its id, so that a draft and a published
-        release of one tag are both checked: each with the planned tag, kind
-        and assets, the latest one as the latest, and no other."""
         found = {r["id"]: r for r in self.api.pages(f"repos/{self.slug}/releases")}
         planned = [e for e in self.events if e["kind"] == "create-release"]
         latest = None
@@ -1405,7 +1324,8 @@ class Replay:
         problems, recorded = [], set()
         for e in planned:
             tag, at = e["tag_name"], release_label(e, planned)
-            record = self.releases.get(str(e["release_id"]))
+            # By id, so that a draft and a published release of one tag are both checked.
+            record = self.created_releases.get(str(e["release_id"]))
             r = found.get(record["id"]) if record else None
             if r is None:
                 problems.append(f"{at} is missing")
@@ -1453,7 +1373,7 @@ class Replay:
         highest, refs = self.read_target()
         self.check_target(resumed, highest, refs)
         self.refs = refs
-        # Labels the target has, such as GitHub's defaults, are changed only before the first event.
+        # Only before the first event, so that a resumed run does not change them again.
         updated, removed = self.label_changes() if self.done == 0 else ([], [])
         self.summary(resumed, updated, removed)
         print(f"Type {self.slug} to confirm: ", end="", flush=True)

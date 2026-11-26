@@ -66,22 +66,17 @@ from pathlib import Path
 
 PROG = "plan-replay.py"
 FORMAT = 1
-# What --no-<kind> turns off, in the order the header's turned_off lists it.
-SWITCHES = ("tags", "releases", "reviews")
-# The kind of left_behind each switch accepts whole.
-SWITCH_OF = {"tag": "tags", "release": "releases"}
-# The name the target's default branch takes for the source's, as #71 records
-# the owner's request: older repositories use master, newer ones main, and a
-# replay is where such a repository starts over.
-RENAMED = {"master": "main"}
+# In the order the header's turned_off lists them.
+SWITCHABLE_KINDS = ("tags", "releases", "reviews")
+ACCEPTED_WHOLE_BY = {"tag": "tags", "release": "releases"}
+# Older repositories use master, newer ones main, and a replay is where such a
+# repository starts over (#71).
+DEFAULT_BRANCH_RENAMES = {"master": "main"}
 TYPES = ("feat", "fix", "docs", "chore", "refactor", "test", "build", "ci", "revert")
-# Branch prefixes that are no type of GW-6 but name one.
-BRANCH_ALIASES = {"feature": "feat", "bugfix": "fix", "hotfix": "fix", "doc": "docs"}
-# At the same time, an event of a lower rank comes first: a branch is pushed
-# before its pull request is created, an item exists before it is closed, and
-# a tag, which marks a state reached, comes after all else but the release
-# that stands on it.
-RANK = {
+BRANCH_PREFIX_ALIASES = {"feature": "feat", "bugfix": "fix", "hotfix": "fix", "doc": "docs"}
+# A branch is pushed before its pull request, an item exists before it is closed, and
+# a tag, which marks a state reached, comes after all else but the release on it.
+RANK_AT_SAME_TIME = {
     "create-label": 0,
     "push-commits": 1,
     "push-branch": 2,
@@ -96,39 +91,33 @@ RANK = {
 TYPED = re.compile(r"(?P<type>[A-Za-z]+)(?:\([^)]*\))?!?: ")
 ORDINARY_WORD = re.compile(r"[A-Z][a-z]+")
 TEST_NAME = re.compile(r"(^tests?[-_.]|[-_.]tests?\.[^.]+$|_spec\.[^.]+$)")
-# A paragraph of closing keywords alone, such as "Closes #5" or "Fixes o/r#7 (Title)".
-CLOSING = re.compile(
+CLOSING_KEYWORDS_ALONE = re.compile(
     r"((close[sd]?|fix(e[sd])?|resolve[sd]?):?\s+([\w.-]+/[\w.-]+)?#\d+(\s*\([^)]*\))?[\s,.;]*)+",
     re.IGNORECASE,
 )
 SENTENCE_END = re.compile(r"[.!?](?=\s)")
-# A summary longer than this many characters is cut to its first sentence.
-SUMMARY_LENGTH = 300
+LONGEST_UNCUT_SUMMARY = 300
 # Dates are read raw: git 2.45 changed how %aI writes UTC, "Z" for "+00:00".
 COMMIT_FORMAT = "%H%x1f%T%x1f%aN%x1f%aE%x1f%ad%x1f%cN%x1f%cE%x1f%cd%x1f%B"
 IDENTITY = re.compile(r"^(?P<name>.*) <(?P<email>[^>]*)> (?P<date>\d+ [+-]\d{4})$")
-# The lines that open a signature git appends to a signed tag's message; git
-# takes the last of them as the start of the signature.
-SIGNATURE = re.compile(
+# git takes the last of these lines in a tag's message as the start of its signature.
+SIGNATURE_START = re.compile(
     r"^-----BEGIN (PGP SIGNATURE|PGP MESSAGE|SIGNED MESSAGE|SSH SIGNATURE)-----$", re.M
 )
 
 
 def unsigned(message):
-    """A tag's message without the signature git appended to it, which would
-    not hold for the recreated tag."""
-    # Only where the text from the last opening line on ends with its closing
-    # line: a message may hold such a line in its text.
-    starts = list(SIGNATURE.finditer(message))
+    # The source's signature would not hold for the recreated tag. A message may hold an
+    # opening line in its text, so only one whose closing line ends the message counts.
+    starts = list(SIGNATURE_START.finditer(message))
     if starts and message.rstrip("\n").endswith(f"-----END {starts[-1].group(1)}-----"):
         return message[: starts[-1].start()]
     return message
 
 
-def refused_tag_name(name):
-    """Whether git tag refuses to create a tag of that name, also after "--":
-    one that starts with a dash, or HEAD, as check_tag_ref() of git's refs.c
-    checks before the format a ref name of the mirror already has."""
+def git_tag_refuses(name):
+    # As check_tag_ref() of git's refs.c, also after "--"; a ref name of the mirror
+    # passes git's other checks already.
     return name.startswith("-") or name == "HEAD"
 
 
@@ -163,8 +152,7 @@ def gh_get(endpoint):
 
 
 def gh_pages(endpoint):
-    """All pages of a list endpoint, read up to the first empty page, since
-    --paginate fails through some proxies."""
+    # Not --paginate, which fails through some proxies.
     joiner = "&" if "?" in endpoint else "?"
     entries, page = [], 1
     while True:
@@ -175,9 +163,7 @@ def gh_pages(endpoint):
         page += 1
 
 
-def gh_found(endpoint):
-    """What GitHub answers for endpoint, or None where it answers 404, as for
-    the latest release of a repository that has none."""
+def gh_get_or_none(endpoint):
     try:
         result = subprocess.run(
             ["gh", "api", endpoint],
@@ -196,7 +182,6 @@ def gh_found(endpoint):
 
 
 def iso_date(raw):
-    """A raw git date, seconds and offset, as ISO 8601 with that offset."""
     seconds, offset = raw.split()
     sign = -1 if offset.startswith("-") else 1
     zone = timezone(sign * timedelta(hours=int(offset[1:3]), minutes=int(offset[3:5])))
@@ -204,7 +189,7 @@ def iso_date(raw):
 
 
 def utc(stamp):
-    """An ISO 8601 time in UTC, in the form GitHub gives, so times compare as text."""
+    # In the form GitHub gives, so that times compare as text.
     if stamp is None:
         return None
     time = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
@@ -233,7 +218,6 @@ class Mirror:
         return found.stdout.strip() if found.returncode == 0 else None
 
     def parents(self):
-        """The parents of every commit the mirror holds, refs/pull/* included."""
         parents = {}
         for line in self.git("rev-list", "--parents", "--all").splitlines():
             sha, *rest = line.split()
@@ -241,7 +225,6 @@ class Mirror:
         return parents
 
     def details(self, shas):
-        """Tree, mapped identities, dates and message of each commit."""
         out = self.git(
             "log",
             "--no-walk=unsorted",
@@ -273,9 +256,6 @@ class Mirror:
         return self.lines("diff", "--name-only", base, head)
 
     def refs(self, prefix):
-        """The refs under prefix by their short names, each with the object
-        it names, whether that is a tag object, and the object it peels to
-        through every tag, with that object's type."""
         out = self.git(
             "for-each-ref", "--format=%(refname)%09%(objectname)%09%(objecttype)", prefix
         )
@@ -299,9 +279,6 @@ class Mirror:
         return found
 
     def tag(self, sha):
-        """The type of the object the tag object sha names, its message
-        without its signature, and its tagger, mapped through the mailmap,
-        with the original date; None as tagger where the tag has none."""
         # The type comes from the object itself: git 2.50's for-each-ref peels
         # a tag of a tag through every level in %(*objecttype).
         head, _, message = self.git("cat-file", "tag", sha).partition("\n\n")
@@ -316,9 +293,6 @@ class Mirror:
 
 
 class Overrides:
-    """The types --types sets, by pull request number and by commit hash
-    prefix, and the summaries it sets by pull request number."""
-
     def __init__(self, path):
         self.numbers, self.hashes, self.summaries, self.used = {}, {}, {}, set()
         if path is None:
@@ -370,8 +344,7 @@ class Overrides:
         return None
 
     def unused(self, typed=True):
-        """What the file sets and the replay has no use for, in words; without
-        typing, type lines are ignored by choice, not for want of a title."""
+        # Without typing, type lines are unused by choice, not for want of a title.
         return [
             *(
                 f"a type for {k}, which the replay has no title for"
@@ -387,9 +360,6 @@ class Overrides:
 
 
 class LeaveBehind:
-    """The tags, releases and branches --leave-behind accepts the replay
-    leaves behind, as (kind, name)."""
-
     KINDS = ("tag", "release", "branch")
 
     def __init__(self, path):
@@ -407,7 +377,7 @@ class LeaveBehind:
             if not fields or fields[0].startswith("#"):
                 continue
             # A name holds no space, so a "#" after one starts a comment, as in
-            # the lines the plan prints where it stops.
+            # the lines check() prints.
             if len(fields) > 2 and fields[2].startswith("#"):
                 fields = fields[:2]
             if len(fields) != 2 or fields[0] not in self.KINDS:
@@ -415,19 +385,17 @@ class LeaveBehind:
             self.accepted.add((fields[0], fields[1]))
 
     def check(self, left, off=()):
-        """Stops at what the replay leaves behind and neither the file nor a
-        switch of off accepts; warns of what the file accepts and the replay
-        carries or the source lacks, and of what a switch accepts already."""
         found = {(x["kind"], x["name"]) for x in left}
         for kind, name in sorted(self.accepted):
             if (kind, name) not in found:
                 warn(f"{self.path} accepts {kind} {name}, which the replay does not leave behind")
-            elif SWITCH_OF.get(kind) in off:
+            elif ACCEPTED_WHOLE_BY.get(kind) in off:
                 warn(f"{self.path} accepts {kind} {name}, which --no-{kind}s leaves behind already")
         missing = [
             x
             for x in left
-            if (x["kind"], x["name"]) not in self.accepted and SWITCH_OF.get(x["kind"]) not in off
+            if (x["kind"], x["name"]) not in self.accepted
+            and ACCEPTED_WHOLE_BY.get(x["kind"]) not in off
         ]
         if missing:
             width = max(len(x["name"]) for x in missing)
@@ -443,12 +411,6 @@ class LeaveBehind:
 
 
 def source_tags(mirror, recreated, off=()):
-    """The tags of the source: those the replay carries, each with the commit
-    it names and, where annotated, its message and mapped tagger; and those
-    it leaves behind, as left_behind() lists them. A tag carries over only
-    where it names a commit the replay recreates, so that it can stand at the
-    recreated one, and only under a name git tag accepts, so that the run can
-    create it; off holds the kinds a switch turns off."""
     carried, left = [], []
     for name, ref in sorted(mirror.refs("refs/tags/").items()):
         sha = ref["peeled"]
@@ -467,7 +429,7 @@ def source_tags(mirror, recreated, off=()):
             reason = (
                 f"{kind}, at {at}, without a tagger; the replay recreates only one with a tagger"
             )
-        elif refused_tag_name(name):
+        elif git_tag_refuses(name):
             reason = f"{kind}, at {at}; git tag refuses the name"
         else:
             carried.append(
@@ -484,31 +446,23 @@ def source_tags(mirror, recreated, off=()):
     return carried, left
 
 
-def source_releases(repo, releases, tags, carried, default, recreated, off=()):
-    """The releases of the source: those the replay carries, each with what
-    the run needs to recreate it and its assets; and those it leaves behind,
-    as left_behind() lists them. tags holds the names of the mirror's tags,
-    carried the commit of each tag the replay carries, by name, and off the
-    kinds a switch turns off. A release carries over on a tag the replay
-    carries, since GitHub creates a missing tag at the release's
-    target_commitish, which would put it elsewhere; a draft, which GitHub tags
-    only once it is published, carries over without its tag where its
-    target_commitish names the default branch or a commit the replay
-    recreates."""
+def source_releases(repo, releases, mirror_tags, carried_tags, default, recreated, off=()):
+    # GitHub creates a missing tag at a release's target_commitish, which would put it
+    # elsewhere, but tags a draft only once it is published, so a draft may go without one.
     latest = None
     if releases and "releases" not in off:
-        latest = (gh_found(f"repos/{repo}/releases/latest") or {}).get("id")
+        latest = (gh_get_or_none(f"repos/{repo}/releases/latest") or {}).get("id")
     kept, left = [], []
     for r in sorted(releases, key=lambda r: (r["tag_name"], r["id"])):
         tag = r["tag_name"]
         what = "draft" if r.get("draft") else "pre-release" if r.get("prerelease") else "published"
         target = r.get("target_commitish") or default
-        commit, why = carried.get(tag), None
+        commit, why = carried_tags.get(tag), None
         if "releases" in off:
             why = "releases are turned off"
-        elif tag in carried:
+        elif tag in carried_tags:
             pass
-        elif tag in tags:
+        elif tag in mirror_tags:
             why = "its tag is left behind"
         elif not r.get("draft"):
             why = "the mirror lacks its tag"
@@ -548,7 +502,7 @@ def source_releases(repo, releases, tags, carried, default, recreated, off=()):
             {
                 "release_id": r["id"],
                 "tag_name": tag,
-                "on_tag": tag in carried,
+                "on_tag": tag in carried_tags,
                 "commit": commit,
                 "name": r.get("name") or "",
                 "body": r.get("body") or "",
@@ -561,9 +515,8 @@ def source_releases(repo, releases, tags, carried, default, recreated, off=()):
                 "assets": assets,
             }
         )
-    # Where the source's latest release stays behind, the newest carried one by
-    # GitHub's own rule for the latest takes its place, so that the target has
-    # a latest release the comparison can check.
+    # Where the source's latest release stays behind, the newest carried one, by GitHub's rule
+    # for the latest, takes its place, so that the target has a latest the comparison checks.
     published = [k for k in kept if not k["draft"] and not k["prerelease"]]
     if latest is not None and published and not any(k["latest"] for k in kept):
         newest = max(published, key=lambda k: (k["created_at"] or "", k["release_id"]))
@@ -575,11 +528,7 @@ def source_releases(repo, releases, tags, carried, default, recreated, off=()):
     return kept, left
 
 
-def left_behind(mirror, info, releases, events, tags):
-    """The tags, releases and branches of the source that the replay does not
-    carry, each with its kind, name, the commit it names and why; tags and
-    releases hold those left behind, as source_tags() and source_releases()
-    give them."""
+def left_behind(mirror, info, left_releases, events, left_tags):
     default = info["default_branch"]
     deletes = bool(info.get("delete_branch_on_merge"))
     merged = {e["number"] for e in events if e["kind"] == "merge-pull"}
@@ -606,12 +555,12 @@ def left_behind(mirror, info, releases, events, tags):
         else:
             continue
         left.append({"kind": "branch", "name": name, "sha": tip, "reason": reason})
-    return left + tags + releases
+    return left + left_tags + left_releases
 
 
 def branch_type(ref):
     prefix = ref.split("/", 1)[0] if "/" in ref else ""
-    return prefix if prefix in TYPES else BRANCH_ALIASES.get(prefix)
+    return prefix if prefix in TYPES else BRANCH_PREFIX_ALIASES.get(prefix)
 
 
 def is_test_file(path):
@@ -639,8 +588,6 @@ def present_type(title):
 
 
 def typed_title(title, resolve):
-    """The title in the form <type>: <summary>, and the type with where it
-    came from. resolve() gives the type for a title without one."""
     match = present_type(title)
     if match:
         kind, source = match["type"].lower(), "present"
@@ -660,29 +607,24 @@ def split_message(message):
 
 
 def summary(body):
-    """A short summary of a description, for GW-40: its first paragraph that
-    is not a heading, an HTML block, a horizontal rule, closing keywords
-    alone or a lead-in that ends in a colon; cut to its first sentence where
-    it is longer than SUMMARY_LENGTH characters."""
+    # GW-40 asks a squash message for a short summary of the description.
     for paragraph in re.split(r"\n\s*\n", (body or "").replace("\r\n", "\n")):
         text = paragraph.strip()
         if (
             not text
             or text.startswith(("#", "<", "---", "***"))
             or text.endswith(":")
-            or CLOSING.fullmatch(text)
+            or CLOSING_KEYWORDS_ALONE.fullmatch(text)
         ):
             continue
         end = SENTENCE_END.search(text)
-        if len(text) > SUMMARY_LENGTH and end:
+        if len(text) > LONGEST_UNCUT_SUMMARY and end:
             text = text[: end.start() + 1]
         return text
     return ""
 
 
-def order(events):
-    """The events in time order, each after the events it depends on; among
-    those ready, the earliest first."""
+def in_time_order(events):
     by_key = {e["key"]: e for e in events}
     waiting = {e["key"]: 0 for e in events}
     followers = {e["key"]: [] for e in events}
@@ -694,7 +636,13 @@ def order(events):
             followers[dep].append(e["key"])
 
     def entry(e):
-        return (e["time"] or "", RANK[e["kind"]], e.get("number", 0), e["index"], e["key"])
+        return (
+            e["time"] or "",
+            RANK_AT_SAME_TIME[e["kind"]],
+            e.get("number", 0),
+            e["index"],
+            e["key"],
+        )
 
     ready = [entry(e) for e in events if waiting[e["key"]] == 0]
     heapq.heapify(ready)
@@ -717,8 +665,6 @@ def order(events):
 
 
 def join_direct_pushes(events):
-    """Direct commits that follow each other without another event between
-    them become one push."""
     joined = []
     for e in events:
         if e["kind"] == "push-commits" and joined and joined[-1]["kind"] == "push-commits":
@@ -739,7 +685,7 @@ def plan(mirror, repo, overrides, typed=True, keep_merges=False, off=()):
 
     if not mirror.has(f"refs/heads/{default}"):
         die(f"the mirror has no branch {default}, the default branch of {repo}")
-    target = RENAMED.get(default, default)
+    target = DEFAULT_BRANCH_RENAMES.get(default, default)
     if target != default and mirror.has(f"refs/heads/{target}"):
         die(
             f"the source has a branch {target} beside its default branch {default}, which the"
@@ -763,9 +709,7 @@ def plan(mirror, repo, overrides, typed=True, keep_merges=False, off=()):
             die(f"pull request #{n} was merged into {p['base']['ref']}, not into {default}")
         merge_of[sha] = n
 
-    # Each pull request's branch: its first-parent chain from the head back to
-    # the default branch or to a commit an earlier pull request's branch holds.
-    owner, branches = {}, {}
+    pull_of, branches = {}, {}
     for n, p in sorted(pulls.items()):
         head = (
             p["head"]["sha"] if p["head"]["sha"] in parents else mirror.has(f"refs/pull/{n}/head")
@@ -775,13 +719,13 @@ def plan(mirror, repo, overrides, typed=True, keep_merges=False, off=()):
                 f"the head of pull request #{n} is not in the mirror; make it with backup-mirror.sh"
             )
         chain, sha = [], head
-        while sha not in main_index and sha not in owner:
+        while sha not in main_index and sha not in pull_of:
             chain.append(sha)
             if not parents[sha]:
                 die(f"pull request #{n} has a root commit {sha[:7]} outside {default}")
             sha = parents[sha][0]
         for c in chain:
-            owner[c] = n
+            pull_of[c] = n
         branches[n] = {"base": sha, "head": head, "chain": chain[::-1]}
         if not chain:
             warn(f"pull request #{n} has no commits of its own; GitHub refuses such a pull request")
@@ -823,7 +767,7 @@ def plan(mirror, repo, overrides, typed=True, keep_merges=False, off=()):
         }
 
     def producer(sha):
-        return ("main", main_index[sha]) if sha in main_index else ("branch", owner[sha])
+        return ("main", main_index[sha]) if sha in main_index else ("branch", pull_of[sha])
 
     events = []
 
@@ -912,7 +856,7 @@ def plan(mirror, repo, overrides, typed=True, keep_merges=False, off=()):
     for n, b in sorted(branches.items()):
         chain = set(b["chain"])
         outside = {p for c in b["chain"] for p in parents[c] if p not in chain}
-        unknown = sorted(p for p in outside if p not in main_index and p not in owner)
+        unknown = sorted(p for p in outside if p not in main_index and p not in pull_of)
         if unknown:
             die(
                 f"the branch of pull request #{n} merges {unknown[0][:7]}, which is neither on"
@@ -1048,9 +992,8 @@ def plan(mirror, repo, overrides, typed=True, keep_merges=False, off=()):
             source_id=c["id"],
         )
 
-    # Each review of a pull request becomes a comment at its submission, since
-    # a replay cannot submit a review for someone else; a pending review is
-    # its author's draft, which GitHub shows nobody else.
+    # A replay cannot submit a review for someone else, so each becomes a comment; a
+    # pending review is its author's draft, which GitHub shows nobody else.
     by_review = {}
     for rc in [] if "reviews" in off else gh_pages(f"repos/{repo}/pulls/comments"):
         by_review.setdefault(rc.get("pull_request_review_id"), []).append(rc)
@@ -1061,10 +1004,10 @@ def plan(mirror, repo, overrides, typed=True, keep_merges=False, off=()):
                 continue
             carried.add(r["id"])
             text = review_text(r, by_review.get(r["id"], []))
-            if len(text) > COMMENT_LENGTH:
+            if len(text) > LONGEST_COMMENT:
                 warn(
                     f"review {r['id']} of #{n} has {len(text)} characters, more than the"
-                    f" {COMMENT_LENGTH} a comment takes; the run stops at it"
+                    f" {LONGEST_COMMENT} a comment takes; the run stops at it"
                 )
             add(
                 ("review", r["id"]),
@@ -1086,10 +1029,9 @@ def plan(mirror, repo, overrides, typed=True, keep_merges=False, off=()):
             )
             warn(f"{len(found)} review comment{'s' if len(found) > 1 else ''} {which} left out")
 
-    # Each tag comes after the event that recreates its commit: an annotated
-    # one at its tagger's date, a lightweight one, which has no date of its
-    # own, right after that event.
-    recreated = set(main_index) | set(owner)
+    # A lightweight tag has no date of its own; without one, it comes right after the event
+    # that recreates its commit.
+    recreated = set(main_index) | set(pull_of)
     tags, left_tags = source_tags(mirror, recreated, off)
     for t in tags:
         add(
@@ -1099,10 +1041,8 @@ def plan(mirror, repo, overrides, typed=True, keep_merges=False, off=()):
             [producer(t["commit"])],
             **t,
         )
-    # Each release comes after the event of its tag, or of the commit a
-    # draft names, at its publication, or a draft at its created_at, which
-    # GitHub documents as the date of the commit used for the release; a
-    # draft that names the default branch needs only that branch.
+    # GitHub documents a draft's created_at as the date of the commit used for the release.
+    # A draft that names the default branch needs only that branch.
     releases, left_releases = source_releases(
         repo,
         gh_pages(f"repos/{repo}/releases"),
@@ -1128,10 +1068,9 @@ def plan(mirror, repo, overrides, typed=True, keep_merges=False, off=()):
     return default, target, events, left
 
 
-# The longest comment GitHub takes, as its community reports; the REST
-# documentation names no limit. A review with all its review comments in one
-# comment can be longer than any comment of the source.
-COMMENT_LENGTH = 65536
+# As GitHub's community reports; its REST documentation names no limit. A review with
+# all its review comments can be longer than any comment of the source.
+LONGEST_COMMENT = 65536
 REVIEW_STATES = {
     "APPROVED": "approved",
     "CHANGES_REQUESTED": "changes requested",
@@ -1141,9 +1080,6 @@ REVIEW_STATES = {
 
 
 def review_text(review, comments):
-    """A review as the text of a comment: who reviewed, its state and the
-    commit it was made on, its body, and each of its review comments under
-    the file and lines it was made on."""
     who = (review.get("user") or {}).get("login") or "someone"
     state = REVIEW_STATES.get(review.get("state"), str(review.get("state", "")).lower())
     commit = (review.get("commit_id") or "")[:7]
@@ -1160,15 +1096,14 @@ def review_text(review, comments):
             where = f"lines {start} to {end}"
         else:
             where = f"line {end}"
-        # On the LEFT side, the line is one of the file before the change.
+        # GitHub's side LEFT is the file before the change.
         side = ", before the change" if c.get("side") == "LEFT" and where != "file" else ""
         reply = ", a reply" if c.get("in_reply_to_id") else ""
         parts.append(f"**`{c.get('path')}`, {where}{side}{reply}**\n\n{c.get('body') or ''}")
     return "\n\n".join(parts)
 
 
-def review(events):
-    """The changed titles, as (reference, old, new, guessed), in event order."""
+def changed_titles(events):
     rows = []
     for e in events:
         guessed = e.get("type_from") == "guess"
@@ -1182,9 +1117,7 @@ def review(events):
     return [r for r in rows if r[1] != r[2]]
 
 
-def written_messages(events):
-    """The squash messages written for pull requests merged with a merge
-    commit, as (reference, first line, body)."""
+def written_squash_messages(events):
     return [
         (f"#{e['number']}", e["commit_title"], e["commit_message"])
         for e in events
@@ -1206,7 +1139,7 @@ def main(argv):
             keep_merges = True
         elif option == "--leave-behind" and argv:
             leave, argv = Path(argv[0]), argv[1:]
-        elif option.startswith("--no-") and option[len("--no-") :] in SWITCHES:
+        elif option.startswith("--no-") and option[len("--no-") :] in SWITCHABLE_KINDS:
             off.add(option[len("--no-") :])
         else:
             usage()
@@ -1236,7 +1169,7 @@ def main(argv):
     mirror = Mirror(mirror_path, mailmap.resolve())
     default, target, events, left = plan(mirror, repo, overrides, typed, keep_merges, off)
     accepted.check(left, off)
-    events = join_direct_pushes(order(events))
+    events = join_direct_pushes(in_time_order(events))
     for unused in overrides.unused(typed):
         warn(f"{types} sets {unused}")
 
@@ -1256,15 +1189,11 @@ def main(argv):
         "format": FORMAT,
         "source": repo,
         "default_branch": default,
-        # An event file without target_default_branch was planned before the
-        # rename, with the target's default branch named as the source's.
         "target_default_branch": target,
         "source_commits": source_commits,
         "left_behind": left,
         "reviews": "reviews" not in off,
-        # An event file without turned_off was planned before the switches,
-        # with every kind on.
-        "turned_off": [k for k in SWITCHES if k in off],
+        "turned_off": [k for k in SWITCHABLE_KINDS if k in off],
     }
     partial = output.with_name(output.name + ".partial")
     with partial.open("w", encoding="utf-8") as file:
@@ -1274,12 +1203,12 @@ def main(argv):
 
     if target != default:
         print(f"Default branch: {default} in the source, {target} in the target")
-    rows = review(events)
+    rows = changed_titles(events)
     print(f"Changed titles: {len(rows)}")
     width = max((len(r[0]) for r in rows), default=0)
     for ref, old, new, guessed in rows:
         print(f"  {ref:<{width}}  {'guessed' if guessed else '       '}  {old}  ->  {new}")
-    messages = written_messages(events)
+    messages = written_squash_messages(events)
     print(f"Squash messages written for merge commits: {len(messages)}")
     for ref, first, body in messages:
         print(f"  {ref}  {first}")
