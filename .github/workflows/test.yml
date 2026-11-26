@@ -10,10 +10,8 @@ on:
 permissions:
   contents: read
 
-# A newer commit of the same pull request cancels the run of the older one
-# (TL-34); a push to main gets a group of its own and is never cancelled, and
-# so does a run for a label other than test-macos, so that it cancels no run
-# it does not replace.
+# A newer push cancels the older run of its pull request (TL-34); a push to main and a
+# label other than test-macos get a group of their own, so that they cancel no run.
 concurrency:
   group: >-
     ${{ github.workflow }}-${{ github.event.action == 'labeled' &&
@@ -25,10 +23,8 @@ jobs:
   test:
     # Adding a label other than test-macos changes nothing to test.
     if: github.event.action != 'labeled' || github.event.label.name == 'test-macos'
-    # macOS runs the test under its own /bin/sh, bash 3.2, and the BSD tools;
-    # Linux under dash and the GNU tools. macOS runners often queue for longer
-    # than the tests take, so a pull request gets one only with the label
-    # test-macos (#75); a push to main and a run started by hand always do.
+    # macOS tests the scripts under bash 3.2 and the BSD tools, Linux under dash and the GNU tools;
+    # macOS runners queue long, so a pull request gets one only with the label test-macos (#75).
     strategy:
       fail-fast: false
       matrix:
@@ -60,23 +56,22 @@ jobs:
       - name: Test the rewrite scripts
         run: sh rewrite/test-history-rewrite.sh
 
-      # The virtual environment is the one "Getting started" makes, since
-      # Homebrew's Python refuses pip install outside one.
+      # Homebrew's Python refuses pip install outside a virtual environment.
       - name: Test the replay scripts
         run: |
           python3 -m venv .venv
           .venv/bin/pip install -q -r replay/tests/requirements.txt
           .venv/bin/pytest replay/tests
 
-      # The formatters and the linters gate every Python and shell file
-      # (TL-23, TL-33); their result does not depend on the runner, so one
-      # runs them. shfmt takes its options from .editorconfig.
+      # The formatters and the linters gate every Python and shell file (TL-23, TL-33);
+      # their result does not depend on the runner, so Linux alone runs them.
       - name: Check the format and lint of the Python files
         if: runner.os == 'Linux'
         run: |
           pipx run --spec ruff==0.16.6 ruff format --check .
           pipx run --spec ruff==0.16.6 ruff check .
 
+      # shfmt takes its options from .editorconfig.
       - name: Check the format of the shell files
         if: runner.os == 'Linux'
         run: pipx run --spec shfmt-py==3.13.0.3 shfmt -d $(git ls-files '*.sh')
