@@ -886,11 +886,11 @@ class Replayed:
 
 
 @pytest.fixture(scope="session")
-def replay_a(root, source, run_plan, make_target, replay):
-    """A: one uninterrupted run, paced at 0.1 s, that hits a rate limit once;
+def replay_uninterrupted(root, source, run_plan, make_target, replay):
+    """One uninterrupted run, paced at 0.1 s, that hits a rate limit once;
     its standard output and error apart."""
-    target = make_target("gh-a")
-    state = root / "a.state.json"
+    target = make_target("gh-uninterrupted")
+    state = root / "uninterrupted.state.json"
     slug = "ada-example/tool-new"
     result = replay(
         target,
@@ -902,12 +902,12 @@ def replay_a(root, source, run_plan, make_target, replay):
 
 
 @pytest.fixture(scope="session")
-def replay_c(root, source, run_plan, make_target, replay):
-    """C: a replay into a target where someone else creates an issue, with the
+def replay_someone_elses_issue(root, source, run_plan, make_target, replay):
+    """A replay into a target where someone else creates an issue, with the
     default state file, run.state.json, and --with-times; it stops at #4 and
     leaves the replay unfinished."""
-    target = make_target("gh-c", "ada-example/tool-c")
-    slug = "ada-example/tool-c"
+    slug = TOOL_SOMEONE_ELSES_ISSUE
+    target = make_target("gh-someone-elses-issue", slug)
     result = replay(
         target,
         slug,
@@ -920,12 +920,12 @@ def replay_c(root, source, run_plan, make_target, replay):
 
 
 @pytest.fixture(scope="session")
-def replay_e(root, source, run_plan, make_target, replay):
-    """E: an unsigned replay with --final-name, whose squash messages name the
+def replay_final_name(root, source, run_plan, make_target, replay):
+    """An unsigned replay with --final-name, whose squash messages name the
     source, the name the target takes over."""
-    target = make_target("gh-e", "ada-example/tool-e")
-    state = root / "e.state.json"
-    slug = "ada-example/tool-e"
+    slug = TOOL_FINAL_NAME
+    target = make_target("gh-final-name", slug)
+    state = root / "final-name.state.json"
     result = replay(
         target,
         slug,
@@ -960,34 +960,38 @@ def view(read_plan, run_plan):
 
 
 TOOL_NEW = "ada-example/tool-new"
-TOOL_X = "ada-example/tool-x"
+TOOL_SOMEONE_ELSES_ISSUE = "ada-example/tool-someone-elses-issue"
+TOOL_FINAL_NAME = "ada-example/tool-final-name"
+TOOL_TAGS_RELEASES = "ada-example/tool-tags-releases"
 
 
-# again, lag and e_again are session fixtures, so that compare_finished, which
-# compares A and E after them, can ask for them first.
+# again, lag and final_name_again are session fixtures, so that
+# compare_finished, which compares the uninterrupted replay and the replay
+# with --final-name after them, can ask for them first.
 @pytest.fixture(scope="session")
-def again(root, source, run_plan, replay_a, replay):
-    """A run on the finished replay A, and one into it with another state
-    file; the count of A's writes before them."""
-    target = replay_a.target
-    writes_a = len(target.writes())
+def again(root, source, run_plan, replay_uninterrupted, replay):
+    """A run on the finished uninterrupted replay, and one into it with
+    another state file; the count of its writes before them."""
+    target = replay_uninterrupted.target
+    writes_before = len(target.writes())
     common = ("--pace", "0", "--state")
     tail = (run_plan.file, source.mirror, TOOL_NEW)
-    same = replay(target, TOOL_NEW, *common, replay_a.state, *tail, merged=True)
+    same = replay(target, TOOL_NEW, *common, replay_uninterrupted.state, *tail, merged=True)
     other = replay(target, TOOL_NEW, *common, root / "other.state.json", *tail, merged=True)
     return SimpleNamespace(
-        writes_a=writes_a, same=same, other=other, writes_after=len(target.writes())
+        writes_before=writes_before, same=same, other=other, writes_after=len(target.writes())
     )
 
 
 @pytest.fixture(scope="session")
-def lag(source, run_plan, replay_a, replay, again):
-    """A run on the finished replay A whose first list of issues lacks the
-    highest-numbered item and every pull request; the reads of #2 and #6
-    before it. It runs after those of again. Its prompt is the content of A's
-    prompt file right after it, the last run of run-replay.py into A, since
-    the comparison of A that follows writes the file again."""
-    target = replay_a.target
+def lag(source, run_plan, replay_uninterrupted, replay, again):
+    """A run on the finished uninterrupted replay whose first list of issues
+    lacks the highest-numbered item and every pull request; the reads of #2
+    and #6 before it. It runs after those of again. Its prompt is the content
+    of the target's prompt file right after it, the last run of run-replay.py
+    into that target, since the comparison of the uninterrupted replay that
+    follows writes the file again."""
+    target = replay_uninterrupted.target
 
     def reads(n):
         return sum(
@@ -998,7 +1002,8 @@ def lag(source, run_plan, replay_a, replay, again):
     result = replay(
         target,
         TOOL_NEW,
-        *("--pace", "0", "--state", replay_a.state, run_plan.file, source.mirror, TOOL_NEW),
+        *("--pace", "0", "--state", replay_uninterrupted.state),
+        *(run_plan.file, source.mirror, TOOL_NEW),
         merged=True,
         FAKE_GH_LAG="GET repos/ada-example/tool-new/issues?state=all&per_page=100&page=1",
     )
@@ -1014,13 +1019,15 @@ def lag(source, run_plan, replay_a, replay, again):
 
 
 @pytest.fixture(scope="session")
-def e_again(source, run_plan, replay_e, replay_c, replay):
-    """A resume of E without --final-name, and two runs into E with a wrong
-    --final-name and a wrong --sign, with the default state file,
-    run.state.json, which the replay C wrote before them."""
-    target, slug = replay_e.target, "ada-example/tool-e"
+def final_name_again(source, run_plan, replay_final_name, replay_someone_elses_issue, replay):
+    """A resume of the replay with --final-name without it, and two runs into
+    its target with a wrong --final-name and a wrong --sign, with the default
+    state file, run.state.json, which the replay into a target where someone
+    else creates an issue wrote before them."""
+    target, slug = replay_final_name.target, TOOL_FINAL_NAME
     tail = (run_plan.file, source.mirror, slug)
-    resumed = replay(target, slug, "--pace", "0", "--state", replay_e.state, *tail, merged=True)
+    state = replay_final_name.state
+    resumed = replay(target, slug, "--pace", "0", "--state", state, *tail, merged=True)
     bad_name = replay(target, slug, "--final-name", "tool", *tail, merged=True)
     bad_sign = replay(target, slug, "--sign", "ada.example.com", *tail, merged=True)
     return SimpleNamespace(resumed=resumed, bad_name=bad_name, bad_sign=bad_sign)
@@ -1400,34 +1407,39 @@ def compare(root, target_env):
 
 
 @pytest.fixture(scope="session")
-def compare_finished(source, run_plan, replay_a, replay_e, lag, e_again, compare):
-    """compare-replay.py against the finished targets of A and E, with the
-    API of run.jsonl, after the runs of lag and e_again; the count of A's
-    writes right before the comparisons and right after them, and the content
-    of A's file of refused calls after them, None where it has none."""
-    a, e = replay_a, replay_e
-    writes_before = len(a.target.writes())
+def compare_finished(
+    source, run_plan, replay_uninterrupted, replay_final_name, lag, final_name_again, compare
+):
+    """compare-replay.py against the finished targets of the uninterrupted
+    replay and of the replay with --final-name, with the API of run.jsonl,
+    after the runs of lag and final_name_again; the count of the uninterrupted
+    replay's writes right before the comparisons and right after them, and the
+    content of its file of refused calls after them, None where it has none."""
+    plain, named = replay_uninterrupted, replay_final_name
+    writes_before = len(plain.target.writes())
     tail = (run_plan.file, source.mirror)
-    cmp_a = compare(a.target, "--state", a.state, *tail, TOOL_NEW, api=run_plan.api)
-    cmp_e = compare(e.target, "--state", e.state, *tail, "ada-example/tool-e", api=run_plan.api)
-    refused = a.target.folder / "refused"
+    uninterrupted = compare(plain.target, "--state", plain.state, *tail, TOOL_NEW, api=run_plan.api)
+    final_name = compare(
+        named.target, "--state", named.state, *tail, TOOL_FINAL_NAME, api=run_plan.api
+    )
+    refused = plain.target.folder / "refused"
     return SimpleNamespace(
-        a=cmp_a,
-        e=cmp_e,
+        uninterrupted=uninterrupted,
+        final_name=final_name,
         writes_before=writes_before,
-        writes_after=len(a.target.writes()),
+        writes_after=len(plain.target.writes()),
         refused=refused.read_text(encoding="utf-8") if refused.exists() else None,
     )
 
 
 @pytest.fixture(scope="session")
-def replay_x(root, extra_plan, mirror_extra, make_target, replay):
-    """X: the plan that carries three tags and three releases and leaves
-    behind two branches, extra.jsonl, replayed into a target with immutable
-    releases, with the default state file, extra.state.json; its output and
-    error in one."""
-    slug = "ada-example/tool-x"
-    target = make_target("gh-x", slug)
+def replay_tags_releases(root, extra_plan, mirror_extra, make_target, replay):
+    """The plan that carries three tags and three releases and leaves behind
+    two branches, extra.jsonl, replayed into a target with immutable releases,
+    with the default state file, extra.state.json; its output and error in
+    one."""
+    slug = TOOL_TAGS_RELEASES
+    target = make_target("gh-tags-releases", slug)
     (target.folder / "immutable").touch()
     result = replay(target, slug, "--pace", "0", extra_plan.file, mirror_extra, slug, merged=True)
     # No dump: no check compares this target with another by its files.
