@@ -164,7 +164,7 @@ class Git:
 
 @pytest.fixture(scope="session")
 def root(tmp_path_factory):
-    """The temporary folder of the session, $T of the shell test."""
+    """The temporary folder of the session."""
     return tmp_path_factory.mktemp("replay-test")
 
 
@@ -314,8 +314,8 @@ def source(root, base_env):
 
 @pytest.fixture(scope="session")
 def hashes(source):
-    """The source's hashes, by the names the shell test exports them under,
-    such as C1, B1, M2 and TREE3."""
+    """The source's hashes by name, such as C1, B1, M2 and TREE3, as source
+    records them."""
     return source.hashes
 
 
@@ -616,9 +616,9 @@ def plan_gh(source_gh):
 @pytest.fixture(scope="session")
 def planned(root, source, plan, plan_gh):
     """The four plans of the source that the checks of plan-replay.py read,
-    events.jsonl first, made in the order of the shell test, since the check
-    of the calls to gh reads the log of all four; later checks read what the
-    first printed, as the shell test reads plan-out."""
+    events.jsonl first, made together, since the check of the calls to gh
+    reads the log of all four; several checks read what the first printed,
+    kept as main."""
     s, gh = source, plan_gh
     files = SimpleNamespace(
         events=root / "events.jsonl",
@@ -679,7 +679,8 @@ def run_plan(root, source, api, plan, source_gh):
     return Planned(events, folder, result)
 
 
-# The labels GitHub gives a new repository, as the shell test writes them.
+# The labels GitHub gives a new repository: the text of a new target's
+# labels.json.
 NEW_LABELS = (
     '[{"name": "bug", "color": "ee0701", "description": "Something is wrong"},\n'
     '      {"name": "enhancement", "color": "a2eeef", "description": "New feature or request"}]\n'
@@ -707,21 +708,20 @@ class Target:
         return lines(path.read_text(encoding="utf-8")) if path.exists() else []
 
     def writes(self):
-        """The calls that write, with their times, as writes() of the shell
-        test greps them: every line without " GET "."""
+        """The calls that write, with their times: every line without " GET "."""
         return [c for c in self.calls() if " GET " not in c]
 
     def git(self, *args):
         """The output of git in the target's repository, stripped; a failing
-        git fails the caller, as check=True does in rexpect of the shell test."""
+        git raises, so that the check that called it fails."""
         done = run(["git", "--git-dir", self.repo, *args], self.env, self.folder)
         if done.status:
             raise RuntimeError(f"git {' '.join(map(str, args))} failed:\n{done.err}")
         return done.out.strip()
 
     def dump(self):
-        """The target's items, comments, labels, closings and refs, as dump()
-        of the shell test prints them; a missing file fails, as cat does."""
+        """The target's items, comments, labels and closings, the bytes of the
+        four files one after another, then its refs; a missing file fails."""
         files = ("items", "comments", "labels", "closes")
         content = b"".join((self.folder / f"{name}.json").read_bytes() for name in files)
         refs = run(["git", "--git-dir", self.repo, "for-each-ref"], self.env, self.folder)
@@ -741,9 +741,9 @@ def recreated(state_file, sha):
 
 
 def shell_status(result):
-    """The exit status as the shell test records it with $?: a process that a
-    signal killed, which subprocess reports as minus the signal's number,
-    gets 128 plus that number, such as 137 for a kill -9."""
+    """The exit status as a POSIX shell reports it: a process that a signal
+    killed, which subprocess reports as minus the signal's number, gets 128
+    plus that number, such as 137 for a kill -9."""
     return 128 - result.status if result.status < 0 else result.status
 
 
@@ -768,7 +768,7 @@ def kill_hook(ref):
     """A post-receive hook that kills the run-replay.py whose push of the ref
     it receives, once, as a machine that stops right after the push would.
     It finds the run among the hook's ancestors by its command line, which
-    holds run-replay.py under pytest as under the shell test."""
+    holds the path of run-replay.py after that of the interpreter."""
     return f"""\
 #!/bin/sh
 grep -q ' {ref}$' || exit 0
@@ -800,7 +800,7 @@ exit 1
 
 
 class TargetView:
-    """What rexpect of the shell test reads of a target: items by number,
+    """What the checks of a replay read of a target: items by number,
     comments as (number, body), labels and closes from the fake's files, the
     state file and its map of source to target hashes, the events of the plan
     run-replay.py applied, and git in the target's repository."""
@@ -818,8 +818,9 @@ class TargetView:
 @pytest.fixture(scope="session")
 def target_env(root, source_gh):
     """The environment under which the scripts reach the fake gh of the
-    targets, first on PATH before the fake of the source, with $FAKE_GH_API
-    the source's API, as the shell test exports it."""
+    targets, first on PATH before the fake of the source, with FAKE_GH_API
+    the source's API, from which the fake of the targets answers a GET of
+    another repository."""
     bin_dir = root / "bin-target"
     bin_dir.mkdir()
     gh = bin_dir / "gh"
@@ -948,8 +949,8 @@ def run_process(root, base_env):
 
 @pytest.fixture(scope="session")
 def view(read_plan, run_plan):
-    """Reads a target as rexpect of the shell test does, with the state file
-    given and the events of run.jsonl."""
+    """Reads a target as a TargetView, with the state file given and the
+    events of run.jsonl."""
     plan = read_plan(run_plan.file)
 
     def view(target, state_file):
@@ -962,8 +963,8 @@ TOOL_NEW = "ada-example/tool-new"
 TOOL_X = "ada-example/tool-x"
 
 
-# again, lag and e_again are session fixtures, so that the comparisons of A
-# and E, which the shell test runs after them, can ask for them first.
+# again, lag and e_again are session fixtures, so that compare_finished, which
+# compares A and E after them, can ask for them first.
 @pytest.fixture(scope="session")
 def again(root, source, run_plan, replay_a, replay):
     """A run on the finished replay A, and one into it with another state
@@ -983,10 +984,9 @@ def again(root, source, run_plan, replay_a, replay):
 def lag(source, run_plan, replay_a, replay, again):
     """A run on the finished replay A whose first list of issues lacks the
     highest-numbered item and every pull request; the reads of #2 and #6
-    before it. After the runs of again, as in the shell test. Its prompt is
-    the content of A's prompt file right after it, the last run of
-    run-replay.py into A where the shell test reads that file: a later
-    comparison of A writes the file again."""
+    before it. It runs after those of again. Its prompt is the content of A's
+    prompt file right after it, the last run of run-replay.py into A, since
+    the comparison of A that follows writes the file again."""
     target = replay_a.target
 
     def reads(n):
@@ -1016,8 +1016,8 @@ def lag(source, run_plan, replay_a, replay, again):
 @pytest.fixture(scope="session")
 def e_again(source, run_plan, replay_e, replay_c, replay):
     """A resume of E without --final-name, and two runs into E with a wrong
-    --final-name and a wrong --sign, with the default state file, which the
-    replay C wrote before them, as in the shell test."""
+    --final-name and a wrong --sign, with the default state file,
+    run.state.json, which the replay C wrote before them."""
     target, slug = replay_e.target, "ada-example/tool-e"
     tail = (run_plan.file, source.mirror, slug)
     resumed = replay(target, slug, "--pace", "0", "--state", replay_e.state, *tail, merged=True)
@@ -1144,7 +1144,7 @@ def api_extra_del(root, api_extra):
 
 @pytest.fixture(scope="session")
 def leave(root):
-    """$T/leave: a file of --leave-behind that accepts the two branches the
+    """leave: a file of --leave-behind that accepts the two branches the
     plans of mirror-extra.git leave behind, two tags and two releases they
     carry, and a tag the source lacks."""
     path = root / "leave"
@@ -1168,8 +1168,7 @@ def leave_branches(root):
 def plan_extra(source, plan, source_gh, mirror_extra):
     """Plans mirror-extra.git, or another mirror where one is given, against
     the API folder given, into the event file given, with --types and the
-    options given, as plan_extra, plan_odd, plan_msg and plan_drafts of the
-    shell test do; merged as run() takes it."""
+    options given; merged as run() takes it."""
     gh = source_gh("extra-gh")
 
     def plan_extra(api, events, *options, mirror=None, merged=False):
@@ -1186,8 +1185,8 @@ def plan_extra(source, plan, source_gh, mirror_extra):
 @pytest.fixture(scope="session")
 def extra_plan(root, api_extra, leave, plan_extra):
     """extra.jsonl: the plan of mirror-extra.git that carries three tags and
-    three releases and leaves behind two branches, as $T/leave accepts them;
-    its standard output and error apart."""
+    three releases and leaves behind two branches, as the file leave accepts
+    them; its standard output and error apart."""
     events = root / "extra.jsonl"
     return Planned(events, api_extra, plan_extra(api_extra, events, "--leave-behind", leave))
 
@@ -1391,8 +1390,7 @@ def drafts_plan(root, api_drafts, leave_branches, plan_extra):
 def compare(root, target_env):
     """Runs compare-replay.py with these arguments against the target, with
     the source's API in the folder api, from the session's folder, with the
-    interpreter that runs pytest; its output and error in one, as compare,
-    compare_extra and compare_drafts of the shell test write them."""
+    interpreter that runs pytest; its output and error in one."""
 
     def compare(target, *args, api):
         env = {**target_env, "FAKE_GITHUB": str(target.folder), "FAKE_GH_API": str(api)}
@@ -1404,10 +1402,9 @@ def compare(root, target_env):
 @pytest.fixture(scope="session")
 def compare_finished(source, run_plan, replay_a, replay_e, lag, e_again, compare):
     """compare-replay.py against the finished targets of A and E, with the
-    API of run.jsonl, after the runs of lag and e_again, as in the shell test;
-    the count of A's writes right before the comparisons and right after
-    them, and the content of A's file of refused calls after them, None where
-    it has none."""
+    API of run.jsonl, after the runs of lag and e_again; the count of A's
+    writes right before the comparisons and right after them, and the content
+    of A's file of refused calls after them, None where it has none."""
     a, e = replay_a, replay_e
     writes_before = len(a.target.writes())
     tail = (run_plan.file, source.mirror)

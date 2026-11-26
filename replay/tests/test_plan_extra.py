@@ -15,8 +15,8 @@ def count_starting(prefix, lines):
 
 
 def events_of(path):
-    """The events of an event file without its header, as the shell test's
-    conditions read them: its text split with str.splitlines()."""
+    """The events of an event file without its header: its text split with
+    str.splitlines(), the first line left out."""
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()[1:]]
 
 
@@ -46,7 +46,7 @@ def latest_left(root, api_extra, leave, plan_extra):
     """latest-left.jsonl: the same source whose latest release, v9.9, is on a
     tag the mirror lacks, and with a published release v0.1 older than v0.2:
     v0.2, the newest one the replay carries, takes the place of the latest.
-    Its --leave-behind, leave-latest, is $T/leave with a line for v9.9."""
+    Its --leave-behind, leave-latest, is the file leave with a line for v9.9."""
     folder = root / "api-latest-left"
     shutil.copytree(api_extra, folder)
     page = folder / f"{RELEASES}-1.json"
@@ -99,7 +99,7 @@ def norel(root, api_extra, leave_branches, plan_extra):
 
 @pytest.fixture(scope="module")
 def off_all(root, api_extra, leave, plan_extra):
-    """off-all.jsonl: --no-tags --no-releases with $T/leave as --leave-behind."""
+    """off-all.jsonl: --no-tags --no-releases with the file leave as --leave-behind."""
     events = root / "off-all.jsonl"
     options = ("--no-tags", "--no-releases", "--leave-behind", leave)
     return events, plan_extra(api_extra, events, *options)
@@ -255,7 +255,6 @@ def test_makes_the_newest_carried_release_the_latest_where_the_latest_is_left_be
         if not e["draft"] and not e["prerelease"]
     ] == [("v0.1", False), ("v0.2", True)]
     assert "v9.9" in [x["name"] for x in p.header["left_behind"] if x["kind"] == "release"]
-    # Split as the shell test's condition reads the file, with str.splitlines().
     assert (
         "plan-replay.py: warning: the source's latest release is left behind; v0.2, the newest"
         " one the replay carries, becomes the target's latest"

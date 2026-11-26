@@ -186,8 +186,7 @@ def test_waits_out_a_rate_limit_as_retry_after_tells_and_retries_the_same_call(r
 
 def test_paces_its_writes_by_pace(replay_a):
     """run-replay.py paces its writes by --pace"""
-    # Each write against the one before it, as the awk of the shell test
-    # compares $1 with last.
+    # The time of each write against that of the write before it.
     timed = [(float(w.split()[0]), w) for w in replay_a.writes]
     gaps = [f"gap {b - a} before {w}" for (a, _), (b, w) in pairwise(timed) if b - a < 0.1]
     assert not gaps, gaps
@@ -197,7 +196,7 @@ def test_paces_its_writes_by_pace(replay_a):
 def resumed_b(root, source, run_plan, make_target, replay):
     """B: the same replay, stopped by a Ctrl-C and by three answers lost after
     GitHub did the call, and resumed each time; the output of the five runs
-    in one, as the shell test appends it to one file."""
+    in one, in the order they ran."""
     target = make_target("gh-b")
     state = root / "b.state.json"
 
@@ -278,7 +277,7 @@ def test_stops_at_a_number_other_than_the_planned_one_before_anything_more(root,
     assert has_search("^run-replay.py: the issue planned as #4 got #5", r.out_lines), r.out
     writes = replay_c.writes
     last = writes[-1] if writes else ""
-    # cut -d" " -f2- of the last write: the call without its time.
+    # The last write without its time.
     assert (
         last.partition(" ")[2] if " " in last else last
     ) == "POST repos/ada-example/tool-c/issues"
@@ -300,8 +299,9 @@ def test_runs_gh_with_git_terminal_prompt_0_so_no_call_through_run_waits_for_a_p
     replay_a, lag
 ):
     """run-replay.py runs gh with GIT_TERMINAL_PROMPT=0, so no call through run() waits for a password"""  # noqa: E501 # the description word for word
-    # Read after the last run into A, as in the shell test, whose $(cat) drops
-    # the final line breaks; a missing file fails, as cat does.
+    # Read right after the last run of run-replay.py into A, since the
+    # comparison of A that follows writes the file again; compared without
+    # its final line breaks, and a missing file fails.
     prompt = lag.prompt
     assert prompt is not None
     assert prompt.rstrip("\n") == "0"

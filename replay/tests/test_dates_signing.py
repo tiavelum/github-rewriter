@@ -109,15 +109,14 @@ def early_epoch(root, source, run_plan, make_target, replay):
 
 
 # The values of SOURCE_DATE_EPOCH of CB: empty, a fraction, a digit that is
-# no ASCII digit, as the shell test's printf '\302\262' writes it, and a time
-# no machine can date.
+# no ASCII digit, the superscript two, U+00B2, and a time no machine can date.
 BAD_EPOCHS = ("", "1.5", os.fsdecode(b"\302\262"), "99999999999999999999")
 
 
 @pytest.fixture(scope="module")
 def bad_epochs(root, source, run_plan, make_target, replay):
     """CB's four runs into one target with one state file; their statuses,
-    and their output and error in one, as the shell test appends them."""
+    and their output and error in one, in the order they ran."""
     target = make_target("gh-cb", CB)
     state = root / "cb.state.json"
     runs = [
@@ -153,7 +152,7 @@ def late_start(root, source, run_plan, make_target, replay):
 @pytest.fixture(scope="module")
 def old_dates(root, source, run_plan, replay_a, compare_finished, compare):
     """A compared under a copy of its state file without committer_dates,
-    after the comparisons of the finished A, as in the shell test."""
+    after the comparisons of the finished A."""
     state = json.loads(replay_a.state.read_text(encoding="utf-8"))
     del state["committer_dates"]
     path = root / "old-dates.state.json"
@@ -241,7 +240,6 @@ def test_commits_no_recreated_commit_before_its_parent_which_githubs_clock_may_d
     m, git = v.recreated, v.git
     f1 = git("log", "-1", "--format=%ct", m[hashes["F1"]])
     m2 = git("log", "-1", "--format=%ct", m[hashes["M2"]])
-    # The chain a == b != c of the shell test's condition.
     assert f1 == m2
     assert m2 != "1000000000"
     assert git("log", "-1", "--format=%cd", "--date=raw", m[hashes["C1"]]) == "1000000000 +0530"
@@ -314,8 +312,8 @@ def test_names_a_recreated_commit_that_is_committed_before_its_parent(
 
 
 def nothing_written(target, state):
-    """No write, no ref, no state file and no work repository, as
-    nothing_written of the shell test checks them."""
+    """Asserts that the run left no write, no ref, no state file and no work
+    repository."""
     assert not target.writes(), target.writes()
     assert target.git("for-each-ref") == ""
     assert not state.exists()
@@ -324,7 +322,7 @@ def nothing_written(target, state):
 
 def config_with(base_env, root, name, text):
     """A git configuration in the session's folder: the suite's own, then the
-    text, as cat "$T/global" - writes it."""
+    text."""
     path = root / name
     own = Path(base_env["GIT_CONFIG_GLOBAL"]).read_text(encoding="utf-8")
     path.write_text(own + text, encoding="utf-8")
@@ -632,9 +630,8 @@ def test_sign_signs_exactly_the_recreated_commits_whose_committer_has_the_addres
 
 
 def shape(run_process, target):
-    """Every commit of the target, without its hash, sorted, as shape of the
-    shell test prints them; none where git fails, since its pipe drops git's
-    exit status."""
+    """Every commit of the target, without its hash, sorted; none where git
+    fails, which the check of their count then reports."""
     listed = run_process(
         *("git", "--git-dir", target.repo, "log", "--all"),
         *("--format=%T %an %ae %ad %cn %ce %cd %s", "--date=raw"),
@@ -670,8 +667,8 @@ def killed_signed(root, run_process, hashes, sign_target, sign_replay):
     copy = copy_target(root, target, "gh-sc")
     copy_state = root / "sc.state.json"
     recorded = json.loads(state.read_text(encoding="utf-8")) if state.exists() else {"hashes": {}}
-    # Where the killed run saved no hash, the shell test's assert writes no
-    # state file of SC, and only the check of SC fails for it.
+    # Where the killed run saved no hash, no state file of SC is written, so
+    # that only the check of SC fails for it.
     if hashes["B2"] in recorded["hashes"]:
         recorded["hashes"][hashes["B2"]] = "0123456789abcdef0123456789abcdef01234567"
         copy_state.write_text(json.dumps(recorded), encoding="utf-8")
@@ -679,7 +676,7 @@ def killed_signed(root, run_process, hashes, sign_target, sign_replay):
     sc_writes = len(copy.writes())
     second = sign_replay(target, TOOL_NEW, state)
     sc = sign_replay(copy, TOOL_NEW, copy_state)
-    # One text, as the second run appends to the file of the first.
+    # One text, the output of the second run right after that of the first.
     out = first.out + second.out
     return SimpleNamespace(
         target=target,
