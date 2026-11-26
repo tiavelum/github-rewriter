@@ -1,15 +1,17 @@
 """A fake gh that plays GitHub's API for the target in $FAKE_GITHUB, as GitHub's REST pages
 describe it; the FAKE_GH_* variables set up a rate limit, a lost answer, a lag and other cases.
 
-DENY, HALF, INTERRUPT, LAG, LOSE and RATE_LIMIT name a call "<method> <endpoint>" and act on its
-first occurrence in that target only:
+DENY, HALF, INTERRUPT, LAG, LOSE and RATE_LIMIT name a call "<method> <endpoint>" and act once,
+on the first occurrence of it that reaches them, in that target only:
 
-FAKE_GH_API         the source's API folder, from which it answers a GET of another repository
+FAKE_GH_API         the source's API folder: it answers a GET of another repository from it, and
+                    takes from it the ids of other repositories' issues for the sub-issue calls
 FAKE_GH_DEFAULT     the default branch of the target that a POST creates; main where unset
 FAKE_GH_DENY        a call it answers 403 without a rate limit, doing nothing
 FAKE_GH_HALF        an upload that leaves an empty asset in the state starter and answers 502
 FAKE_GH_INTERRUPT   a call before which it sends the script that ran gh a SIGINT, as Ctrl-C does
-FAKE_GH_LAG         a list whose first answer lacks its highest-numbered item and pull requests
+FAKE_GH_LAG         a list whose first non-empty answer lacks its highest-numbered item and
+                    every pull request
 FAKE_GH_LOGIN       the login of the account, the owner of user/repos; ada-example where unset
 FAKE_GH_LOSE        a call it does and then answers 502, as when the answer is lost
 FAKE_GH_NO_SCOPE    where set, a call of user/... answers 404, as to a token without the scope
@@ -30,7 +32,8 @@ items.json          the issues and pull requests, by number
 comments.json       the comments, each with the number of its item
 labels.json         the labels
 closes.json         each closing, as the number and the state reason
-settings.json       the repository's settings, such as delete_branch_on_merge, as PATCH sets them
+settings.json       the repository's settings, such as private and delete_branch_on_merge, as
+                    POST and PATCH set them
 actions.json        whether Actions is on, as the last PUT actions/permissions set it
 releases.json       the releases, with their assets
 assets/             the content of each uploaded asset, under its id

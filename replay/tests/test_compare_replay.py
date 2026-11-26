@@ -136,8 +136,6 @@ def test_names_every_difference_it_finds_and_exits_with_1(compare_diff):
 def test_refuses_a_replay_that_its_state_file_records_unfinished(
     source, run_plan, replay_someone_elses_issue, final_name_again, compare
 ):
-    # After final_name_again, whose runs with the default state file,
-    # run.state.json, come before this comparison, which reads that file.
     target = replay_someone_elses_issue.target
     r = compare(target, run_plan.file, source.mirror, TOOL_SOMEONE_ELSES_ISSUE, api=run_plan.api)
     assert r.status == 2, r.out

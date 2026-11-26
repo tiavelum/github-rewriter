@@ -695,8 +695,7 @@ def write_hook(target, name, script):
 
 
 def kill_hook(ref):
-    """A hook script that kills run-replay.py once its push of the ref arrives."""
-    # As a machine that stops right after the push would.
+    """A hook script that kills run-replay.py once its push of the ref arrives, as a crash would."""
     return f"""\
 #!/bin/sh
 grep -q ' {ref}$' || exit 0
@@ -740,7 +739,7 @@ class TargetView:
 
 @pytest.fixture(scope="session")
 def target_env(root, source_gh):
-    """The environment whose gh is the fake of the targets, with the source's fake behind it."""
+    """The environment whose gh is the fake of the targets, answering others from FAKE_GH_API."""
     bin_dir = root / "bin-target"
     bin_dir.mkdir()
     gh = bin_dir / "gh"
@@ -923,8 +922,6 @@ def lag(source, run_plan, replay_uninterrupted, replay, again):
 @pytest.fixture(scope="session")
 def final_name_again(source, run_plan, replay_final_name, replay_someone_elses_issue, replay):
     """A resume of replay_final_name without --final-name; runs with a bad one and a bad --sign."""
-    # Asks for replay_someone_elses_issue, so that bad_name and bad_sign run
-    # after it wrote the default state file, run.state.json.
     target, slug = replay_final_name.target, TOOL_FINAL_NAME
     tail = (run_plan.file, source.mirror, slug)
     state = replay_final_name.state
@@ -1144,7 +1141,7 @@ NOTES_MESSAGE = (
 
 @pytest.fixture(scope="session")
 def mirror_msg(root, base_env, hashes, mirror_extra):
-    """mirror-msg.git: mirror-extra.git with the tag notes, and HEAD and -x that git tag refuses."""
+    """mirror-msg.git: mirror-extra.git with tag notes, and tags HEAD and -x that git tag refuses."""
     mirror = root / "mirror-msg.git"
     shutil.copytree(mirror_extra, mirror, symlinks=True)
     message = root / "notes-message"
