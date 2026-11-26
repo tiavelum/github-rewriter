@@ -28,16 +28,16 @@ PUBLISH = "PATCH repos/ada-example/tool-x/releases/2"
 
 def edit_json(path, change):
     """Changes the JSON in a file of a target in place, or replaces it with
-    what change returns, and writes it back, as the shell test's heredocs do
-    with json.dump."""
+    what change returns, and writes it back as json.dumps writes it, on one
+    line."""
     value = json.loads(path.read_text(encoding="utf-8"))
     changed = change(value)
     path.write_text(json.dumps(value if changed is None else changed), encoding="utf-8")
 
 
 def call_lines(target):
-    """The lines of the target's log of calls, as rexpect of the shell test
-    reads them with str.splitlines(); a missing log fails, as open() does."""
+    """The lines of the target's log of calls, split with str.splitlines();
+    a missing log fails, as open() does."""
     return (target.folder / "calls").read_text(encoding="utf-8").splitlines()
 
 
@@ -151,8 +151,8 @@ def test_refuses_a_replay_that_its_state_file_records_unfinished(
     source, run_plan, replay_c, e_again, compare
 ):
     """compare-replay.py refuses a replay that its state file records unfinished"""
-    # After e_again, whose runs with the default state file come before this
-    # comparison in the shell test.
+    # After e_again, whose runs with the default state file, run.state.json,
+    # come before this comparison, which reads that file.
     r = compare(
         replay_c.target, run_plan.file, source.mirror, "ada-example/tool-c", api=run_plan.api
     )
@@ -245,7 +245,7 @@ def replay_z(root, leave, mirror_extra, api_extra_del, plan_extra, make_target, 
         encoding="utf-8",
     )
     events = root / "extra-del-ok.jsonl"
-    # Its output goes nowhere, as in the shell test.
+    # No check reads what this plan prints.
     plan_extra(api_extra_del, events, "--leave-behind", leave_del)
     slug = "ada-example/tool-z"
     target = make_target("gh-z", slug)
@@ -573,7 +573,7 @@ def resumed_releases(root, api, extra_plan, mirror_extra, api_extra, make_target
     upload of notes.txt that GitHub leaves half done, and resumed each time,
     the last time with a download left behind of an asset uploaded and a
     damaged one of notes.txt; then compared. The output of the four runs in
-    one, as the shell test appends it to rr-out."""
+    one, in the order they ran."""
     target = make_target("gh-rr", TOOL_X)
     state = root / "rr.state.json"
     tail = (extra_plan.file, mirror_extra, TOOL_X)
@@ -596,7 +596,8 @@ def resumed_releases(root, api, extra_plan, mirror_extra, api_extra, make_target
     # A download of tool.tar.gz, which is recorded as uploaded, as a stop
     # between that record and the download's removal leaves it, and the
     # download of notes.txt, which the stopped run left, damaged. Where the
-    # folder is missing, cp and printf of the shell test write nothing.
+    # stopped runs left no such folder, neither is written, and the checks
+    # find the last run without them.
     downloads = root / "rr.downloads"
     if downloads.is_dir():
         shutil.copyfile(api / f"{RELEASES}_assets_11.bin", downloads / "11")
@@ -676,8 +677,8 @@ def test_says_what_it_found_done_when_it_resumes_a_release_and_the_comparison_fi
 def published_releases(root, extra_plan, mirror_extra, api_extra, make_target, replay, compare):
     """RQ: X's replay into a target with immutable releases, stopped where
     GitHub refuses the publication of v0.2 and by an answer lost after it,
-    and resumed; the state file and the target's releases after each run, as
-    the shell test keeps them as rq-<run>; then compared."""
+    and resumed; copies of the state file and of the target's releases as
+    each run left them; then compared."""
     target = make_target("gh-rq", TOOL_X)
     (target.folder / "immutable").touch()
     state = root / "rq.state.json"
@@ -885,7 +886,8 @@ def drafts(root, drafts_plan, mirror_extra, make_target, replay, compare):
 
     edit_json(copy.folder / "releases.json", publish)
     compared_ue = compare(copy, "--state", copy_state, *tail, api=api)
-    # FAKE_GH_API stays the source's, as the shell test runs this replay.
+    # FAKE_GH_API stays the source's, not api-drafts: UD's state file records
+    # every event done, so the run only checks the target.
     ue = replay(copy, TOOL_X, "--pace", "0", "--state", copy_state, *tail, merged=True)
     return SimpleNamespace(
         target=target,
