@@ -41,7 +41,7 @@ SLUG = re.compile(r"[\w.-]+/[\w.-]+")
 ADDRESS = re.compile(r"[^@\s]+@[^@\s]+")
 STEPS = ("mirror", "plan", "create", "settings", "replay", "compare", "links", "commands")
 REQUIRED = ("source", "target", "mailmap")
-# What no_<kind> turns off, as plan-replay.py's --no-<kind> does.
+# The kinds a run file's no_<kind> turns off.
 SWITCHES = ("tags", "releases", "reviews")
 DEFAULTS = {
     "final_name": None,
@@ -58,7 +58,6 @@ DEFAULTS = {
     "backup": "~/vc-backup",
     "clone_url": None,
 }
-# The settings of the source that the replay takes over at the end.
 SETTINGS = (
     "allow_merge_commit",
     "allow_squash_merge",
@@ -79,7 +78,7 @@ TRANSIENT_WAIT = 5
 
 
 class ReplayError(Exception):
-    """Ends the run with a message; main() names the step it stopped in."""
+    pass
 
 
 def usage(status=2):
@@ -105,8 +104,7 @@ def run(args, stdin=None):
 
 
 def child(args, capture=False):
-    """Runs one of the other scripts with the terminal's output; a Ctrl-C
-    reaches it and stops it the way it stops on its own, not this one."""
+    # A Ctrl-C stops the child the way it stops on its own; this script ignores it meanwhile.
     previous = signal.signal(signal.SIGINT, lambda *_: None)
     try:
         return subprocess.run(
@@ -122,7 +120,6 @@ def child(args, capture=False):
 
 
 def parse_response(out):
-    """Status, headers and JSON body of what gh api --include printed."""
     if not out.startswith("HTTP/"):
         return None, {}, None
     end = re.search(r"\r?\n\r?\n", out)
@@ -148,9 +145,6 @@ def message_of(data):
 
 
 class Api:
-    """Calls gh api, at least pace seconds after the end of the previous write,
-    and waits out GitHub's rate limits as run-replay.py does."""
-
     def __init__(self, pace):
         self.pace, self.last_write = pace, None
 
@@ -205,7 +199,6 @@ class Api:
 
 
 def read_run_file(path):
-    """The fields of the run file, with their defaults, and its SHA-256."""
     try:
         raw = path.read_bytes()
         fields = json.loads(raw)
@@ -291,8 +284,6 @@ class OneCommand:
         self.progress = None
         self.step = None
 
-    # Progress
-
     def load_progress(self):
         if not self.progress_path.exists():
             return False
@@ -325,8 +316,6 @@ class OneCommand:
     def begin(self, step, what):
         self.step = step
         print(f"Step {STEPS.index(step) + 1} of {len(STEPS)}, {step}: {what}", flush=True)
-
-    # Before the confirmation
 
     def check_place(self):
         inside = run(["git", "-C", str(self.run_file.parent), "rev-parse", "--is-inside-work-tree"])
@@ -396,9 +385,7 @@ class OneCommand:
             )
 
     def survey_links(self):
-        """The sub-issue links of the source's issues: those under a parent
-        elsewhere, and the sub-issues of each issue that has some."""
-        self.outside, self.parents = [], []
+        self.with_outside_parent, self.parents = [], []
         issues = self.api.pages(f"repos/{self.source}/issues?state=all")
         for issue in sorted(issues, key=lambda i: i["number"]):
             if "pull_request" in issue:
@@ -408,7 +395,9 @@ class OneCommand:
             if issue.get("parent_issue_url"):
                 parent = self.api.expect("GET", f"repos/{self.source}/issues/{n}/parent")
                 if repo_of(parent).lower() != self.source.lower():
-                    self.outside.append((n, issue["id"], repo_of(parent), parent["number"]))
+                    self.with_outside_parent.append(
+                        (n, issue["id"], repo_of(parent), parent["number"])
+                    )
             if (issue.get("sub_issues_summary") or {"total": 1})["total"]:
                 children = self.api.pages(f"repos/{self.source}/issues/{n}/sub_issues")
                 if children:
@@ -416,12 +405,10 @@ class OneCommand:
         self.check_owners()
 
     def check_owners(self):
-        """GitHub links a sub-issue only to a parent of the same owner, so each
-        repository a link of the replay reaches has to belong to the target's."""
         owner = self.target.split("/")[0]
         crossing = [
             f"#{n} under {repo}#{p}"
-            for n, _, repo, p in self.outside
+            for n, _, repo, p in self.with_outside_parent
             if repo.split("/")[0].lower() != owner.lower()
         ]
         crossing += [
@@ -444,7 +431,7 @@ class OneCommand:
         lines = [
             f"#{n}: in {repo}#{p}, links the replay's #{n} in the place of the source's and"
             f" unlinks the source's (writes in {repo})"
-            for n, _, repo, p in self.outside
+            for n, _, repo, p in self.with_outside_parent
         ]
         for n, children in self.parents:
             named = [
@@ -460,7 +447,6 @@ class OneCommand:
         return lines
 
     def confirm(self, resumed):
-        """Prints what the run does from here, and asks once for the target."""
         left = [x for x in STEPS[2:] if not resumed or x not in self.progress["done"]]
         deletes = " and the deletion of head branches on, as the source has it"
         links = self.describe_links()
@@ -508,8 +494,6 @@ class OneCommand:
         if answer != self.target:
             raise ReplayError("not confirmed; nothing changed on GitHub")
 
-    # After the confirmation
-
     def create(self):
         self.begin("create", f"create {self.target}, private and empty")
         self.check_target_absent()
@@ -551,11 +535,8 @@ class OneCommand:
         self.set_default(pushed=True)
 
     def set_default(self, pushed):
-        """Gives the target the default branch the plan names, main for a
-        source's master, where GitHub named another one at the creation.
-        GitHub's documentation leaves open whether
-        an empty repository takes a default branch, so this waits until the
-        branch exists: after the replay, or before it where it was pushed."""
+        # GitHub's documentation leaves open whether an empty repository takes a
+        # default branch, so this waits until the branch exists.
         info = self.api.expect("GET", f"repos/{self.target}")
         named = info.get("default_branch")
         if named == self.default or not (pushed or self.default in self.target_branches(info)):
@@ -583,16 +564,15 @@ class OneCommand:
     def links(self):
         self.begin("links", "move the sub-issue links of the source's issues to the replay's")
         self.survey_links()
-        for n, old, repo, p in self.outside:
+        for n, old, repo, p in self.with_outside_parent:
             new = self.target_id(n)
             listed = self.sub_ids(repo, p)
             if new not in listed:
                 self.api.expect(
                     "POST", f"repos/{repo}/issues/{p}/sub_issues", {"sub_issue_id": new}, ok=(201,)
                 )
-            # After the sub-issue before the source's, or before the one after it
-            # where the source's is first, the link takes its place once that one
-            # goes; without the new link in the list, a resume finds the same one.
+            # Placed beside the source's neighbour, the link takes its place once the
+            # source's goes; the list without the link gives a resume the same neighbour.
             others = [i for i in listed if i != new]
             at = others.index(old)
             if at:
@@ -742,7 +722,6 @@ class OneCommand:
         print(f"4. Delete {self.progress_path}, {state} and {work}.")
 
     def target_branches(self, info):
-        """The branches of the target, as git ls-remote lists them."""
         protocol = run(["gh", "config", "get", "git_protocol"]).stdout.strip()
         remote = info["ssh_url"] if protocol == "ssh" else info["clone_url"]
         listed = run(["git", "ls-remote", "--heads", remote])
@@ -756,17 +735,12 @@ class OneCommand:
             return json.loads(file.readline())
 
     def left_behind(self):
-        """What the event file's header lists as left behind, as kind and name;
-        with tags or releases turned off, each of them too."""
         return [f"{x['kind']} {x['name']}" for x in self.plan_header().get("left_behind", [])]
 
     def turned_off(self):
-        """The kinds the run file turns off, in the order of SWITCHES."""
         return [k for k in SWITCHES if self.cfg[f"no_{k}"]]
 
     def extra_branches(self):
-        """The branches of the target that the mirror of the source lacks, the
-        source's default branch taken under the target's name."""
         target = self.target_branches(self.api.expect("GET", f"repos/{self.target}"))
         source = run(
             [
@@ -793,8 +767,7 @@ class OneCommand:
             self.check_target_absent()
             self.make_mirror()
             self.plan()
-        # The target's default branch, main for a source's master; an event
-        # file planned before the rename names only the source's.
+        # An event file planned before the rename of master to main names only the source's.
         header = self.plan_header()
         self.source_default = header["default_branch"]
         self.default = header.get("target_default_branch", self.source_default)
