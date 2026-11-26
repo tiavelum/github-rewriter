@@ -4,7 +4,7 @@ How to plan a replay, run it and compare its result with the scripts of [`replay
 
 ## Planning a replay
 
-The mailmap maps the author and committer of every commit, in the format that [rewrite/README.md](../../rewrite/README.md#steps) describes. These two lines give an old address and GitHub, as the committer of changes made on github.com, the owner's identity, here an invented one:
+The mailmap maps the author and committer of every commit, in the format that [rewrite/README.md](../../rewrite/README.md#getting-started) describes. These two lines give an old address and GitHub, as the committer of changes made on github.com, the owner's identity, here an invented one:
 
 ```
 Ada Example <ada@example.com> <old@example.com>
@@ -91,7 +91,7 @@ It compares:
 - **Releases the replay carries**: each release the event file plans, in the target as the state file maps it, so that a draft and a published release of one tag are each compared, with a line such as `release v0.2 (draft): …` where they share the tag, under its tag name, with the planned name and body, the body's hashes replaced as for texts and with the original time where `--with-times` is given, draft and pre-release as planned, the latest where the plan's is, and the assets of the source's release that GitHub lists as uploaded, by name, each uploaded in the target and with the source's size, content type and digest where both report one.
 - **Tags, releases and branches of the source**: each branch and each other tag of the mirror in the target at the commit recreated from the one it names, and each other release of the source in the target, read from the mirror and from GitHub rather than from the plan; one the target lacks, or holds at another commit, is a note where the event file's header lists it as left behind, as [What a replay leaves behind](what-a-replay-carries.md#what-a-replay-leaves-behind) describes, and a difference otherwise. Where the header lists tags or releases as turned off, one of that kind the target lacks is a note that says so, and one the target holds is a difference. A tag or release of the target that the source lacks is a difference.
 
-After the totals, it prints notes, which are no differences, such as each branch the target keeps that the source no longer has, which [Taking over the source's name](../../replay/README.md#taking-over-the-sources-name) deletes, and each tag, release and branch the plan left behind. For the test's replay of `ada-example/tool`, it ends with:
+After the totals, it prints notes, which are no differences, such as each branch the target keeps that the source no longer has, which [Taking over the source's name](taking-over-the-sources-name.md) deletes, and each tag, release and branch the plan left behind. For the test's replay of `ada-example/tool`, it ends with:
 
 ```
 Notes:

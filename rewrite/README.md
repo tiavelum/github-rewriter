@@ -4,7 +4,11 @@ How to change the author and committer names and addresses of every commit in a 
 
 The scripts change the identities through a [mailmap](https://git-scm.com/docs/gitmailmap) and keep dates, messages and content. They need `git-filter-repo`. Each runs one step and takes its inputs as arguments; run without arguments, each prints its usage.
 
-## Steps
+## Getting started
+
+These steps rewrite the identities of a repository's history, push it and move your clone onto it.
+
+First clone this repository and install `git-filter-repo`, as the first two commands of [Getting started](../README.md#getting-started) in the root README do.
 
 A mailmap maps one identity per line, for authors and committers alike. These two lines give every commit made under either address one identity, here an invented one:
 
@@ -27,13 +31,6 @@ dir=$(./rewrite-identities.sh ada-example/tool ~/rewrite-mailmap | tee /dev/stde
 
 `rewrite-identities.sh` prints how often each identity occurs after the rewrite; check it before pushing. It drops every signature, and `sign-commits.sh` signs the commits of the default branch again whose committer has the address you give, with the signing key of your git configuration, before anything is pushed. It leaves the other commits unsigned: a commit that GitHub or someone else committed, signed with your key, would show as unverified rather than unsigned. Given a repository instead of a folder, it signs a fresh clone, for a history that was pushed unsigned. `force-push-rewrite.sh` overwrites the default branch on GitHub and turns off the rulesets that block that for the push only.
 
-## What a rewrite leaves behind
-
-- Every commit gets a new hash, so links to commits point to the old ones, which pull request pages keep showing with the old identities.
-- Commits that GitHub or someone else committed lose their signature for good; only your own are signed again.
-- GitHub counts each rewritten commit as a new contribution, until GitHub Support rebuilds the counts.
-- Other clones must not push before `reset-clone.sh` has moved them, or the old history comes back.
-
 ## Files
 
 | File | Step |
@@ -45,3 +42,10 @@ dir=$(./rewrite-identities.sh ada-example/tool ~/rewrite-mailmap | tee /dev/stde
 | `force-push-rewrite.sh` | Overwrites the default branch on GitHub, after you type the repository's name |
 | `reset-clone.sh` | Moves a local clone onto the rewritten default branch |
 | `test-history-rewrite.sh` | Tests every script in throwaway repositories, without contacting GitHub |
+
+## Known limits
+
+- Every commit gets a new hash, so links to commits point to the old ones, which pull request pages keep showing with the old identities.
+- Commits that GitHub or someone else committed lose their signature for good; only your own are signed again.
+- GitHub counts each rewritten commit as a new contribution, until GitHub Support rebuilds the counts.
+- Other clones must not push before `reset-clone.sh` has moved them, or the old history comes back.

@@ -2,9 +2,13 @@
 
 How to replay a GitHub repository into a new, empty one with the scripts of this folder, for the owner of both: every commit, issue, pull request, comment, review and label of the source, reviews as comments, and its tags and releases, with their assets, so that the target gets them under the same numbers, with mapped identities and typed titles. A repository is replayed into a new one, rather than rewritten in place, replayed into the same one or forked, since a rewrite in place leaves the pull requests showing the old commits with the old identities and needs a force push of the default branch, a replay into the same one leaves each replayed pull request beside its original under a new number, and a fork can have [its own issues and pull requests](https://docs.github.com/en/pull-requests/reference/forks), and the source's, which that page does not say a fork copies, stay in the source ([#3](https://github.com/tiavelum/github-rewriter/issues/3#issuecomment-7170929265)).
 
-Planning reads the source and writes the replay as an event file; it changes nothing on GitHub. Running applies the event file to the target, after you confirm it, and can stop and resume. Comparing reads the source and the target and names every difference between them; it changes nothing either. `replay.py` takes these three steps in turn from one run file, with the steps around them, and is the way to run a replay; [Running the steps of a replay alone](../docs/replay/running-the-steps-alone.md) describes the steps it takes, which you can also run alone, and [Documents](#documents) lists what else is written about a replay. Each script takes its inputs as arguments; run without arguments, it prints its usage.
+## Getting started
 
-## What a replay needs
+These steps replay a repository into a new, empty one with `replay.py`, which compares the replay with its source.
+
+First clone this repository, as the first command of [Getting started](../README.md#getting-started) in the root README does.
+
+### What a replay needs
 
 Python 3.10 or later, git 2.31 or later, and the GitHub CLI `gh`, signed in with:
 
@@ -39,9 +43,9 @@ With a classic or OAuth token, `gh` lists [SSH signing keys only with the scope 
 gh auth refresh -s read:ssh_signing_key
 ```
 
-## Replaying with one command
+### Replaying with one command
 
-`replay.py` runs a whole replay from a run file: it mirrors and plans the source, asks you once to confirm, and then creates the target, replays the source into it, compares the two and moves the sub-issue links without further questions. It ends with the commands that give the replay the source's name, which stay yours to run. It runs the scripts of those steps as processes and needs what [What a replay needs](#what-a-replay-needs) gives. Since [GitHub adds a sub-issue only to a parent of the same repository owner](https://docs.github.com/en/rest/issues/sub-issues#add-sub-issue), `replay.py` stops before the confirmation where a parent of a source's issue, or a sub-issue from elsewhere, belongs to an owner other than the target's. GitHub refuses such a link whoever makes it, so move or remove these links in the source first, or replay with the scripts of those steps alone, which leave links alone, and leave these links out of the first move of [Taking over the source's name](#taking-over-the-sources-name).
+`replay.py` runs a whole replay from a run file: it mirrors and plans the source, asks you once to confirm, and then creates the target, replays the source into it, compares the two and moves the sub-issue links without further questions. It ends with the commands that give the replay the source's name, which stay yours to run. It runs the scripts of those steps as processes and needs what [What a replay needs](#what-a-replay-needs) gives. Since [GitHub adds a sub-issue only to a parent of the same repository owner](https://docs.github.com/en/rest/issues/sub-issues#add-sub-issue), `replay.py` stops before the confirmation where a parent of a source's issue, or a sub-issue from elsewhere, belongs to an owner other than the target's. GitHub refuses such a link whoever makes it, so move or remove these links in the source first, or replay with the scripts of those steps alone, which leave links alone, and leave these links out of the first move of [Taking over the source's name](../docs/replay/taking-over-the-sources-name.md).
 
 Write the run file first, outside any repository, since it holds the mailmap; `replay.py` stops where the run file lies in a git work tree. Its name ends in `.run.json`. For `tiavelum/github-rewriter`, in `~/github-rewriter.run.json`, with an invented identity:
 
@@ -100,8 +104,8 @@ It announces each of its eight steps as `Step <n> of 8`:
 4. **settings**: turns Actions off in the target, and the deletion of head branches on where the source has it on.
 5. **replay**: runs `run-replay.py` with `--pace`, `--final-name`, and `--sign` and `--with-times` where the run file sets them, and gives it your confirmation with `--confirmed`. Where GitHub has named the target's default branch other than the plan names it, as [What the target ends with](../docs/replay/what-a-replay-carries.md#what-the-target-ends-with) describes, it then makes the plan's the default branch, once the replay has pushed it, and before `run-replay.py` where a stopped replay pushed it already.
 6. **compare**: runs `compare-replay.py`, as [Comparing the replay with its source](../docs/replay/running-the-steps-alone.md#comparing-the-replay-with-its-source) describes, and stops at any difference.
-7. **links**: moves the sub-issue links, as [Taking over the source's name](#taking-over-the-sources-name) describes for a parent elsewhere. Where an issue of the source has sub-issues, the replayed issue gets them in the same order: the replayed ones for those of the source, and those from elsewhere moved over with `replace_parent`, the option of [Add sub-issue](https://docs.github.com/en/rest/issues/sub-issues#add-sub-issue) that replaces a sub-issue's current parent, so that they leave the source's issue.
-8. **commands**: prints what is left to you, with the commands of [Taking over the source's name](#taking-over-the-sources-name) for this replay.
+7. **links**: moves the sub-issue links, as [Taking over the source's name](../docs/replay/taking-over-the-sources-name.md) describes for a parent elsewhere. Where an issue of the source has sub-issues, the replayed issue gets them in the same order: the replayed ones for those of the source, and those from elsewhere moved over with `replace_parent`, the option of [Add sub-issue](https://docs.github.com/en/rest/issues/sub-issues#add-sub-issue) that replaces a sub-issue's current parent, so that they leave the source's issue.
+8. **commands**: prints what is left to you, with the commands of [Taking over the source's name](../docs/replay/taking-over-the-sources-name.md) for this replay.
 
 Before the first step it checks that the target does not exist yet. Between the plan and the creation it reads the sub-issue links, and stops where one crosses owners; then it lists what it will do and asks for the target's `owner/repo`; anything else stops it without a write to GitHub. Check in the list each repository other than the target that a link is written in and, below the steps, the kinds the run file turns off, such as `turned off in the run file: reviews; the replay carries none of them, and only the archive keeps them`. For the test's source, `ada-example/tool`, with a sub-issue link to an invented `ada-example/plans`, the list reads:
 
@@ -120,94 +124,21 @@ Replay ada-example/tool into ada-example/tool-replay-20261116-1215, to be rename
 Type ada-example/tool-replay-20261116-1215 to confirm:
 ```
 
-Step 8 prints, for this replay, the commands of [Taking over the source's name](#taking-over-the-sources-name) other than the moves of step 7, as four steps, each with what it does: the reads of what neither script sees in the source, the archive, the rename and the settings, Actions as the source has them, the fresh clone, and the run's files to delete; run them in their order. Above the commands of the archive, notes name an archive name `<repository>-archive` that is taken already, so that you give the archive another name in the first two commands; the default branch where the plan renamed it, so that you use `main` in the new clone; what only the archive keeps, the tags, releases and branches the plan left behind and each kind the run file turns off, as [What a replay leaves behind](../docs/replay/what-a-replay-carries.md#what-a-replay-leaves-behind) describes; and that GitHub did not say whether the source has Actions on, where it did not. It prints the line of secret scanning only where GitHub reports it for the source, which it does not for a private repository without [GitHub Secret Protection](https://docs.github.com/en/code-security/secret-scanning/introduction/about-secret-scanning). Where `final_name` is not the source, the first command only archives the source.
+Step 8 prints, for this replay, the commands of [Taking over the source's name](../docs/replay/taking-over-the-sources-name.md) other than the moves of step 7, as four steps, each with what it does: the reads of what neither script sees in the source, the archive, the rename and the settings, Actions as the source has them, the fresh clone, and the run's files to delete; run them in their order. Above the commands of the archive, notes name an archive name `<repository>-archive` that is taken already, so that you give the archive another name in the first two commands; the default branch where the plan renamed it, so that you use `main` in the new clone; what only the archive keeps, the tags, releases and branches the plan left behind and each kind the run file turns off, as [What a replay leaves behind](../docs/replay/what-a-replay-carries.md#what-a-replay-leaves-behind) describes; and that GitHub did not say whether the source has Actions on, where it did not. It prints the line of secret scanning only where GitHub reports it for the source, which it does not for a private repository without [GitHub Secret Protection](https://docs.github.com/en/code-security/secret-scanning/introduction/about-secret-scanning). Where `final_name` is not the source, the first command only archives the source.
 
-Where it stops, it names the step and says how to go on. A stop before the confirmation writes nothing to GitHub, and the next run starts over with a new mirror and event file; the stopped run's stay in `backup`. After the confirmation it keeps its progress in the progress file next to the run file, `~/github-rewriter.progress.json` for the run file above: the mirror, the event file and the steps done. Once you have removed the cause of the stop, run the same command again: it asks you to confirm again, skips the creation and the settings where they are done, lets `run-replay.py` resume where [Stopping and resuming](../docs/replay/stopping-and-resuming.md#stopping-and-resuming) says, compares again, and moves the links that are not moved yet. Ctrl-C reaches the script that runs, so in the replay step it stops `run-replay.py` as [Stopping and resuming](../docs/replay/stopping-and-resuming.md#stopping-and-resuming) says. A run file that changed after the confirmation stops it; undo the change to resume. Where the comparison finds a difference that you accept, take the remaining steps by hand, as the sections below describe them.
+Where it stops, it names the step and says how to go on. A stop before the confirmation writes nothing to GitHub, and the next run starts over with a new mirror and event file; the stopped run's stay in `backup`. After the confirmation it keeps its progress in the progress file next to the run file, `~/github-rewriter.progress.json` for the run file above: the mirror, the event file and the steps done. Once you have removed the cause of the stop, run the same command again: it asks you to confirm again, skips the creation and the settings where they are done, lets `run-replay.py` resume where [Stopping and resuming](../docs/replay/stopping-and-resuming.md#stopping-and-resuming) says, compares again, and moves the links that are not moved yet. Ctrl-C reaches the script that runs, so in the replay step it stops `run-replay.py` as [Stopping and resuming](../docs/replay/stopping-and-resuming.md#stopping-and-resuming) says. A run file that changed after the confirmation stops it; undo the change to resume. Where the comparison finds a difference that you accept, take the remaining steps by hand, as [Taking over the source's name](../docs/replay/taking-over-the-sources-name.md) describes them.
 
-## Taking over the source's name
+## Files
 
-Once the replay is checked, give it the source's name, so that links to the source's items reach the replayed ones under the same numbers. `replay.py` moves the sub-issue links itself and prints the other commands of this section for its replay; where you run the steps alone, take them all as follows.
+Planning reads the source and writes the replay as an event file; it changes nothing on GitHub. Running applies the event file to the target, after you confirm it, and can stop and resume. Comparing reads the source and the target and names every difference between them; it changes nothing either. `replay.py` takes these three steps in turn from one run file, with the steps around them, and is the way to run a replay; [Running the steps of a replay alone](../docs/replay/running-the-steps-alone.md) describes the steps it takes, which you can also run alone, and [Documentation](#documentation) lists what else is written about a replay. Each script takes its inputs as arguments; run without arguments, it prints its usage.
 
-First move what a replay does not carry and an archive no longer lets you change: where an item of the source is a sub-issue of an issue elsewhere, link the replayed item in its place and unlink the source's, since GitHub refuses to remove a sub-issue of an archived repository. For an item `N` of the source whose parent is `owner/other#P`, list the parent's sub-issues in their order, each with its id:
-
-```sh
-gh api --paginate repos/owner/other/issues/P/sub_issues --jq '.[] | "\(.id) \(.title)"'
-```
-
-Find the source's item in that list and note the id of the sub-issue just before it. If it is the first, note the id of the one after it; if it is the only one, skip the move. A new link lands at the end of the parent's list, so link the replayed item, move it, and unlink the source's item, with the id you noted in place of `3512345678`:
-
-```sh
-prev=3512345678
-id=$(gh api repos/tiavelum/mac-config-new/issues/N --jq .id)
-old=$(gh api repos/tiavelum/mac-config/issues/N --jq .id)
-gh api -X POST repos/owner/other/issues/P/sub_issues -F sub_issue_id=$id
-gh api -X PATCH repos/owner/other/issues/P/sub_issues/priority -F sub_issue_id=$id -F after_id=$prev
-gh api -X DELETE repos/owner/other/issues/P/sub_issue -F sub_issue_id=$old
-```
-
-For a first place, put the id of the following sub-issue in `next` and replace the PATCH line with:
-
-```sh
-next=3512345678
-gh api -X PATCH repos/owner/other/issues/P/sub_issues/priority -F sub_issue_id=$id -F before_id=$next
-```
-
-List the parent's sub-issues again with the first command: the replayed item stands where the source's item stood. [GitHub's REST API for sub-issues](https://docs.github.com/en/rest/issues/sub-issues) names `after_id` and `before_id` for the place and asks for the Issues repository permission with write access in the parent's repository for the three changing calls.
-
-Before the archive and rename, read what neither script reads in the source, and carry over by hand what these show: a count other than 0, or a collaborator other than you:
-
-```sh
-gh api repos/tiavelum/git-alias-map/actions/secrets --jq .total_count
-gh api repos/tiavelum/git-alias-map/actions/variables --jq .total_count
-gh api repos/tiavelum/git-alias-map/hooks --jq length
-gh api repos/tiavelum/git-alias-map/keys --jq length
-gh api repos/tiavelum/git-alias-map/collaborators --jq '.[].login'
-```
-
-Then archive the source under a new name first, since its issues, pull requests and comments exist nowhere else, then rename the replay; for `tiavelum/mac-config` replayed into `tiavelum/mac-config-new`:
-
-```sh
-gh api -X PATCH repos/tiavelum/mac-config -f name=mac-config-archive
-gh api -X PATCH repos/tiavelum/mac-config-archive -F archived=true
-gh api -X PATCH repos/tiavelum/mac-config-new -f name=mac-config
-```
-
-[GitHub redirects a renamed repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/renaming-a-repository) until another repository takes its old name, so the third command ends the redirect from `mac-config` to the archive. For the same reason, run such a replay with `--final-name tiavelum/mac-config`, so that the links its squash messages end in name the repository the replay becomes, not `mac-config-new`.
-
-Then give the replay the settings of the source, such as its merge methods, wiki and description, and turn Actions on again. These commands show the source's settings, then turn Actions on, merge commits off and the description empty, as for `tiavelum/mac-config`, whose source allowed no merge commits and had no description:
-
-```sh
-gh api repos/tiavelum/mac-config-archive --jq '{description, allow_merge_commit, allow_squash_merge, allow_rebase_merge, delete_branch_on_merge, has_wiki, has_projects, has_discussions, visibility, security_and_analysis}'
-gh api -X PUT repos/tiavelum/mac-config/actions/permissions -F enabled=true
-gh api -X PATCH repos/tiavelum/mac-config -F allow_merge_commit=false -f description=
-```
-
-[Update a repository](https://docs.github.com/en/rest/repos/repos#update-a-repository) does not list `has_discussions` among its body parameters, so check after the command that the replay has the source's, with `gh api repos/tiavelum/mac-config --jq .has_discussions`.
-
-Where the source is public and you created the replay private, so that nobody sees it before it is checked, make it public; for `tiavelum/git-alias-map`:
-
-```sh
-gh api -X PATCH repos/tiavelum/git-alias-map -f visibility=public
-```
-
-Then, where the source has secret scanning and push protection on, as its `security_and_analysis` shows, turn them on in the replay, as [Update a repository](https://docs.github.com/en/rest/repos/repos#update-a-repository) takes them:
-
-```sh
-gh api -X PATCH repos/tiavelum/git-alias-map -f 'security_and_analysis[secret_scanning][status]=enabled' -f 'security_and_analysis[secret_scanning_push_protection][status]=enabled'
-```
-
-Delete each branch of the replay that the source no longer has, such as the branch of a pull request the source closed unmerged and whose branch it deleted:
-
-```sh
-gh api -X DELETE repos/tiavelum/mac-config/git/refs/heads/feat/192-log-date
-```
-
-Then replace your local clone of the source with a fresh clone of the replay at the same path, since their histories differ; these show what the old clone holds uncommitted, keep it in `~/vc/git-alias-map-old` for you to delete, and clone the replay; where `~/vc/git-alias-map-old` exists already, remove or rename it first, since `mv` would move the old clone into it:
-
-```sh
-test ! -d ~/vc/git-alias-map || { git -C ~/vc/git-alias-map status --short; mv ~/vc/git-alias-map ~/vc/git-alias-map-old; }
-gh repo clone tiavelum/git-alias-map ~/vc/git-alias-map
-```
+| File | Step |
+|---|---|
+| `replay.py` | Runs a whole replay from a run file: mirrors, plans, creates and sets up the target, replays, compares, moves the sub-issue links and prints the commands that give the replay the source's name |
+| `plan-replay.py` | Reads the source from a mirror and from GitHub and writes the event file |
+| `run-replay.py` | Applies the event file to an empty target, the assets of its releases downloaded from the source, and keeps the state file, so that a stopped run resumes |
+| `compare-replay.py` | Compares the finished target with the source, the event file and the state file, read-only, and names every difference |
+| `tests/` | The pytest suite that tests the scripts of this folder, as processes, against a source built in a temporary folder and fake `gh` scripts for the source and the targets, without contacting GitHub, with its fixtures, the fakes and the pinned requirements; `--basetemp <folder>` keeps the folder it builds them in |
 
 ## Known limits
 
@@ -221,21 +152,12 @@ gh repo clone tiavelum/git-alias-map ~/vc/git-alias-map
 - A draft pull request of the source is created as a draft in the target, which the replay creates private, and [Create a pull request](https://docs.github.com/en/rest/pulls/pulls#create-a-pull-request) says that drafts are available in private repositories only with GitHub Team and GitHub Enterprise Cloud. For an account on GitHub Free or Pro, the run therefore likely stops at the first draft, after the events before it are written, unless GitHub creates it as ready instead; neither is verified, since it needs a replay into such an account ([#89](https://github.com/tiavelum/github-rewriter/issues/89)). Before planning such a replay, mark each draft pull request of the source ready for review, which changes the source, so that the replay carries it as ready.
 - A source whose default branch is neither `main` nor `master`, such as `develop`, has not been replayed on GitHub yet, nor has a replay for an account that [has set another name for its new repositories](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/managing-repository-settings/managing-the-default-branch-name-for-your-repositories). Since [GitHub names the default branch `main` in any new repository by default](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/proposing-changes-to-your-work-with-pull-requests/about-branches), it then names the target's default branch other than the plan does, and [Changing the default branch](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-branches-in-your-repository/changing-the-default-branch) says that "your repository must have more than one branch" to change it, so how GitHub takes the first push of the plan's branch into the empty target, and whether it lets `replay.py` set that branch as the default in step 5, once the replay has pushed it, are open until a trial settles them ([#131](https://github.com/tiavelum/github-rewriter/issues/131)); `run-replay.py` checks the default branch only once the target has a branch. Where GitHub refuses, `replay.py` stops in step 5 at every run: set the default branch on GitHub by hand, as an administrator of the target, once it has more than one branch, then run the same command again. A source whose default branch is `master` was replayed on GitHub on 25 Nov 2026 and compared without a difference ([#83](https://github.com/tiavelum/github-rewriter/issues/83)).
 
-## Documents
+## Documentation
 
 | Document | Answers |
 |---|---|
+| [Taking over the source's name](../docs/replay/taking-over-the-sources-name.md) | How do I give a checked replay the source's name, with the commands `replay.py` prints at its end or without `replay.py`? |
 | [Running the steps of a replay alone](../docs/replay/running-the-steps-alone.md) | How do I plan a replay, run it and compare its result one script at a time, and what do I check in what each prints? |
 | [What a replay carries](../docs/replay/what-a-replay-carries.md) | What does the target end with, what stays with the archive of the source, and how are titles typed and pull requests merged? |
 | [Stopping and resuming](../docs/replay/stopping-and-resuming.md) | Where does a run stop, and how does it resume? |
 | [The event file and the state file](../docs/replay/file-formats.md) | What do the files hold that the scripts write? |
-
-## Files
-
-| File | Step |
-|---|---|
-| `replay.py` | Runs a whole replay from a run file: mirrors, plans, creates and sets up the target, replays, compares, moves the sub-issue links and prints the commands that give the replay the source's name |
-| `plan-replay.py` | Reads the source from a mirror and from GitHub and writes the event file |
-| `run-replay.py` | Applies the event file to an empty target, the assets of its releases downloaded from the source, and keeps the state file, so that a stopped run resumes |
-| `compare-replay.py` | Compares the finished target with the source, the event file and the state file, read-only, and names every difference |
-| `tests/` | The pytest suite that tests the scripts of this folder, as processes, against a source built in a temporary folder and fake `gh` scripts for the source and the targets, without contacting GitHub, with its fixtures, the fakes and the pinned requirements; `--basetemp <folder>` keeps the folder it builds them in |
