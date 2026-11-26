@@ -27,7 +27,15 @@ Reads GitHub through gh api with GET requests only, and the target's commits
 with git fetch into a temporary repository that borrows the mirror's objects.
 Prints the totals, any notes and every difference; exits with 1 where there
 is a difference, with 0 where there is none, and with 2 where it cannot
-compare.
+compare, as where the state file records the replay unfinished or belongs to
+another event file or target. The notes, which are no differences, name the
+renamed default branch, who authored the merges, each branch the target
+keeps that the source no longer has, each tag, release and branch the plan
+left behind or turned off, and an event file planned before its header
+recorded what it leaves behind, which then accepts nothing as left behind.
+
+It cannot see the source's secrets, variables, webhooks, deploy keys and
+collaborators; check those yourself before the source is archived.
 """
 
 import bisect

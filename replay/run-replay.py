@@ -19,12 +19,16 @@ Checks that the mirror holds every tree of the event file and that GitHub
 answers for the target under the name given, so that a renamed target stops
 it, then prints the totals and asks for <owner/repo> to be typed before the
 first write; anything else stops without writing. --confirmed gives that answer
-instead, for replay.py, which asked for it before it started this run.
+instead, for replay.py, which asked for it before it started this run. It
+then prints one line per event, and at the end what it did and the target's
+URL; with --sign, the totals count the commits and tags it signs and name the
+key, and each line of a push or a tag says what it signed.
 Writes to GitHub through gh api and git push only, at least --pace seconds
 apart (default 1, the pause GitHub advises between mutative requests), and
-waits out GitHub's rate limits: the seconds of retry-after, else until
-x-ratelimit-reset where x-ratelimit-remaining is 0, else a minute, doubled at
-each of at most 5 retries of the same call; tags it creates in the
+waits out GitHub's rate limits, an answer 403 or 429: the seconds of
+retry-after, else until x-ratelimit-reset where x-ratelimit-remaining is 0,
+else a minute, doubled at each of at most 5 retries of the same call; tags it
+creates in the
 work repository and pushes. Each release it creates as a draft; its assets
 it downloads from the source into the folder next to the state file, with
 .downloads for .state.json, and uploads to the draft, each download removed

@@ -24,7 +24,8 @@ name it; texts that name master stay as they are. A source with a branch main
 beside its default branch master stops the plan.
 
 The plan also stops, and writes no event file, where a merged pull request
-was merged into a branch other than the default branch, where the mirror
+was merged into a branch other than the default branch or by a commit off
+its first-parent line, where the mirror
 lacks a pull request's head, where a pull request's branch merges a commit
 that is neither on the first-parent line of the default branch nor on the
 branch of a pull request, and where the number order and the order of the
