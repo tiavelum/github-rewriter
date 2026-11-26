@@ -15,6 +15,7 @@ from conftest import (
     has_search,
     has_text,
     lines,
+    run,
 )
 
 
@@ -228,6 +229,37 @@ def test_deletes_each_of_githubs_labels_the_source_lacks_names_with_spaces_inclu
 def test_gives_a_pull_request_its_labels_and_assignees_through_the_issues_endpoint(waits):
     pull = waits.target.load("items", {})["3"]
     assert (pull["kind"], pull["labels"], pull["assignees"]) == ("pull", ["bug"], ["ada-example"])
+
+
+def test_the_fake_links_a_sub_issue_only_to_a_parent_of_the_same_owner(
+    root, target_env, make_target
+):
+    # No replay reaches this refusal, since replay.py stops at such a link before its first
+    # write; this test keeps the fake's answer as GitHub's for a replay that would.
+    target = make_target("gh-owners")
+    issue = {"kind": "issue", "title": "Parent", "body": "", "state": "open"}
+    issue.update(state_reason=None, labels=[], assignees=[])
+    (target.folder / "items.json").write_text(json.dumps({"1": {"number": 1, **issue}}))
+    api = root / "api-owners"
+    api.mkdir()
+    for owner, child in (("ada-example", 9001), ("bob-example", 9002)):
+        entries = [{"number": 1, "id": child, "title": "Child", "state": "open"}]
+        (api / f"repos_{owner}_other_issues-1.json").write_text(json.dumps(entries))
+    env = {**target_env, "FAKE_GITHUB": str(target.folder), "FAKE_GH_API": str(api)}
+    endpoint = f"repos/{TOOL_NEW}/issues/1/sub_issues"
+    answers = {
+        child: run(
+            ["gh", "api", "-X", "POST", endpoint, "--input", "-"],
+            env,
+            root,
+            stdin=json.dumps({"sub_issue_id": child}),
+            merged=True,
+        )
+        for child in (9001, 9002)
+    }
+    assert answers[9001].status == 0, answers[9001].out
+    assert answers[9002].status != 0, answers[9002].out
+    assert "HTTP 422" in answers[9002].out, answers[9002].out
 
 
 def test_waits_out_a_rate_limit_as_retry_after_tells_and_retries_the_same_call(

@@ -15,8 +15,9 @@ FAKE_GH_LAG         a list whose first non-empty answer lacks its highest-number
                     every pull request
 FAKE_GH_LOGIN       the login of the account, the owner of user/repos; ada-example where unset
 FAKE_GH_LOSE        a call it does and then answers 502, as when the answer is lost
-FAKE_GH_NOT_MERGEABLE  a merge it answers 405, doing nothing, as while GitHub computes whether
-                    the pull request merges
+FAKE_GH_NOT_MERGEABLE  a merge it answers 405, doing nothing, as run-replay.py expects while
+                    GitHub computes whether the pull request merges, which GitHub's pages
+                    do not describe
 FAKE_GH_NO_SCOPE    where set, a call of user/... answers 404, as to a token without the scope
 FAKE_GH_PRIMARY_LIMIT  a call it answers 403 with x-ratelimit-remaining 0 and a reset a second
                     later, doing nothing
@@ -24,8 +25,9 @@ FAKE_GH_RATE_LIMIT  a call it answers 403 with Retry-After: 1, doing nothing
 FAKE_GH_SKIP        the number an issue someone else creates takes, just before the next item
 FAKE_GH_TOO_MANY    a call it answers 429 with Retry-After: 1, doing nothing; a 429 without it,
                     which run-replay.py waits a minute for, runs in no test
-FAKE_GH_UNSEEN      a call it answers 422, doing nothing, as when GitHub does not see a branch
-                    pushed just before
+FAKE_GH_UNSEEN      a call it answers 422, doing nothing, as run-replay.py expects where GitHub
+                    does not see a branch pushed just before, which GitHub's pages do not
+                    describe
 
 The files and folders of $FAKE_GITHUB:
 
@@ -204,7 +206,7 @@ def merge(it, body, items, closes):
     closes.append([it["number"], None])
     # GitHub interprets closing keywords only in a pull request into the default branch; the
     # fake closes for any base, since plan-replay.py stops at a merge into another branch, so
-    # no replay merges one.
+    # no replay merges one; it follows GitHub here once plan-replay.py plans such a merge.
     for n in CLOSING.findall(it["body"] + "\n" + message):
         named = items.get(n)
         if named and named["kind"] == "issue":
@@ -406,6 +408,7 @@ def upload_asset(path, q, call):
         }
     # GitHub renames some names on upload without saying to what, so the fake keeps each name
     # until a trial on GitHub (#129) shows what a renamed one becomes.
+
     # An empty asset in the state starter, as GitHub's page says an upstream failure may leave.
     half = once("FAKE_GH_HALF", call)
     data = b"" if half else upload_data

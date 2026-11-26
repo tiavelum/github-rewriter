@@ -625,7 +625,8 @@ def run_plan(root, source, api, plan, source_gh):
 
 
 # Two of the ten labels GitHub gives a new repository, so that the lines the checks read of
-# the labels the run updates and deletes stay short; GITHUB_LABELS holds all ten.
+# the labels the run updates and deletes stay short; GITHUB_LABELS holds all ten. A target
+# gets all ten by default once no check compares those lines whole.
 NEW_LABELS = (
     '[{"name": "bug", "color": "ee0701", "description": "Something is wrong"},\n'
     '      {"name": "enhancement", "color": "a2eeef", "description": "New feature or request"}]\n'
