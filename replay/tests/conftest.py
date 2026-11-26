@@ -887,10 +887,10 @@ def again(root, source, run_plan, replay_uninterrupted, replay):
     )
 
 
+# After again, so that lag.writes == again.writes_before shows that neither wrote anything.
 @pytest.fixture(scope="session")
 def lag(source, run_plan, replay_uninterrupted, replay, again):
     """A run into the finished uninterrupted replay whose first list of issues lags behind."""
-    # Asks for again, so that it runs after the runs of again.
     target = replay_uninterrupted.target
 
     def reads(n):
@@ -1267,6 +1267,7 @@ def compare(root, target_env):
     return compare
 
 
+# After lag and final_name_again, so that the comparisons and the refused file cover their runs.
 @pytest.fixture(scope="session")
 def compare_finished(
     source, run_plan, replay_uninterrupted, replay_final_name, lag, final_name_again, compare
