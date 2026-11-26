@@ -1,19 +1,7 @@
 #!/bin/sh
-# Tests the scripts of this folder in throwaway repositories, one of which
-# plays the original on GitHub.
-#
-#   sh ~/vc/github-rewriter/rewrite/test-history-rewrite.sh
-#
-# It needs git filter-repo and skips everything without it. The
-# repositories live in a temporary folder that is deleted at the end; KEEP=1
-# keeps it. Your own ~/.gitconfig is not read, and nothing is pushed
-# anywhere but to the temporary folder. GitHub is never contacted: an
-# original given as a path has no rulesets.
-#
-# Each check is a condition in single quotes that check() evaluates later,
-# so the variables in it expand only then, and shellcheck sees them neither
-# expanded (SC2016) nor used (SC2034).
-# shellcheck disable=SC2016,SC2034
+# KEEP=1 keeps the temporary folder of the repositories.
+# GitHub is never contacted: an original given as a path has no rulesets.
+# shellcheck disable=SC2016,SC2034 # check() evaluates each check's quoted variables only later
 
 set -u
 
@@ -58,16 +46,12 @@ check() {
   fi
 }
 q() { "$@" >/dev/null 2>&1; }
-# commit <message> <name> <email> <date>: an empty commit by that identity,
-# as author and committer, on that date.
 commit() {
   GIT_AUTHOR_NAME=$2 GIT_AUTHOR_EMAIL=$3 GIT_AUTHOR_DATE=$4 \
     GIT_COMMITTER_NAME=$2 GIT_COMMITTER_EMAIL=$3 GIT_COMMITTER_DATE=$4 \
     git commit -q --allow-empty -m "$1"
 }
 
-# The original, as on GitHub, with a main and a feature branch, and the
-# maintainer's clone of it.
 git init -q --bare "$T/tool.git"
 q git clone "$T/tool.git" "$T/work"
 cd "$T/work" || exit 2
@@ -132,7 +116,6 @@ check "reset-clone.sh moves the clone onto the rewritten default branch" \
 check "reset-clone.sh makes the branch track origin and lists the branches" \
   '[ "$(git -C "$T/work" rev-parse --abbrev-ref "main@{upstream}")" = origin/main ] && printf "%s\n" "$out" | grep -q "feature"'
 
-# Signing: an original with a merge, where GitHub committed one commit.
 if command -v ssh-keygen >/dev/null 2>&1; then
   git init -q --bare "$T/signed.git"
   q git clone "$T/signed.git" "$T/sign-work"
@@ -166,7 +149,6 @@ if command -v ssh-keygen >/dev/null 2>&1; then
   check "compare-rewrite.sh passes a signed history" \
     '"$here/compare-rewrite.sh" "$T/signing"'
 
-  # One pass: rewrite, then sign the same folder before anything is pushed.
   printf '%s\n' 'New <new@example.com> <me@example.com>' >"$T/mailmap-sign"
   q "$here/rewrite-identities.sh" "$T/signed.git" "$T/mailmap-sign" "$T/one-pass"
   out=$("$here/sign-commits.sh" "$T/one-pass" new@example.com 2>&1)
