@@ -15,20 +15,28 @@ file is <event file> with .state.json for .jsonl unless --state names one;
 the work repository that holds the recreated commits lies next to it, with
 .work.git for .state.json.
 
-Prints the totals and asks for <owner/repo> to be typed before the first
-write; anything else stops without writing. --confirmed gives that answer
+Checks that the mirror holds every tree of the event file and that GitHub
+answers for the target under the name given, so that a renamed target stops
+it, then prints the totals and asks for <owner/repo> to be typed before the
+first write; anything else stops without writing. --confirmed gives that answer
 instead, for replay.py, which asked for it before it started this run.
 Writes to GitHub through gh api and git push only, at least --pace seconds
-apart (default 1), and waits out GitHub's rate limits; tags it creates in the
+apart (default 1, the pause GitHub advises between mutative requests), and
+waits out GitHub's rate limits: the seconds of retry-after, else until
+x-ratelimit-reset where x-ratelimit-remaining is 0, else a minute, doubled at
+each of at most 5 retries of the same call; tags it creates in the
 work repository and pushes. Each release it creates as a draft; its assets
 it downloads from the source into the folder next to the state file, with
 .downloads for .state.json, and uploads to the draft, each download removed
 once uploaded; then it publishes the release where the source has it
 published. --with-times appends the original creation time to each body and
-comment. --sign signs each recreated commit whose committer
+comment, as "_Originally created 2026-03-01 11:00 UTC._" after a blank line,
+and to a release's body the time of its publication, or for a draft its
+created_at. --sign signs each recreated commit whose committer
 has <address>, and each annotated tag whose tagger has it, with the signing
 key of your git configuration, after checking that GitHub knows the key as
-a signing key. --final-name fills {pr_url} in squash messages with the URL
+a signing key; the others stay unsigned, since only their committer or tagger
+holds their key. --final-name fills {pr_url} in squash messages with the URL
 under the name the target will finally carry.
 """
 

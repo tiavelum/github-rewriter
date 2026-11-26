@@ -4,9 +4,44 @@ How to replay a GitHub repository into a new, empty one with the scripts of this
 
 Planning reads the source and writes the replay as an event file; it changes nothing on GitHub. Running applies the event file to the target, after you confirm it, and can stop and resume. Comparing reads the source and the target and names every difference between them; it changes nothing either. `replay.py` takes these three steps in turn from one run file, with the steps around them, and is the way to run a replay; [Running the steps of a replay alone](../docs/replay/running-the-steps-alone.md) describes the steps it takes, which you can also run alone, and [Documents](#documents) lists what else is written about a replay. Each script takes its inputs as arguments; run without arguments, it prints its usage.
 
+## What a replay needs
+
+Python 3.10 or later, git 2.31 or later, and the GitHub CLI `gh`, signed in with:
+
+- read access to the source and, where the source has draft releases, push access to it, since GitHub [lists draft releases only to users with push access](https://docs.github.com/en/rest/releases/releases#list-releases); a classic token has that access with the scope [`repo`](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/scopes-for-oauth-apps), which "grants full access to public and private repositories", where your account can push to the source. Without it, the plan sees no draft, and the comparison names each draft the event file carries as one the source lacks; the run reads the source's releases and their assets the same way.
+- the right to push to the target, to create its issues, pull requests, comments, labels and releases and upload their assets, to merge its pull requests and to change its settings.
+- for `replay.py`, which creates the target, the right to create a repository for the target's owner, which for [a repository of your account](https://docs.github.com/en/rest/repos/repos#create-a-repository-for-the-authenticated-user) a classic token has with the scope `repo` and a fine-grained one with the repository permission "Administration" or "Repository creation" set to write, and which for [a repository of an organisation](https://docs.github.com/en/rest/repos/repos#create-an-organization-repository) only a member of it has; and, where the source's issues have sub-issue links, the repository permission "Issues" set to write in the repository of each parent, which [Add sub-issue](https://docs.github.com/en/rest/issues/sub-issues#add-sub-issue) asks for.
+- the scope `workflow`, which GitHub asks for to [create a release](https://docs.github.com/en/rest/releases/releases#create-a-release) whose commit adds or modifies a file under `.github/workflows/`, where a release of the source stands on such a commit.
+
+Add the scope `workflow` with:
+
+```sh
+gh auth refresh -s workflow
+```
+
+The run and the comparison reach the target with `git push` and `git fetch` over the protocol `gh config get git_protocol` names, and ask git for no password, so that protocol has to work without one: where git reaches GitHub over SSH, set it with:
+
+```sh
+gh config set git_protocol ssh
+```
+
+Otherwise the run stops in its first check, before any write, at `could not read Username for 'https://github.com': terminal prompts disabled`.
+
+To sign your recreated commits, with `sign` in a run file or `--sign` of `run-replay.py`, your git configuration needs a `user.signingkey`, with `gpg.format` `ssh` or `openpgp`, the default. For an SSH key, it needs `ssh-keygen` and, since [SSH signing is available in Git 2.34 or later](https://docs.github.com/en/authentication/managing-commit-signature-verification/about-commit-signature-verification), git 2.34 or later; a key with a passphrase has to be in the agent. GitHub [verifies a signature against a public key you have added to your account](https://docs.github.com/en/authentication/managing-commit-signature-verification/about-commit-signature-verification), so the run checks that GitHub lists the key, and stops where it does not. Add an SSH key as a signing key, here `~/.ssh/id_ed25519.pub`, with:
+
+```sh
+gh ssh-key add ~/.ssh/id_ed25519.pub --type signing
+```
+
+With a classic or OAuth token, `gh` lists [SSH signing keys only with the scope `read:ssh_signing_key`](https://docs.github.com/en/rest/users/ssh-signing-keys#list-ssh-signing-keys-for-the-authenticated-user) and [GPG keys only with `read:gpg_key`](https://docs.github.com/en/rest/users/gpg-keys#list-gpg-keys-for-the-authenticated-user); a fine-grained token needs the user permission "SSH signing keys" or "GPG keys" set to read. Where it lacks the one your key needs, the run names it and stops. Add the scope with:
+
+```sh
+gh auth refresh -s read:ssh_signing_key
+```
+
 ## Replaying with one command
 
-`replay.py` runs a whole replay from a run file: it mirrors and plans the source, asks you once to confirm, and then creates the target, replays the source into it, compares the two and moves the sub-issue links without further questions. It ends with the commands that give the replay the source's name, which stay yours to run. It runs the scripts of those steps as processes, so it needs what [Planning a replay](../docs/replay/running-the-steps-alone.md#planning-a-replay) and [Running a replay](../docs/replay/running-the-steps-alone.md#running-a-replay) require, the git protocol and, with `sign`, the signing key among them. Its `gh` also needs the right to create a repository for the target's owner, which for [a repository of your account](https://docs.github.com/en/rest/repos/repos#create-a-repository-for-the-authenticated-user) a classic token has with the scope `repo` and a fine-grained one with the repository permission "Administration" or "Repository creation" set to write, and which for [a repository of an organisation](https://docs.github.com/en/rest/repos/repos#create-an-organization-repository) only a member of it has. It also needs the right to change the target's settings and, where the source's issues have sub-issue links, the repository permission "Issues" set to write in the repository of each parent, which [Add sub-issue](https://docs.github.com/en/rest/issues/sub-issues#add-sub-issue) asks for. Since [GitHub adds a sub-issue only to a parent of the same repository owner](https://docs.github.com/en/rest/issues/sub-issues#add-sub-issue), `replay.py` stops before the confirmation where a parent of a source's issue, or a sub-issue from elsewhere, belongs to an owner other than the target's. GitHub refuses such a link whoever makes it, so move or remove these links in the source first, or replay with the scripts of those steps alone, which leave links alone, and leave these links out of the first move of [Taking over the source's name](#taking-over-the-sources-name).
+`replay.py` runs a whole replay from a run file: it mirrors and plans the source, asks you once to confirm, and then creates the target, replays the source into it, compares the two and moves the sub-issue links without further questions. It ends with the commands that give the replay the source's name, which stay yours to run. It runs the scripts of those steps as processes and needs what [What a replay needs](#what-a-replay-needs) gives. Since [GitHub adds a sub-issue only to a parent of the same repository owner](https://docs.github.com/en/rest/issues/sub-issues#add-sub-issue), `replay.py` stops before the confirmation where a parent of a source's issue, or a sub-issue from elsewhere, belongs to an owner other than the target's. GitHub refuses such a link whoever makes it, so move or remove these links in the source first, or replay with the scripts of those steps alone, which leave links alone, and leave these links out of the first move of [Taking over the source's name](#taking-over-the-sources-name).
 
 Write the run file first, outside any repository, since it holds the mailmap; `replay.py` stops where the run file lies in a git work tree. Its name ends in `.run.json`. For `tiavelum/github-rewriter`, in `~/github-rewriter.run.json`, with an invented identity:
 
@@ -37,7 +72,7 @@ Write the run file first, outside any repository, since it holds the mailmap; `r
 | `sign` | The address of `--sign` | `null`, nothing signed |
 | `keep_merges` | Whether the plan has `--keep-merges` | `false` |
 | `no_types` | Whether the plan has `--no-types` | `false` |
-| `no_tags` | Whether the plan has `--no-tags`, which needs `no_releases`, as [Planning a replay](../docs/replay/running-the-steps-alone.md#planning-a-replay) explains | `false` |
+| `no_tags` | Whether the plan has `--no-tags`, which needs `no_releases`, as the usage text of `plan-replay.py` explains | `false` |
 | `no_releases` | Whether the plan has `--no-releases` | `false` |
 | `no_reviews` | Whether the plan has `--no-reviews` | `false` |
 | `with_times` | Whether the run and the comparison have `--with-times` | `false` |
@@ -45,7 +80,7 @@ Write the run file first, outside any repository, since it holds the mailmap; `r
 | `backup` | The folder of the mirror, the event file, the state file and the work repository | `~/vc-backup` |
 | `clone_url` | The URL `backup-mirror.sh` clones the source from | `git@github.com:<source>.git` |
 
-A field it does not know stops it, as does a value of the wrong kind and `no_tags` without `no_releases`, before it reads or writes anything. Before the run, bring your clone of this repository up to date with [`git pull --ff-only`](https://git-scm.com/docs/git-pull), and show with [`gh config get`](https://cli.github.com/manual/gh_config_get) the protocol `gh` is set to, which [Running a replay](../docs/replay/running-the-steps-alone.md#running-a-replay) says has to work without a password:
+A field it does not know stops it, as does a value of the wrong kind and `no_tags` without `no_releases`, before it reads or writes anything. Before the run, bring your clone of this repository up to date with [`git pull --ff-only`](https://git-scm.com/docs/git-pull), and show with [`gh config get`](https://cli.github.com/manual/gh_config_get) the protocol `gh` is set to, which [What a replay needs](#what-a-replay-needs) says has to work without a password:
 
 ```sh
 git -C ~/vc/github-rewriter pull --ff-only && gh config get git_protocol
@@ -215,7 +250,7 @@ gh repo clone tiavelum/git-alias-map ~/vc/git-alias-map
 ## Known limits
 
 - Reactions, milestones and projects are not read. Reviews and their review comments become comments, as [What the target ends with](../docs/replay/what-a-replay-carries.md#what-the-target-ends-with) describes, so they are no longer attached to the diff, and the comparison checks a review's comment against the text the plan wrote and against the review's body, not its line comments, which it does not read again. A review with all its review comments can be longer than GitHub takes for a comment; the plan warns of one over 65'536 characters, the length [GitHub's community reports](https://github.community/t/maximum-length-for-the-comment-body-in-issues-and-pr/148867), since GitHub's REST documentation names none, and the run stops at it.
-- Branches without a pull request, and the tags and releases a replay cannot place, are not carried; the plan stops at each until it is accepted as left behind or its kind turned off, as [What a replay leaves behind](../docs/replay/what-a-replay-carries.md#what-a-replay-leaves-behind) describes. A plan without push access to the source sees no draft release, as [Planning a replay](../docs/replay/running-the-steps-alone.md#planning-a-replay) says. A release's reactions, its discussion and the download counts of its assets are not carried.
+- Branches without a pull request, and the tags and releases a replay cannot place, are not carried; the plan stops at each until it is accepted as left behind or its kind turned off, as [What a replay leaves behind](../docs/replay/what-a-replay-carries.md#what-a-replay-leaves-behind) describes. A plan without push access to the source sees no draft release, as [What a replay needs](#what-a-replay-needs) says. A release's reactions, its discussion and the download counts of its assets are not carried.
 - Releases have not been carried on GitHub yet. The run downloads an asset with `gh api` and `Accept: application/octet-stream`, to which GitHub [answers with the content or a redirect to it](https://docs.github.com/en/rest/releases/assets#get-a-release-asset), and relies on `gh` following that redirect, which gh 2.105.0 did in a read-only download from a public release, the file byte for byte as its `digest` names it; it uploads to the release's `upload_url`, on `uploads.github.com`, which [Upload a release asset](https://docs.github.com/en/rest/releases/assets#upload-a-release-asset) names, and relies on `gh api` taking that URL whole as its endpoint, which [its manual](https://cli.github.com/manual/gh_api) does not describe. The test's fake follows GitHub's documentation in both, so a trial with a source that has a release with an asset would settle them.
 - GitHub [renames asset filenames that have special characters, non-alphanumeric characters, and leading or trailing periods](https://docs.github.com/en/rest/releases/assets#upload-a-release-asset) on upload, and does not say what they become. The run uploads each asset under the name the source's list gives, which is the name GitHub made of it at its own upload, and takes that name to stay as it is; this is not verified. Where GitHub renames it again, the target's asset has another name: the run's check after the last event stops at `has the assets […], planned […]`, the comparison names the source's name as missing and the new one as one the source lacks, and a run resumed after a lost answer of that upload does not find the asset under its name, so it uploads it again, which GitHub refuses as a second asset of that name; the run then stops at that refusal each time until the asset is deleted in the target.
 - An unsigned tag whose message ends with a complete signature block pasted into its text, from an opening line such as `-----BEGIN PGP SIGNATURE-----` to its closing line, loses that block: the plan and the comparison cannot tell it by its text from a signature git appended, so both take it for one, and the run recreates the tag without it. A block inside the message, with text after it, stays.
@@ -229,7 +264,7 @@ gh repo clone tiavelum/git-alias-map ~/vc/git-alias-map
 
 | Document | Answers |
 |---|---|
-| [Running the steps of a replay alone](../docs/replay/running-the-steps-alone.md) | How do I plan a replay, run it and compare its result one script at a time, and what does each script need, take and print? |
+| [Running the steps of a replay alone](../docs/replay/running-the-steps-alone.md) | How do I plan a replay, run it and compare its result one script at a time, and what do I check in what each prints? |
 | [What a replay carries](../docs/replay/what-a-replay-carries.md) | What does the target end with, what stays with the archive of the source, and how are titles typed and pull requests merged? |
 | [Stopping and resuming](../docs/replay/stopping-and-resuming.md) | Where does a run stop, and how does it resume? |
 | [The event file and the state file](../docs/replay/file-formats.md) | What do the files hold that the scripts write? |
