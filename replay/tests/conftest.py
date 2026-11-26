@@ -624,10 +624,31 @@ def run_plan(root, source, api, plan, source_gh):
     return Planned(events, folder, result)
 
 
-# The labels GitHub gives a new repository.
+# Two of the ten labels GitHub gives a new repository, so that the lines the checks read of
+# the labels the run updates and deletes stay short; GITHUB_LABELS holds all ten.
 NEW_LABELS = (
     '[{"name": "bug", "color": "ee0701", "description": "Something is wrong"},\n'
     '      {"name": "enhancement", "color": "a2eeef", "description": "New feature or request"}]\n'
+)
+
+# The labels GitHub gives a new repository, as Managing labels lists them, with the colours and
+# descriptions GitHub gave them on 26 Nov 2026.
+GITHUB_LABELS = json.dumps(
+    [
+        {"name": name, "color": color, "description": description}
+        for name, color, description in (
+            ("accessibility", "f143ab", "Barrier affecting people with disabilities"),
+            ("bug", "d73a4a", "Something isn't working"),
+            ("documentation", "0075ca", "Improvements or additions to documentation"),
+            ("duplicate", "cfd3d7", "This issue or pull request already exists"),
+            ("enhancement", "a2eeef", "New feature or request"),
+            ("good first issue", "7057ff", "Good for newcomers"),
+            ("help wanted", "008672", "Extra attention is needed"),
+            ("invalid", "e4e669", "This doesn't seem right"),
+            ("question", "d876e3", "Further information is requested"),
+            ("wontfix", "ffffff", "This will not be worked on"),
+        )
+    ]
 )
 
 
@@ -754,14 +775,15 @@ def target_env(root, source_gh):
 
 @pytest.fixture(scope="session")
 def make_target(root, base_env):
-    """Makes an empty target, ada-example/tool-new by default, with GitHub's default labels."""
+    """Makes an empty target, ada-example/tool-new by default, with two or all of GitHub's
+    default labels."""
 
-    def make(name, slug="ada-example/tool-new"):
+    def make(name, slug="ada-example/tool-new", labels=NEW_LABELS):
         folder = root / name
         folder.mkdir()
         (folder / "name").write_text(slug + "\n", encoding="utf-8")
         Git(base_env, root)("init", "-q", "--bare", folder / "repo.git")
-        (folder / "labels.json").write_text(NEW_LABELS, encoding="utf-8")
+        (folder / "labels.json").write_text(labels, encoding="utf-8")
         return Target(folder, base_env)
 
     return make

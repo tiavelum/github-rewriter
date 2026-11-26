@@ -1,10 +1,21 @@
 import json
 import re
+import shutil
 from itertools import pairwise
 from types import SimpleNamespace
 
 import pytest
-from conftest import TOOL_NEW, TOOL_SOMEONE_ELSES_ISSUE, has_match, has_search, has_text, lines
+from conftest import (
+    API_BASE,
+    GITHUB_LABELS,
+    TOOL,
+    TOOL_NEW,
+    TOOL_SOMEONE_ELSES_ISSUE,
+    has_match,
+    has_search,
+    has_text,
+    lines,
+)
 
 
 def first_parent_trees(run_process, git_dir):
@@ -161,6 +172,62 @@ def test_creates_and_updates_the_planned_labels_deletes_the_others_and_labels_th
         ("docs", "0075ca", "Documentation"),
     ]
     assert (v.items[6]["labels"], v.items[6]["assignees"]) == (["bug", "docs"], ["ada-example"])
+
+
+@pytest.fixture(scope="module")
+def waits(root, source, run_plan, plan, source_gh, make_target, replay):
+    """A replay whose pull request #3 has a label and an assignee, into a target with GitHub's
+    ten labels, through a primary rate limit, a 429, a 422 after a push and a merge refused
+    while GitHub computes it."""
+    api = root / "api-waits"
+    shutil.copytree(run_plan.api, api)
+    for page in api.glob(f"{API_BASE}_issues-*.json"):
+        entries = json.loads(page.read_text(encoding="utf-8"))
+        for it in entries:
+            if it["number"] == 3:
+                it.update(labels=[{"name": "bug"}], assignees=[{"login": "ada-example"}])
+        page.write_text(json.dumps(entries), encoding="utf-8")
+    events = root / "waits.jsonl"
+    s = source
+    env = source_gh("waits-gh").using(FAKE_GH_API=api)
+    planned = plan("--types", s.types, s.mirror, TOOL, s.mailmap, events, env=env, merged=True)
+    assert planned.status == 0, planned.out
+    target = make_target("gh-waits", labels=GITHUB_LABELS)
+    state = root / "waits.state.json"
+    result = replay(
+        target,
+        TOOL_NEW,
+        *("--pace", "0", "--state", state, events, s.mirror, TOOL_NEW),
+        merged=True,
+        FAKE_GH_PRIMARY_LIMIT=f"POST repos/{TOOL_NEW}/issues",
+        FAKE_GH_TOO_MANY=f"POST repos/{TOOL_NEW}/issues/3/comments",
+        FAKE_GH_UNSEEN=f"POST repos/{TOOL_NEW}/pulls",
+        FAKE_GH_NOT_MERGEABLE=f"PUT repos/{TOOL_NEW}/pulls/2/merge",
+    )
+    return SimpleNamespace(target=target, result=result)
+
+
+def test_waits_out_each_answer_github_gives_while_it_limits_or_catches_up_and_finishes(waits):
+    r = waits.result
+    assert r.status == 0, r.out
+    for waited in (
+        rf"^      rate limited on POST repos/{TOOL_NEW}/issues; waiting [12] s before retry 1",
+        rf"^      rate limited on POST repos/{TOOL_NEW}/issues/3/comments; waiting 1 s before",
+        rf"^      HTTP 422 on POST repos/{TOOL_NEW}/pulls; waiting 3 s$",
+        rf"^      HTTP 405 on PUT repos/{TOOL_NEW}/pulls/2/merge; waiting 3 s$",
+    ):
+        assert has_search(waited, r.out_lines), f"no line {waited}\n{r.out}"
+
+
+def test_deletes_each_of_githubs_labels_the_source_lacks_names_with_spaces_included(waits):
+    assert sorted(x["name"] for x in waits.target.load("labels", [])) == ["bug", "docs"]
+    deleted = waits.target.calls()
+    assert any(c.endswith(f" DELETE repos/{TOOL_NEW}/labels/good%20first%20issue") for c in deleted)
+
+
+def test_gives_a_pull_request_its_labels_and_assignees_through_the_issues_endpoint(waits):
+    pull = waits.target.load("items", {})["3"]
+    assert (pull["kind"], pull["labels"], pull["assignees"]) == ("pull", ["bug"], ["ada-example"])
 
 
 def test_waits_out_a_rate_limit_as_retry_after_tells_and_retries_the_same_call(
