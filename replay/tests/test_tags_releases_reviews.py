@@ -1,6 +1,7 @@
 """The checks of the target's tags after a replay, of tags resumed after a
-stop, and of reviews carried as comments: TX, TK, TC, TP, TM and MS, and the
-plans and replays of the source with reviews, RV, RO, RT and NR."""
+stop, and of reviews carried as comments: changed, killed, pushed and
+missing tags and tag messages, and the plans and replays of the source with
+reviews."""
 
 import hashlib
 import json
@@ -12,7 +13,7 @@ import pytest
 from conftest import (
     API_BASE,
     TOOL,
-    TOOL_X,
+    TOOL_TAGS_RELEASES,
     Git,
     Planned,
     as_committer,
@@ -45,67 +46,72 @@ def tag_refs(run_process, target):
 def same_tags(run_process, uninterrupted, resumed):
     """Asserts that two targets hold the same tags, three in the first, by
     what git for-each-ref refs/tags/ prints of each."""
-    x, other = tag_refs(run_process, uninterrupted), tag_refs(run_process, resumed)
-    assert (x.status, other.status) == (0, 0), x.err + other.err
-    assert x.out.count("\n") == 3, x.out
-    assert x.out == other.out
+    first, other = tag_refs(run_process, uninterrupted), tag_refs(run_process, resumed)
+    assert (first.status, other.status) == (0, 0), first.err + other.err
+    assert first.out.count("\n") == 3, first.out
+    assert first.out == other.out
 
 
-# Tags: TX, a copy of X's target with v0.1 at another commit, v0.2 made anew
-# with another message, and v0.1.1 made lightweight, compared, and checked
-# again by run-replay.py from a copy of X's state file; TK, X's replay killed
-# by a hook of the target's repository right after it pushed v0.2, and
-# resumed; and TC, a copy of TK's target resumed from a state file that
-# records another tag object for v0.2, as a rebuild that differs would leave
-# it.
+# Tags: a copy of the target of the replay of tags and releases with v0.1 at
+# another commit, v0.2 made anew with another message, and v0.1.1 made
+# lightweight, compared, and checked again by run-replay.py from a copy of
+# the replay's state file; the same replay killed by a hook of the target's
+# repository right after it pushed v0.2, and resumed; and a copy of the
+# killed replay's target resumed from a state file that records another tag
+# object for v0.2, as a rebuild that differs would leave it.
 
 
 @pytest.fixture(scope="module")
-def changed_tags(root, base_env, extra_plan, mirror_extra, api_extra, replay_x, compare, replay):
-    """TX compared, and checked again by run-replay.py."""
-    target = copy_target(root, replay_x.target, "gh-tx")
-    state = root / "tx.state.json"
-    shutil.copyfile(replay_x.state, state)
-    git, tx = Git(base_env, root), ("--git-dir", target.repo)
-    git(*tx, "tag", "-f", "v0.1", "main")
+def changed_tags(
+    root, base_env, extra_plan, mirror_extra, api_extra, replay_tags_releases, compare, replay
+):
+    """The copy with changed tags compared, and checked again by run-replay.py."""
+    target = copy_target(root, replay_tags_releases.target, "gh-changed-tags")
+    state = root / "changed-tags.state.json"
+    shutil.copyfile(replay_tags_releases.state, state)
+    git, repo = Git(base_env, root), ("--git-dir", target.repo)
+    git(*repo, "tag", "-f", "v0.1", "main")
     git(
-        *(*tx, "tag", "-f", "-a", "-m", "Another message", "v0.2", "v0.2^{commit}"),
+        *(*repo, "tag", "-f", "-a", "-m", "Another message", "v0.2", "v0.2^{commit}"),
         env=as_committer(ADA, "1772888400 +0200"),
     )
-    git(*tx, "tag", "-f", "v0.1.1", "v0.1.1^{commit}")
-    tail = (extra_plan.file, mirror_extra, TOOL_X)
+    git(*repo, "tag", "-f", "v0.1.1", "v0.1.1^{commit}")
+    tail = (extra_plan.file, mirror_extra, TOOL_TAGS_RELEASES)
     compared = compare(target, "--state", state, *tail, api=api_extra)
-    again = replay(target, TOOL_X, "--pace", "0", "--state", state, *tail, merged=True)
+    again = replay(target, TOOL_TAGS_RELEASES, "--pace", "0", "--state", state, *tail, merged=True)
     return SimpleNamespace(target=target, state=state, compared=compared, again=again)
 
 
 @pytest.fixture(scope="module")
 def killed_tag(root, run_process, extra_plan, mirror_extra, make_target, replay):
-    """TK killed and resumed, the output of both runs in one, in the order
-    they ran; and TC, copied from TK after the kill, with its refs before its
-    run, and resumed."""
-    target = make_target("gh-tk", TOOL_X)
+    """The replay killed after its push of v0.2 and resumed, the output of
+    both runs in one, in the order they ran; and the copy with another tag
+    object, copied after the kill, with its refs before its run, and
+    resumed."""
+    target = make_target("gh-killed-tag", TOOL_TAGS_RELEASES)
     write_hook(target, "post-receive", kill_hook("refs/tags/v0.2"))
-    state = root / "tk.state.json"
-    tail = (extra_plan.file, mirror_extra, TOOL_X)
+    state = root / "killed-tag.state.json"
+    tail = (extra_plan.file, mirror_extra, TOOL_TAGS_RELEASES)
 
-    def tk_replay(target, state):
-        return replay(target, TOOL_X, "--pace", "0", "--state", state, *tail, merged=True)
+    def resume(target, state):
+        return replay(
+            target, TOOL_TAGS_RELEASES, "--pace", "0", "--state", state, *tail, merged=True
+        )
 
-    first = tk_replay(target, state)
+    first = resume(target, state)
     # The killed run's push goes on without it: time to end before the copy.
     time.sleep(1)
-    copy = copy_target(root, target, "gh-tc")
-    copy_state = root / "tc.state.json"
+    copy = copy_target(root, target, "gh-other-tag-object")
+    copy_state = root / "other-tag-object.state.json"
     recorded = json.loads(state.read_text(encoding="utf-8")) if state.exists() else {"tags": {}}
-    # Where the killed run saved no tag, no state file of TC is written, so
-    # that only the check of TC fails for it.
+    # Where the killed run saved no tag, no state file of the copy is
+    # written, so that only the check of the copy fails for it.
     if "v0.2" in recorded["tags"]:
         recorded["tags"]["v0.2"] = "0123456789abcdef0123456789abcdef01234567"
         copy_state.write_text(json.dumps(recorded), encoding="utf-8")
-    tc_refs = run_process("git", "--git-dir", copy.repo, "for-each-ref").out
-    second = tk_replay(target, state)
-    tc = tk_replay(copy, copy_state)
+    other_object_refs = run_process("git", "--git-dir", copy.repo, "for-each-ref").out
+    second = resume(target, state)
+    other_object = resume(copy, copy_state)
     # One text, the output of the second run right after that of the first: a
     # line the killed run left unended runs on into the second run's first line.
     out = first.out + second.out
@@ -115,8 +121,8 @@ def killed_tag(root, run_process, extra_plan, mirror_extra, make_target, replay)
         out_lines=lines(out),
         out=out,
         copy=copy,
-        tc_refs=tc_refs,
-        tc=tc,
+        other_object_refs=other_object_refs,
+        other_object=other_object,
     )
 
 
@@ -124,10 +130,10 @@ def test_names_a_tag_elsewhere_a_tag_with_another_message_and_one_lightweight_pl
     hashes, changed_tags
 ):
     """compare-replay.py names a tag at another commit than the recreated one, an annotated tag with another message and a lightweight tag planned annotated"""  # noqa: E501 # the description word for word
-    tx = changed_tags
-    main = tx.target.git("rev-parse", "main")[:7]
-    m2 = json.loads(tx.state.read_text(encoding="utf-8"))["hashes"][hashes["M2"]][:7]
-    r = tx.compared
+    changed = changed_tags
+    main = changed.target.git("rev-parse", "main")[:7]
+    m2 = json.loads(changed.state.read_text(encoding="utf-8"))["hashes"][hashes["M2"]][:7]
+    r = changed.compared
     out = r.out_lines
     assert r.status == 1, r.out
     elsewhere = f"  tag v0.1 of the source is at {main} in the target, not at the recreated {m2}"
@@ -144,74 +150,77 @@ def test_checks_the_targets_tags_after_the_last_event_and_stops_at_each_that_dif
     """run-replay.py checks the target's tags after the last event, and stops at each that differs from the state file"""  # noqa: E501 # the description word for word
     r = changed_tags.again
     differs = (
-        "run-replay.py: ada-example/tool-x differs from the plan: tag v0\\.1 is at [0-9a-f]{7},"
-        " the state file's [0-9a-f]{7}; tag v0\\.1\\.1 is at [0-9a-f]{7}, the state file's"
-        " [0-9a-f]{7}; tag v0\\.2 is at [0-9a-f]{7}, the state file's [0-9a-f]{7}$"
+        "run-replay.py: ada-example/tool-tags-releases differs from the plan: tag v0\\.1 is at"
+        " [0-9a-f]{7}, the state file's [0-9a-f]{7}; tag v0\\.1\\.1 is at [0-9a-f]{7}, the state"
+        " file's [0-9a-f]{7}; tag v0\\.2 is at [0-9a-f]{7}, the state file's [0-9a-f]{7}$"
     )
     assert r.status == 1, r.out
     assert has_search(differs, r.out_lines), r.out
 
 
 def test_resumes_a_run_killed_after_a_tags_push_takes_it_over_and_ends_with_the_same_tags(
-    run_process, replay_x, killed_tag
+    run_process, replay_tags_releases, killed_tag
 ):
     """run-replay.py resumes a run killed after it pushed a tag, takes the pushed tag over, and ends with the tags of an uninterrupted run"""  # noqa: E501 # the description word for word
-    tk = killed_tag
-    assert tk.statuses == [137, 0], tk.out
+    killed = killed_tag
+    assert killed.statuses == [137, 0], killed.out
     found = r"[0-9]+/[0-9]+  create-tag    v0\.2, annotated, at [0-9a-f]{7}, found pushed$"
-    assert has_search(found, tk.out_lines), tk.out
-    same_tags(run_process, replay_x.target, tk.target)
+    assert has_search(found, killed.out_lines), killed.out
+    same_tags(run_process, replay_tags_releases.target, killed.target)
 
 
 def test_stops_before_pushing_where_a_rebuilt_tag_differs_from_the_one_the_state_file_records(
     run_process, killed_tag
 ):
     """run-replay.py stops before pushing where a rebuilt tag differs from the one the state file records"""  # noqa: E501 # the description word for word
-    tk = killed_tag
-    r = tk.tc
+    killed = killed_tag
+    r = killed.other_object
     out = r.out_lines
     assert r.status == 1, r.out
     rebuilt = (
-        "run-replay.py: tag v0\\.2 was rebuilt as [0-9a-f]{7}, but .*/tc.state.json records"
-        " 0123456; it differs from the one the first run made. The run stops before it pushes"
-        " a second tag$"
+        "run-replay.py: tag v0\\.2 was rebuilt as [0-9a-f]{7}, but .*/other-tag-object.state.json"
+        " records 0123456; it differs from the one the first run made. The run stops before it"
+        " pushes a second tag$"
     )
     assert has_search(rebuilt, out), r.out
     assert has_search("^run-replay.py: stopped in event [0-9]* of [0-9]*", out), r.out
     # Compared as $(...) gives both, without their final newlines.
-    refs = run_process("git", "--git-dir", tk.copy.repo, "for-each-ref").out
-    assert refs.rstrip("\n") == tk.tc_refs.rstrip("\n")
+    refs = run_process("git", "--git-dir", killed.copy.repo, "for-each-ref").out
+    assert refs.rstrip("\n") == killed.other_object_refs.rstrip("\n")
 
 
-# TP: X's replay killed by a hook of the target's repository right after it
-# pushed the lightweight v0.1, and resumed; then refused its push of v0.2
-# once, and resumed again, with the object for v0.2 the stopped run recorded.
+# The replay of tags and releases killed by a hook of the target's repository
+# right after it pushed the lightweight v0.1, and resumed; then refused its
+# push of v0.2 once, and resumed again, with the object for v0.2 the stopped
+# run recorded.
 
 
 @pytest.fixture(scope="module")
 def pushed_tags(root, extra_plan, mirror_extra, make_target, replay):
-    """TP's three runs, and the object for v0.2 that its state file records
-    after the second, empty where it records none."""
-    target = make_target("gh-tp", TOOL_X)
+    """The three runs of that replay, and the object for v0.2 that its state
+    file records after the second, empty where it records none."""
+    target = make_target("gh-pushed-tags", TOOL_TAGS_RELEASES)
     write_hook(target, "post-receive", kill_hook("refs/tags/v0.1"))
     write_hook(target, "pre-receive", refuse_hook("refs/tags/v0.2"))
-    state = root / "tp.state.json"
-    tail = (extra_plan.file, mirror_extra, TOOL_X)
+    state = root / "pushed-tags.state.json"
+    tail = (extra_plan.file, mirror_extra, TOOL_TAGS_RELEASES)
 
-    def tp_replay():
-        return replay(target, TOOL_X, "--pace", "0", "--state", state, *tail, merged=True)
+    def replay_once():
+        return replay(
+            target, TOOL_TAGS_RELEASES, "--pace", "0", "--state", state, *tail, merged=True
+        )
 
-    first = tp_replay()
+    first = replay_once()
     # The killed run's push goes on without it: time to end before the resume.
     time.sleep(1)
-    second = tp_replay()
+    second = replay_once()
     # Empty where the state file is missing, so that the check of v0.2 fails on it.
     v02 = (
         json.loads(state.read_text(encoding="utf-8"))["tags"].get("v0.2", "")
         if state.exists()
         else ""
     )
-    third = tp_replay()
+    third = replay_once()
     runs = [first, second, third]
     return SimpleNamespace(
         target=target, runs=runs, statuses=[shell_status(r) for r in runs], v02=v02
@@ -222,48 +231,49 @@ def test_resumes_a_run_killed_after_it_pushed_a_lightweight_tag_and_takes_the_ta
     pushed_tags,
 ):
     """run-replay.py resumes a run killed after it pushed a lightweight tag, and takes the pushed tag over"""  # noqa: E501 # the description word for word
-    tp = pushed_tags
-    second = tp.runs[1]
-    assert tp.statuses == [137, 1, 0], tp.runs[0].out + second.out
+    pushed = pushed_tags
+    second = pushed.runs[1]
+    assert pushed.statuses == [137, 1, 0], pushed.runs[0].out + second.out
     found = r"[0-9]+/[0-9]+  create-tag    v0\.1, lightweight, at [0-9a-f]{7}, found pushed$"
     assert has_search(found, second.out_lines), second.out
 
 
 def test_resumes_a_run_stopped_before_a_tags_push_rebuilds_the_recorded_tag_and_pushes_it(
-    run_process, replay_x, pushed_tags
+    run_process, replay_tags_releases, pushed_tags
 ):
     """run-replay.py resumes a run stopped before a tag's push, rebuilds the tag the state file records and pushes it, and ends with the tags of an uninterrupted run"""  # noqa: E501 # the description word for word
-    tp = pushed_tags
-    second, third = tp.runs[1], tp.runs[2]
+    tags = pushed_tags
+    second, third = tags.runs[1], tags.runs[2]
     assert has_search("^run-replay.py: stopped in event [0-9]* of [0-9]*", second.out_lines)
     assert has_search("refused once", second.out_lines), second.out
-    assert tp.v02
-    v02 = run_process("git", "--git-dir", tp.target.repo, "rev-parse", "refs/tags/v0.2")
-    assert v02.out.rstrip("\n") == tp.v02
+    assert tags.v02
+    v02 = run_process("git", "--git-dir", tags.target.repo, "rev-parse", "refs/tags/v0.2")
+    assert v02.out.rstrip("\n") == tags.v02
     pushed = r"[0-9]+/[0-9]+  create-tag    v0\.2, annotated, at [0-9a-f]{7}$"
     assert has_search(pushed, third.out_lines), third.out
-    same_tags(run_process, replay_x.target, tp.target)
+    same_tags(run_process, replay_tags_releases.target, tags.target)
 
 
 @pytest.fixture(scope="module")
-def missing_tag(root, extra_plan, mirror_extra, replay_x, replay):
-    """TM: a copy of X's target without v0.1.1 and with a tag v9 that the
-    plan lacks, checked again by run-replay.py from a copy of X's state file."""
-    target = copy_target(root, replay_x.target, "gh-tm")
-    state = root / "tm.state.json"
-    shutil.copyfile(replay_x.state, state)
+def missing_tag(root, extra_plan, mirror_extra, replay_tags_releases, replay):
+    """A copy of the target of the replay of tags and releases without v0.1.1
+    and with a tag v9 that the plan lacks, checked again by run-replay.py
+    from a copy of the replay's state file."""
+    target = copy_target(root, replay_tags_releases.target, "gh-missing-tag")
+    state = root / "missing-tag.state.json"
+    shutil.copyfile(replay_tags_releases.state, state)
     target.git("update-ref", "-d", "refs/tags/v0.1.1")
     target.git("tag", "v9", "main")
-    tail = (extra_plan.file, mirror_extra, TOOL_X)
-    return replay(target, TOOL_X, "--pace", "0", "--state", state, *tail, merged=True)
+    tail = (extra_plan.file, mirror_extra, TOOL_TAGS_RELEASES)
+    return replay(target, TOOL_TAGS_RELEASES, "--pace", "0", "--state", state, *tail, merged=True)
 
 
 def test_names_after_the_last_event_a_planned_tag_it_lacks_and_a_tag_the_plan_lacks(missing_tag):
     """run-replay.py names after the last event a planned tag the target lacks and a tag of the target the plan lacks"""  # noqa: E501 # the description word for word
     r = missing_tag
     differs = (
-        "run-replay.py: ada-example/tool-x differs from the plan: tag v0\\.1\\.1 is missing;"
-        " tag v9 is not in the plan$"
+        "run-replay.py: ada-example/tool-tags-releases differs from the plan: tag v0\\.1\\.1 is"
+        " missing; tag v9 is not in the plan$"
     )
     assert r.status == 1, r.out
     assert has_search(differs, r.out_lines), r.out
@@ -271,11 +281,11 @@ def test_names_after_the_last_event_a_planned_tag_it_lacks_and_a_tag_the_plan_la
 
 @pytest.fixture(scope="module")
 def message_tags(msg_plans, mirror_msg, api_extra, make_target, replay, compare):
-    """MS: the plan of the tag messages and names, replayed with its default
+    """The plan of the tag messages and names, replayed with its default
     state file, msg.state.json, and compared."""
-    target = make_target("gh-ms", TOOL_X)
-    tail = (msg_plans.planned.file, mirror_msg, TOOL_X)
-    result = replay(target, TOOL_X, "--pace", "0", *tail, merged=True)
+    target = make_target("gh-message-tags", TOOL_TAGS_RELEASES)
+    tail = (msg_plans.planned.file, mirror_msg, TOOL_TAGS_RELEASES)
+    result = replay(target, TOOL_TAGS_RELEASES, "--pace", "0", *tail, merged=True)
     compared = compare(target, *tail, api=api_extra)
     return SimpleNamespace(target=target, result=result, compared=compared)
 
@@ -284,9 +294,9 @@ def test_keep_whole_a_tag_message_with_the_lines_of_a_signature_and_leave_refuse
     root, run_process, message_tags
 ):
     """run-replay.py and compare-replay.py keep whole a tag message that holds the lines of a signature, and leave alone a tag whose name git tag refuses"""  # noqa: E501 # the description word for word
-    ms = message_tags
-    notes = run_process("git", "--git-dir", ms.target.repo, "cat-file", "tag", "notes")
-    r, c = ms.result, ms.compared
+    tags = message_tags
+    notes = run_process("git", "--git-dir", tags.target.repo, "cat-file", "tag", "notes")
+    r, c = tags.result, tags.compared
     out = c.out_lines
     assert (r.status, c.status) == (0, 0), r.out + c.out
     assert past_header(notes.out) == (root / "notes-message").read_text(encoding="utf-8")
@@ -294,16 +304,16 @@ def test_keep_whole_a_tag_message_with_the_lines_of_a_signature_and_leave_refuse
     assert "  tag HEAD of the source is left behind, as planned" in out, c.out
     assert "  tag -x of the source is left behind, as planned" in out, c.out
     odd = ("for-each-ref", "refs/tags/HEAD", "refs/tags/-x")
-    assert run_process("git", "--git-dir", ms.target.repo, *odd).out.rstrip("\n") == ""
+    assert run_process("git", "--git-dir", tags.target.repo, *odd).out.rstrip("\n") == ""
 
 
 # Reviews: the run's API with five reviews, as GitHub lists them: an approval
 # of #2 without a body, a request for changes on #3 with a comment on a range
 # of lines, a comment on #3 with a reply and a comment on a whole file, a
 # pending review on #3, which only its author sees, and a dismissed review on
-# #5. RV replays its plan; api-reviews-changed lacks the dismissed review and
-# has one more on #2; RO replays the plan without reviews under a header that
-# predates them.
+# #5. Its plan is replayed; api-reviews-changed lacks the dismissed review and
+# has one more on #2; and the plan without reviews is replayed under a header
+# that predates them.
 
 
 def review(review_id, login, body, state, submitted_at, commit_id):
@@ -518,63 +528,69 @@ def reviewed(
     replay,
     compare,
 ):
-    """RV replayed and compared, and compared against api-reviews-changed; RO,
-    the plan of run.jsonl under a header without reviews, replayed and
-    compared; RT, RV's plan replayed with --with-times and compared; and RV
-    compared under a header written before the switches, without turned_off,
-    with a state file for that header."""
+    """The plan with reviews replayed and compared, and compared against
+    api-reviews-changed; the plan of run.jsonl under a header without
+    reviews, replayed and compared; the plan with reviews replayed with
+    --with-times and compared; and the replay with reviews compared under a
+    header written before the switches, without turned_off, with a state file
+    for that header."""
     events, mirror = review_plans.reviews.file, source.mirror
-    rv_slug = "ada-example/tool-rv"
-    rv = make_target("gh-rv", rv_slug)
-    rv_state = root / "rv.state.json"
-    rv_run = replay(
-        *(rv, rv_slug, "--pace", "0", "--state", rv_state, events, mirror, rv_slug),
+    slug = "ada-example/tool-reviews"
+    target = make_target("gh-reviews", slug)
+    state = root / "reviews-replay.state.json"
+    run = replay(
+        *(target, slug, "--pace", "0", "--state", state, events, mirror, slug),
         merged=True,
         FAKE_GH_API=api_reviews,
     )
-    rv_tail = ("--state", rv_state, events, mirror, rv_slug)
-    rv_compared = compare(rv, *rv_tail, api=api_reviews)
-    rv_changed = compare(rv, *rv_tail, api=api_reviews_changed)
+    tail = ("--state", state, events, mirror, slug)
+    compared = compare(target, *tail, api=api_reviews)
+    compared_changed = compare(target, *tail, api=api_reviews_changed)
 
     old = root / "old-reviews.jsonl"
     old.write_text(without_header_keys(run_plan.file, ("reviews", "turned_off")), encoding="utf-8")
-    ro_slug = "ada-example/tool-ro"
-    ro = make_target("gh-ro", ro_slug)
-    ro_tail = ("--state", root / "ro.state.json", old, mirror, ro_slug)
-    ro_run = replay(ro, ro_slug, "--pace", "0", *ro_tail, merged=True)
-    ro_compared = compare(ro, *ro_tail, api=api_reviews)
+    old_slug = "ada-example/tool-before-reviews"
+    old_target = make_target("gh-before-reviews", old_slug)
+    old_tail = ("--state", root / "before-reviews.state.json", old, mirror, old_slug)
+    before_reviews_run = replay(old_target, old_slug, "--pace", "0", *old_tail, merged=True)
+    before_reviews_compared = compare(old_target, *old_tail, api=api_reviews)
 
-    rt_slug = "ada-example/tool-rt"
-    rt = make_target("gh-rt", rt_slug)
-    rt_tail = ("--with-times", "--state", root / "rt.state.json", events, mirror, rt_slug)
-    rt_run = replay(rt, rt_slug, "--pace", "0", *rt_tail, merged=True, FAKE_GH_API=api_reviews)
-    rt_compared = compare(rt, *rt_tail, api=api_reviews)
+    timed_slug = "ada-example/tool-reviews-with-times"
+    timed = make_target("gh-reviews-with-times", timed_slug)
+    timed_state = root / "reviews-with-times.state.json"
+    timed_tail = ("--with-times", "--state", timed_state, events, mirror, timed_slug)
+    with_times_run = replay(
+        timed, timed_slug, "--pace", "0", *timed_tail, merged=True, FAKE_GH_API=api_reviews
+    )
+    with_times_compared = compare(timed, *timed_tail, api=api_reviews)
 
     text = without_header_keys(events, ("turned_off",))
     before = root / "reviews-before.jsonl"
     before.write_text(text, encoding="utf-8")
-    state = json.loads(rv_state.read_text(encoding="utf-8"))
-    state["events"] = hashlib.sha256(text.encode()).hexdigest()
-    before_state = root / "rv-before.state.json"
-    before_state.write_text(json.dumps(state), encoding="utf-8")
-    rv_before = compare(rv, "--state", before_state, before, mirror, rv_slug, api=api_reviews)
+    recorded = json.loads(state.read_text(encoding="utf-8"))
+    recorded["events"] = hashlib.sha256(text.encode()).hexdigest()
+    before_state = root / "reviews-before-switches.state.json"
+    before_state.write_text(json.dumps(recorded), encoding="utf-8")
+    compared_before_switches = compare(
+        target, "--state", before_state, before, mirror, slug, api=api_reviews
+    )
     return SimpleNamespace(
-        rv=rv,
-        rv_state=rv_state,
-        rv_run=rv_run,
-        rv_compared=rv_compared,
-        rv_changed=rv_changed,
-        ro_run=ro_run,
-        ro_compared=ro_compared,
-        rt_run=rt_run,
-        rt_compared=rt_compared,
-        rv_before=rv_before,
+        target=target,
+        state=state,
+        run=run,
+        compared=compared,
+        compared_changed=compared_changed,
+        before_reviews_run=before_reviews_run,
+        before_reviews_compared=before_reviews_compared,
+        with_times_run=with_times_run,
+        with_times_compared=with_times_compared,
+        compared_before_switches=compared_before_switches,
     )
 
 
 @pytest.fixture(scope="module")
 def no_reviews(root, source, plan, source_gh, api_reviews, make_target, replay, compare):
-    """NR: the plan of the source with reviews under --no-reviews, with a log
+    """The plan of the source with reviews under --no-reviews, with a log
     of its own, replayed with its default state file, noreviews.state.json,
     and compared."""
     s, gh = source, source_gh("noreviews-gh")
@@ -584,8 +600,8 @@ def no_reviews(root, source, plan, source_gh, api_reviews, make_target, replay, 
         env=gh.using(FAKE_GH_API=api_reviews),
         merged=True,
     )
-    slug = "ada-example/tool-nr"
-    target = make_target("gh-nr", slug)
+    slug = "ada-example/tool-no-reviews"
+    target = make_target("gh-no-reviews", slug)
     tail = (events, s.mirror, slug)
     result = replay(target, slug, "--pace", "0", *tail, merged=True)
     compared = compare(target, *tail, api=api_reviews)
@@ -675,9 +691,9 @@ def test_posts_each_review_as_a_comment_with_the_recreated_hash_of_the_commit_it
     reviewed, view, hashes
 ):
     """run-replay.py posts each review as a comment, with the recreated hash of the commit it names"""  # noqa: E501 # the description word for word
-    v = view(reviewed.rv, reviewed.rv_state)
+    v = view(reviewed.target, reviewed.state)
     comments, m = v.comments, v.recreated
-    out = as_read(reviewed.rv_run.out)
+    out = as_read(reviewed.run.out)
     assert out.count("reviews as comments           4") == 1, out
     changes = next(c for c in comments if c[1].startswith("_Review by ada-example: changes"))
     assert comments[comments.index(changes)][0] == 3
@@ -693,7 +709,7 @@ def test_posts_each_review_as_a_comment_with_the_recreated_hash_of_the_commit_it
 
 def test_finds_no_difference_in_a_replay_that_carries_the_reviews_as_comments(reviewed):
     """compare-replay.py finds no difference in a replay that carries the reviews as comments"""
-    r, c = reviewed.rv_run, reviewed.rv_compared
+    r, c = reviewed.run, reviewed.compared
     out = c.out_lines
     assert (r.status, c.status) == (0, 0), r.out + c.out
     assert has_match("No differences", out), c.out
@@ -716,7 +732,7 @@ def test_names_a_review_or_comment_gone_one_the_plan_lacks_and_a_review_body_the
     reviewed,
 ):
     """compare-replay.py names a planned review or comment the source no longer has, a review or comment of the source the plan lacks, and a review body the plan lacks"""  # noqa: E501 # the description word for word
-    r = reviewed.rv_changed
+    r = reviewed.compared_changed
     out = r.out_lines
     assert r.status == 1, r.out
     for line in CHANGED_REVIEW_LINES:
@@ -726,14 +742,14 @@ def test_names_a_review_or_comment_gone_one_the_plan_lacks_and_a_review_body_the
 
 def test_finds_no_difference_in_a_replay_with_with_times_that_carries_the_reviews(reviewed):
     """compare-replay.py finds no difference in a replay with --with-times that carries the reviews"""  # noqa: E501 # the description word for word
-    r, c = reviewed.rt_run, reviewed.rt_compared
+    r, c = reviewed.with_times_run, reviewed.with_times_compared
     assert (r.status, c.status) == (0, 0), r.out + c.out
     assert has_match("No differences", c.out_lines), c.out
 
 
 def test_notes_an_event_file_that_predates_reviews_and_expects_none(reviewed):
     """compare-replay.py notes an event file that predates reviews, and expects none"""
-    r, c = reviewed.ro_run, reviewed.ro_compared
+    r, c = reviewed.before_reviews_run, reviewed.before_reviews_compared
     out = c.out_lines
     assert (r.status, c.status) == (0, 0), r.out + c.out
     assert "  the event file predates reviews: it plans no review as a comment" in out, c.out
@@ -791,7 +807,7 @@ def test_notes_reviews_as_turned_off_where_the_plan_turns_them_off_and_reads_non
 
 def test_compares_an_event_file_whose_header_was_written_before_the_switches_as_before(reviewed):
     """compare-replay.py compares an event file whose header was written before the switches as before"""  # noqa: E501 # the description word for word
-    r = reviewed.rv_before
+    r = reviewed.compared_before_switches
     out = r.out_lines
     assert r.status == 0, r.out
     assert has_match("No differences", out), r.out
