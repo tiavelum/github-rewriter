@@ -34,6 +34,8 @@ The second, the pytest suite of the replay, takes three to six minutes and ends 
 
 Without `ssh-keygen`, it skips the 12 tests of signing with an SSH key, names them, and counts them as skipped.
 
+Where `~/vc/github-rewriter/.venv/bin/pytest ~/vc/github-rewriter/replay/tests` runs the whole suite, a test's node id runs that test alone, in seconds, as `~/vc/github-rewriter/.venv/bin/pytest ~/vc/github-rewriter/replay/tests/test_plan_replay.py::test_writes_the_plan_and_prints_the_totals_without_warnings` does.
+
 To rewrite a repository, follow the steps in [rewrite/README.md](rewrite/README.md); to replay it into a new one with one command, those in [replay/README.md](replay/README.md). To have Claude prepare, plan and check a replay with you, ask it to replay the repository: Claude Code finds the skill in `.claude/skills/` of a clone of this repository, and the Claude app once it is uploaded as below.
 
 ## Testing a pull request on macOS
