@@ -52,7 +52,7 @@ gh workflow run test -R tiavelum/github-rewriter --ref <branch>
 
 ## After changing the skill
 
-Once the change is on `main`, package the skill as `main` holds it, whichever branch the clone has checked out, as a ZIP that holds its folder:
+Once the change is on `main`, package the skill as `main` holds it, whichever branch the clone has checked out, into a ZIP that holds its folder:
 
 ```bash
 git -C ~/vc/github-rewriter fetch -q origin main && \
