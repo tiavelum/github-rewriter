@@ -1,9 +1,3 @@
-"""The checks of committer dates and of signing: replays killed, on the
-machine's clock, at an early or a bad SOURCE_DATE_EPOCH and started before
-committer dates, the uninterrupted replay compared under changed state
-files, and the replays with --sign, through a fake gpg or a throwaway SSH
-key."""
-
 import datetime
 import json
 import os
@@ -41,7 +35,6 @@ TOOL_EARLY_EPOCH = "ada-example/tool-early-epoch"
 TOOL_BAD_EPOCHS = "ada-example/tool-bad-epochs"
 TOOL_LATE_START = "ada-example/tool-late-start"
 
-# The SSH checks need ssh-keygen, to make the keys and to sign and verify.
 needs_ssh_keygen = pytest.mark.skipif(
     shutil.which("ssh-keygen") is None,
     reason="ssh-keygen is missing; run-replay.py --sign with an SSH key not tested",
@@ -49,29 +42,12 @@ needs_ssh_keygen = pytest.mark.skipif(
 
 
 def date_replay(replay, source, run_plan, target, slug, state, **variables):
-    """A replay of run.jsonl into the target, paced at 0, with its own state
-    file; its output and error in one."""
     tail = ("--pace", "0", "--state", state, run_plan.file, source.mirror, slug)
     return replay(target, slug, *tail, merged=True, **variables)
 
 
-# Committer dates: a replay killed after its push of feat/2-thing, by a hook
-# of the target's repository, and resumed at a later time, which has to
-# rebuild the pushed commits with the committer dates the state file
-# records; a replay on the machine's clock; one whose fixed time lies before
-# the dates the fake gives its merges; four replays at a SOURCE_DATE_EPOCH
-# the run cannot use; a run that started before committer dates were the
-# time of the replay, made by refusing the first push to main once and
-# removing from the state file the dates it records; and copies of the
-# uninterrupted replay's state file, one that predates committer dates and
-# one that maps the source commit of #3's branch to a commit made before its
-# parent.
-
-
 @pytest.fixture(scope="module")
 def killed_dates(root, source, run_plan, make_target, replay):
-    """A replay killed after its push of feat/2-thing and resumed, the second
-    run at SOURCE_DATE_EPOCH 1794009999."""
     target = make_target("gh-killed-dates", TOOL_KILLED_DATES)
     write_hook(target, "post-receive", kill_hook("refs/heads/feat/2-thing"))
     state = root / "killed-dates.state.json"
@@ -90,8 +66,6 @@ def killed_dates(root, source, run_plan, make_target, replay):
 
 @pytest.fixture(scope="module")
 def on_clock(root, source, run_plan, make_target, replay):
-    """A replay on the machine's clock, without SOURCE_DATE_EPOCH, and the
-    clock's seconds right before and right after it, as date +%s gives them."""
     target = make_target("gh-on-clock", TOOL_ON_CLOCK)
     state = root / "on-clock.state.json"
     clock_from = int(time.time())
@@ -106,29 +80,25 @@ def on_clock(root, source, run_plan, make_target, replay):
 
 @pytest.fixture(scope="module")
 def early_epoch(root, source, run_plan, make_target, replay):
-    """A replay at SOURCE_DATE_EPOCH 1000000000, before the dates the fake
-    gives its merges, in a zone 5:30 east of UTC."""
     target = make_target("gh-early-epoch", TOOL_EARLY_EPOCH)
     state = root / "early-epoch.state.json"
     result = date_replay(
         replay,
         *(source, run_plan, target, TOOL_EARLY_EPOCH, state),
+        # Before the dates the fake gives its merges.
         SOURCE_DATE_EPOCH="1000000000",
+        # POSIX TZ counts west of UTC as positive: this zone is 5:30 east of UTC.
         TZ="XXX-5:30",
     )
     return SimpleNamespace(target=target, state=state, result=result)
 
 
-# The values of SOURCE_DATE_EPOCH the run cannot use: empty, a fraction, a
-# digit that is no ASCII digit, the superscript two, U+00B2, and a time no
-# machine can date.
+# The third, the superscript two, U+00B2, is a digit but no ASCII digit.
 BAD_EPOCHS = ("", "1.5", os.fsdecode(b"\302\262"), "99999999999999999999")
 
 
 @pytest.fixture(scope="module")
 def bad_epochs(root, source, run_plan, make_target, replay):
-    """Four runs at the bad epochs into one target with one state file; their
-    statuses, and their output and error in one, in the order they ran."""
     target = make_target("gh-bad-epochs", TOOL_BAD_EPOCHS)
     state = root / "bad-epochs.state.json"
     runs = [
@@ -145,13 +115,11 @@ def bad_epochs(root, source, run_plan, make_target, replay):
 
 @pytest.fixture(scope="module")
 def late_start(root, source, run_plan, make_target, replay):
-    """A run started before committer dates were the time of the replay: the
-    first run refused its push to main once, its state file then stripped of
-    the committer dates and of the hashes of their commits, and resumed."""
     target = make_target("gh-late-start", TOOL_LATE_START)
     write_hook(target, "pre-receive", refuse_hook("refs/heads/main"))
     state = root / "late-start.state.json"
     first = date_replay(replay, source, run_plan, target, TOOL_LATE_START, state)
+    # As a run started before committer dates were the time of the replay leaves its state file.
     recorded = json.loads(state.read_text(encoding="utf-8"))
     for sha in recorded.pop("committer_dates"):
         recorded["hashes"].pop(sha, None)
@@ -165,8 +133,6 @@ def late_start(root, source, run_plan, make_target, replay):
 
 @pytest.fixture(scope="module")
 def old_dates(root, source, run_plan, replay_uninterrupted, compare_finished, compare):
-    """The uninterrupted replay compared under a copy of its state file
-    without committer_dates, after the comparisons of the finished replay."""
     state = json.loads(replay_uninterrupted.state.read_text(encoding="utf-8"))
     del state["committer_dates"]
     path = root / "old-dates.state.json"
@@ -179,10 +145,6 @@ def old_dates(root, source, run_plan, replay_uninterrupted, compare_finished, co
 def early_commit(
     root, base_env, hashes, source, run_plan, replay_uninterrupted, old_dates, compare
 ):
-    """A copy of the uninterrupted replay's target whose branch of #3 holds a
-    commit by Bob, dated before its parent, the recreated squash merge of #2,
-    and a copy of the replay's state file that maps #3's commit to it with
-    that date; compared."""
     target = copy_target(root, replay_uninterrupted.target, "gh-order")
     f1, m2 = hashes["F1"], hashes["M2"]
     stamp = "1000000000 +0000"
@@ -216,7 +178,6 @@ def early_commit(
 def test_resumes_a_push_its_kill_interrupted_with_the_recorded_dates_and_dates_later_ones_anew(
     killed_dates, view, hashes
 ):
-    """run-replay.py resumes a push its kill interrupted with the committer dates the state file records, and dates the commits after it anew"""  # noqa: E501 # the description word for word
     killed = killed_dates
     assert killed.statuses == [137, 0], "".join(r.out for r in killed.runs)
     v = view(killed.target, killed.state)
@@ -229,7 +190,6 @@ def test_resumes_a_push_its_kill_interrupted_with_the_recorded_dates_and_dates_l
 def test_gives_each_recreated_commit_the_machines_time_where_source_date_epoch_is_not_set(
     on_clock, view, hashes
 ):
-    """run-replay.py gives each recreated commit the machine's time as committer date where SOURCE_DATE_EPOCH is not set"""  # noqa: E501 # the description word for word
     clocked = on_clock
     v = view(clocked.target, clocked.state)
     m, git = v.recreated, v.git
@@ -239,7 +199,6 @@ def test_gives_each_recreated_commit_the_machines_time_where_source_date_epoch_i
 
 
 def test_replay_on_the_machines_clock_passes_the_comparison(source, run_plan, on_clock, compare):
-    """run-replay.py's replay on the machine's clock passes the comparison"""
     clocked = on_clock
     assert clocked.result.status == 0, clocked.result.out
     tail = ("--state", clocked.state, run_plan.file, source.mirror, TOOL_ON_CLOCK)
@@ -251,7 +210,6 @@ def test_replay_on_the_machines_clock_passes_the_comparison(source, run_plan, on
 def test_commits_no_recreated_commit_before_its_parent_which_githubs_clock_may_date_later(
     early_epoch, view, hashes
 ):
-    """run-replay.py commits no recreated commit before its parent, which GitHub's clock may date later"""  # noqa: E501 # the description word for word
     early = early_epoch
     v = view(early.target, early.state)
     m, git = v.recreated, v.git
@@ -265,7 +223,6 @@ def test_commits_no_recreated_commit_before_its_parent_which_githubs_clock_may_d
 def test_stops_before_the_confirmation_without_a_write_at_an_epoch_that_is_no_whole_number(
     bad_epochs,
 ):
-    """run-replay.py stops before the confirmation, without a write, at a SOURCE_DATE_EPOCH that is no whole number of seconds"""  # noqa: E501 # the description word for word
     bad = bad_epochs
     out = bad.out_lines
     assert bad.statuses == [1, 1, 1, 1], bad.out
@@ -280,7 +237,6 @@ def test_stops_before_the_confirmation_without_a_write_at_an_epoch_that_is_no_wh
 def test_resumes_a_run_started_before_committer_dates_with_the_original_ones_and_records_none(
     late_start, view, hashes
 ):
-    """run-replay.py resumes a run started before committer dates were the time of the replay with the original ones, and records none"""  # noqa: E501 # the description word for word
     late = late_start
     assert late.statuses == [1, 0], "".join(r.out for r in late.runs)
     v = view(late.target, late.state)
@@ -298,7 +254,6 @@ def test_resumes_a_run_started_before_committer_dates_with_the_original_ones_and
 
 
 def test_expects_the_original_committer_dates_from_a_state_file_that_predates_them(old_dates):
-    """compare-replay.py expects the original committer dates from a state file that predates committer dates at the time of the replay"""  # noqa: E501 # the description word for word
     r = old_dates
     out = r.out_lines
     assert r.status == 1, r.out
@@ -313,7 +268,6 @@ def test_expects_the_original_committer_dates_from_a_state_file_that_predates_th
 def test_names_a_recreated_commit_that_is_committed_before_its_parent(
     hashes, replay_uninterrupted, early_commit
 ):
-    """compare-replay.py names a recreated commit that is committed before its parent"""
     r, early = early_commit.result, early_commit.early
     parent = recreated(replay_uninterrupted.state, hashes["M2"])
     assert r.status == 1, r.out
@@ -324,13 +278,7 @@ def test_names_a_recreated_commit_that_is_committed_before_its_parent(
     assert named in r.out_lines, r.out
 
 
-# --sign: the checks before the confirmation, which stop a run before it
-# writes anything.
-
-
 def nothing_written(target, state):
-    """Asserts that the run left no write, no ref, no state file and no work
-    repository."""
     assert not target.writes(), target.writes()
     assert target.git("for-each-ref") == ""
     assert not state.exists()
@@ -338,8 +286,6 @@ def nothing_written(target, state):
 
 
 def config_with(base_env, root, name, text):
-    """A git configuration in the session's folder: the suite's own, then the
-    text."""
     path = root / name
     own = Path(base_env["GIT_CONFIG_GLOBAL"]).read_text(encoding="utf-8")
     path.write_text(own + text, encoding="utf-8")
@@ -352,8 +298,6 @@ def sign_args(state, plan_file, mirror):
 
 @pytest.fixture(scope="module")
 def no_key(root, source, run_plan, make_target, replay):
-    """A replay with --sign under the suite's git configuration, which names
-    no signing key."""
     target = make_target("gh-nokey")
     state = root / "nokey.state.json"
     args = sign_args(state, run_plan.file, source.mirror)
@@ -362,8 +306,6 @@ def no_key(root, source, run_plan, make_target, replay):
     )
 
 
-# A fake gpg that knows one secret key, with a signing subkey; no real key is
-# involved.
 FAKE_GPG = """\
 #!/bin/sh
 for last; do :; done
@@ -382,9 +324,6 @@ GPG_KEYS = (
 
 @pytest.fixture(scope="module")
 def gpg_key(root, base_env, source, run_plan, make_target, replay):
-    """Two replays with --sign and the GPG key of the fake gpg into one
-    target: the first while GitHub lists no GPG key, the second, answered
-    no, once it lists the key with its signing subkey."""
     bin_gpg = root / "bin-gpg"
     bin_gpg.mkdir()
     gpg = bin_gpg / "gpg"
@@ -406,7 +345,6 @@ def gpg_key(root, base_env, source, run_plan, make_target, replay):
 
 
 def test_sign_stops_without_a_user_signingkey_before_writing(no_key):
-    """run-replay.py --sign stops without a user.signingkey, before writing"""
     r = no_key.result
     assert r.status == 1, r.out
     missing = "run-replay.py: --sign needs a user.signingkey in your git configuration"
@@ -417,7 +355,6 @@ def test_sign_stops_without_a_user_signingkey_before_writing(no_key):
 def test_sign_stops_before_writing_where_github_does_not_list_the_gpg_key_as_one_that_signs(
     gpg_key,
 ):
-    """run-replay.py --sign stops before writing where GitHub does not list the GPG key as one that signs"""  # noqa: E501 # the description word for word
     r = gpg_key.unknown
     assert r.status == 1, r.out
     unlisted = (
@@ -433,7 +370,6 @@ def test_sign_stops_before_writing_where_github_does_not_list_the_gpg_key_as_one
 def test_sign_takes_a_gpg_key_whose_signing_subkey_github_lists_and_says_it_cannot_resume(
     gpg_key,
 ):
-    """run-replay.py --sign takes a GPG key whose signing subkey GitHub lists, and says a stopped push cannot resume with it"""  # noqa: E501 # the description word for word
     r = gpg_key.known
     out = r.out_lines
     assert r.status == 1, r.out
@@ -453,16 +389,8 @@ def test_sign_takes_a_gpg_key_whose_signing_subkey_github_lists_and_says_it_cann
     nothing_written(gpg_key.target, gpg_key.state)
 
 
-# An SSH key: a throwaway Ed25519 key without a passphrase, which GitHub
-# lists in the targets that know it, and an allowed-signers file for git log.
-
-
 @pytest.fixture(scope="module")
 def ssh_key(root, base_env):
-    """The key, its public key as GitHub lists it, the allowed-signers file,
-    the git configuration that signs with it, and the session's folder as
-    Python prints a path, without the double slash that a TMPDIR ending in a
-    slash, as on macOS, leaves in it."""
     keygen = ("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "test", "-f")
     made = run([*keygen, root / "sign-key"], base_env, root)
     assert made.status == 0, made.err
@@ -473,6 +401,7 @@ def ssh_key(root, base_env):
     config = config_with(
         base_env, root, "global-sign", f"[gpg]\n\tformat = ssh\n[user]\n\tsigningkey = {pub}\n"
     )
+    # As Python prints the path, without the double slash a TMPDIR ending in a slash leaves.
     shown = re.sub("/+", "/", str(root))
     return SimpleNamespace(
         keygen=keygen, pub=pub, listed=listed, signers=signers, config=config, shown=shown
@@ -480,15 +409,11 @@ def ssh_key(root, base_env):
 
 
 def public_key(pub):
-    """The type and key of a public key file, as cut -d' ' -f1,2 prints them
-    in $(...), which drops the final newline."""
     return " ".join(pub.read_text(encoding="utf-8").split(" ")[:2]).rstrip("\n")
 
 
 @pytest.fixture(scope="module")
 def sign_target(make_target, ssh_key):
-    """Makes a target whose account lists the key as a signing key."""
-
     def sign_target(name):
         target = make_target(name)
         listed = (
@@ -503,10 +428,6 @@ def sign_target(make_target, ssh_key):
 
 @pytest.fixture(scope="module")
 def sign_replay(source, run_plan, ssh_key, replay):
-    """Runs a replay of run.jsonl that signs Ada's commits with the key, into
-    the target, with the answer and the state file given; its output and
-    error in one."""
-
     def sign_replay(target, answer, state, **variables):
         args = ("--pace", "0", *sign_args(state, run_plan.file, source.mirror))
         return replay(
@@ -518,12 +439,9 @@ def sign_replay(source, run_plan, ssh_key, replay):
 
 @pytest.fixture(scope="module")
 def pass_key(root, base_env, source, run_plan, ssh_key, sign_target, replay):
-    """A key with a passphrase that no agent holds, which would ask at every
-    commit, listed by GitHub; a replay with --sign and it, without an agent."""
+    # The passphrase x in place of the empty one after -N; no agent holds the key.
     made = run([*ssh_key.keygen[:5], "x", *ssh_key.keygen[6:], root / "pass-key"], base_env, root)
     assert made.status == 0, made.err
-    # As sed "s#sign-key.pub#pass-key.pub#" changes the configuration: the
-    # first match on each line.
     text = ssh_key.config.read_text(encoding="utf-8")
     changed = "".join(
         re.sub("sign-key.pub", "pass-key.pub", line, count=1)
@@ -545,7 +463,6 @@ def pass_key(root, base_env, source, run_plan, ssh_key, sign_target, replay):
 
 @needs_ssh_keygen
 def test_sign_stops_before_writing_when_the_key_has_a_passphrase_and_no_agent_holds_it(pass_key):
-    """run-replay.py --sign stops before writing when the key has a passphrase and no agent holds it"""  # noqa: E501 # the description word for word
     r = pass_key.result
     assert r.status == 1, r.out
     assert has_search("the signing key is not in the agent", r.out_lines), r.out
@@ -556,7 +473,6 @@ def test_sign_stops_before_writing_when_the_key_has_a_passphrase_and_no_agent_ho
 def test_sign_stops_before_writing_where_github_does_not_list_the_ssh_key_as_a_signing_key(
     root, ssh_key, make_target, sign_replay
 ):
-    """run-replay.py --sign stops before writing where GitHub does not list the SSH key as a signing key"""  # noqa: E501 # the description word for word
     target = make_target("gh-unknown")
     state = root / "unknown.state.json"
     r = sign_replay(target, TOOL_NEW, state)
@@ -577,7 +493,6 @@ def test_sign_stops_before_writing_where_github_does_not_list_the_ssh_key_as_a_s
 def test_sign_names_the_scope_gh_lacks_to_list_the_signing_keys_and_stops_before_writing(
     root, sign_target, sign_replay
 ):
-    """run-replay.py --sign names the scope gh lacks to list the signing keys, and stops before writing"""  # noqa: E501 # the description word for word
     target = sign_target("gh-scope")
     state = root / "scope.state.json"
     r = sign_replay(target, TOOL_NEW, state, FAKE_GH_NO_SCOPE="1")
@@ -591,12 +506,8 @@ def test_sign_names_the_scope_gh_lacks_to_list_the_signing_keys_and_stops_before
     nothing_written(target, state)
 
 
-# One uninterrupted signed run.
-
-
 @pytest.fixture(scope="module")
 def signed_run(root, sign_target, sign_replay):
-    """The uninterrupted signed run, its target, state file and output."""
     target = sign_target("gh-signed-run")
     state = root / "signed-run.state.json"
     return SimpleNamespace(target=target, state=state, result=sign_replay(target, TOOL_NEW, state))
@@ -606,7 +517,6 @@ def signed_run(root, sign_target, sign_replay):
 def test_sign_says_in_the_totals_how_many_commits_it_signs_and_with_which_key_and_in_each_push(
     ssh_key, signed_run
 ):
-    """run-replay.py --sign says in the totals how many commits it signs and with which key, and in each push how many it signed"""  # noqa: E501 # the description word for word
     r = signed_run.result
     out = r.out_lines
     assert r.status == 0, r.out
@@ -626,7 +536,6 @@ def test_sign_says_in_the_totals_how_many_commits_it_signs_and_with_which_key_an
 def test_sign_signs_exactly_the_recreated_commits_whose_committer_has_the_address(
     ssh_key, signed_run, view, hashes
 ):
-    """run-replay.py --sign signs exactly the recreated commits whose committer has the address"""
     v = view(signed_run.target, signed_run.state)
     m, git = v.recreated, v.git
     allowed = f"gpg.ssh.allowedSignersFile={ssh_key.signers}"
@@ -646,9 +555,8 @@ def test_sign_signs_exactly_the_recreated_commits_whose_committer_has_the_addres
     assert merges == ["N", "N"]
 
 
-def shape(run_process, target):
-    """Every commit of the target, without its hash, sorted; none where git
-    fails, which the check of their count then reports."""
+def commits_without_hashes(run_process, target):
+    # Empty where git fails, which the check of their count then reports.
     listed = run_process(
         *("git", "--git-dir", target.repo, "log", "--all"),
         *("--format=%T %an %ae %ad %cn %ce %cd %s", "--date=raw"),
@@ -660,24 +568,14 @@ def shape(run_process, target):
 def test_sign_changes_no_tree_identity_date_or_subject(
     run_process, replay_uninterrupted, signed_run
 ):
-    """run-replay.py --sign changes no tree, identity, date or subject"""
-    unsigned = shape(run_process, replay_uninterrupted.target)
-    signed = shape(run_process, signed_run.target)
+    unsigned = commits_without_hashes(run_process, replay_uninterrupted.target)
+    signed = commits_without_hashes(run_process, signed_run.target)
     assert len(unsigned) == 12, unsigned
     assert unsigned == signed
 
 
-# The same signed run, killed right after it pushed the branch of #2, as a
-# crash would, then resumed; and a copy of that target resumed from a state
-# file that records another hash for the branch's second commit, as a key
-# that signs differently each time would leave it.
-
-
 @pytest.fixture(scope="module")
 def killed_signed(root, run_process, hashes, sign_target, sign_replay):
-    """The signed run killed and resumed, the output of both runs in one;
-    and the copy with another commit hash, copied after the kill, with its
-    refs and the count of its writes before its run, and resumed."""
     target = sign_target("gh-killed-signed")
     write_hook(target, "post-receive", kill_hook("refs/heads/feat/2-thing"))
     state = root / "killed-signed.state.json"
@@ -690,13 +588,13 @@ def killed_signed(root, run_process, hashes, sign_target, sign_replay):
     # Where the killed run saved no hash, no state file of the copy is
     # written, so that only the check of the copy fails for it.
     if hashes["B2"] in recorded["hashes"]:
+        # As a key that signs differently each time would leave it.
         recorded["hashes"][hashes["B2"]] = "0123456789abcdef0123456789abcdef01234567"
         copy_state.write_text(json.dumps(recorded), encoding="utf-8")
     other_hash_refs = run_process("git", "--git-dir", copy.repo, "for-each-ref").out
     other_hash_writes = len(copy.writes())
     second = sign_replay(target, TOOL_NEW, state)
     other_hash = sign_replay(copy, TOOL_NEW, copy_state)
-    # One text, the output of the second run right after that of the first.
     out = first.out + second.out
     return SimpleNamespace(
         target=target,
@@ -715,7 +613,6 @@ def killed_signed(root, run_process, hashes, sign_target, sign_replay):
 def test_sign_ends_a_run_killed_after_a_push_and_resumed_with_the_hashes_of_an_uninterrupted_one(
     run_process, signed_run, killed_signed
 ):
-    """run-replay.py --sign ends a run killed after a push and resumed with the same hashes as an uninterrupted one"""  # noqa: E501 # the description word for word
     killed, signed = killed_signed, signed_run
     assert killed.statuses == [137, 0], killed.out
     resumed = "Resume the replay of ada-example/tool into ada-example/tool-new at event 5 of 23"
@@ -735,7 +632,6 @@ def test_sign_ends_a_run_killed_after_a_push_and_resumed_with_the_hashes_of_an_u
 def test_stops_before_pushing_where_a_rebuilt_commit_gets_another_hash_than_the_state_file_records(
     run_process, hashes, ssh_key, killed_signed
 ):
-    """run-replay.py stops before pushing where a rebuilt commit gets another hash than the state file records"""  # noqa: E501 # the description word for word
     killed = killed_signed
     r = killed.other_hash
     out = r.out_lines
@@ -754,12 +650,7 @@ def test_stops_before_pushing_where_a_rebuilt_commit_gets_another_hash_than_the_
     assert len(killed.copy.writes()) == killed.other_hash_writes
 
 
-# The plan of tags and releases replayed with --sign, which signs v0.2,
-# tagged by Ada, and not v0.1.1, tagged by Bob; then compared.
-
-
 def verified(run_process, ssh_key, target, tag):
-    """Whether the tag of the target verifies against the allowed signers."""
     allowed = f"gpg.ssh.allowedSignersFile={ssh_key.signers}"
     return (
         run_process("git", "-c", allowed, "--git-dir", target.repo, "verify-tag", tag).status == 0
@@ -768,8 +659,6 @@ def verified(run_process, ssh_key, target, tag):
 
 @pytest.fixture(scope="module")
 def signed_tags(root, ssh_key, extra_plan, mirror_extra, api_extra, sign_target, replay, compare):
-    """The plan of tags and releases replayed with --sign and compared with
-    the source of extra.jsonl."""
     target = sign_target("gh-signed-tags")
     state = root / "signed-tags.state.json"
     args = ("--pace", "0", *sign_args(state, extra_plan.file, mirror_extra))
@@ -784,7 +673,6 @@ def signed_tags(root, ssh_key, extra_plan, mirror_extra, api_extra, sign_target,
 def test_sign_signs_each_annotated_tag_whose_tagger_has_the_address_and_no_other_and_counts_them(
     run_process, ssh_key, signed_run, signed_tags
 ):
-    """run-replay.py --sign signs each annotated tag whose tagger has the address, and no other, and says in the totals how many"""  # noqa: E501 # the description word for word
     tags = signed_tags
     r, c = tags.result, tags.compared
     out = r.out_lines
@@ -796,22 +684,15 @@ def test_sign_signs_each_annotated_tag_whose_tagger_has_the_address_and_no_other
     assert has_search(v011, out), r.out
     assert verified(run_process, ssh_key, tags.target, "v0.2")
     assert not verified(run_process, ssh_key, tags.target, "v0.1.1")
-    # The pipe's status is grep's: a failing cat-file finds no signature.
+    # Its status goes unchecked: a failing cat-file finds no signature either.
     unsigned = run_process("git", "--git-dir", tags.target.repo, "cat-file", "tag", "v0.1.1")
     assert not has_search("BEGIN SSH SIGNATURE", unsigned.out_lines), unsigned.out
     assert has_match("  tags to sign +0", signed_run.result.out_lines), signed_run.result.out
     assert has_match("No differences", c.out_lines), r.out + c.out
 
 
-# A copy of the mirror with v0.4, an annotated tag by Ada's old address that
-# git signed with the key, and v0.5, one by the same address whose message
-# ends without a line break, as --cleanup=verbatim keeps it; planned,
-# replayed with --sign and without it, and compared.
-
-
 @pytest.fixture(scope="module")
 def mirror_sig(root, base_env, hashes, ssh_key, mirror_extra):
-    """mirror-sig.git, mirror-extra.git with the tags v0.4 and v0.5."""
     mirror = root / "mirror-sig.git"
     shutil.copytree(mirror_extra, mirror, symlinks=True)
     sign = ("-c", "gpg.format=ssh", "-c", f"user.signingkey={ssh_key.pub}")
@@ -827,6 +708,7 @@ def mirror_sig(root, base_env, hashes, ssh_key, mirror_extra):
             mirror,
             "tag",
             "-a",
+            # Keeps the message without a final line break.
             "--cleanup=verbatim",
             "-F",
             "-",
@@ -843,7 +725,6 @@ def mirror_sig(root, base_env, hashes, ssh_key, mirror_extra):
 
 @pytest.fixture(scope="module")
 def sig_plan(root, api_extra, leave, mirror_sig, plan_extra):
-    """sig.jsonl, the plan of mirror-sig.git; its output and error in one."""
     events = root / "sig.jsonl"
     options = ("--leave-behind", leave)
     return SimpleNamespace(
@@ -855,8 +736,6 @@ def sig_plan(root, api_extra, leave, mirror_sig, plan_extra):
 def sig_replays(
     root, ssh_key, mirror_sig, sig_plan, api_extra, sign_target, make_target, replay, compare
 ):
-    """sig.jsonl replayed with --sign, and replayed without it; each compared
-    with the source of mirror-sig.git."""
     tail = (sig_plan.file, mirror_sig, TOOL_NEW)
 
     def replay_and_compare(target, state, *options, **variables):
@@ -879,7 +758,6 @@ def sig_replays(
 def test_plans_a_signed_tags_message_without_its_signature_and_one_without_a_final_break_as_is(
     run_process, mirror_sig, sig_plan
 ):
-    """plan-replay.py plans a signed tag's message without its signature, and a message without a final line break as it is"""  # noqa: E501 # the description word for word
     r = sig_plan.result
     assert r.status == 0, r.out
     tag = run_process("git", "--git-dir", mirror_sig, "cat-file", "tag", "v0.4")
@@ -891,15 +769,11 @@ def test_plans_a_signed_tags_message_without_its_signature_and_one_without_a_fin
     assert messages == {"v0.4": "Signed in the source\n", "v0.5": "No line break"}
 
 
-def message(run_process, target, tag):
-    """The tag's message in that target, the signature included, as cat-file
-    and sed "1,/^$/d" print it; empty where cat-file fails."""
+def tag_message(run_process, target, tag):
     return past_header(run_process("git", "--git-dir", target.repo, "cat-file", "tag", tag).out)
 
 
 def first_lines(text, count):
-    """The first lines of the text, as sed -n 1,<count>p prints them in $(...),
-    which drops the final newlines."""
     return "".join(re.findall(r"[^\n]*\n|[^\n]+$", text)[:count]).rstrip("\n")
 
 
@@ -907,17 +781,16 @@ def first_lines(text, count):
 def test_sign_signs_a_tag_signed_in_the_source_anew_and_ends_an_unended_message_so_both_verify(
     run_process, ssh_key, sig_replays
 ):
-    """run-replay.py --sign signs a tag whose source was signed with a signature of its own, and ends a message without a final line break with one, so that both verify and the comparison finds no difference"""  # noqa: E501 # the description word for word
     signed = sig_replays.signed
     r, c = signed.result, signed.compared
     assert (r.status, c.status) == (0, 0), r.out + c.out
     assert has_match("  tags to sign +3", r.out_lines), r.out
     assert verified(run_process, ssh_key, signed.target, "v0.4")
     assert verified(run_process, ssh_key, signed.target, "v0.5")
-    v04 = message(run_process, signed.target, "v0.4")
+    v04 = tag_message(run_process, signed.target, "v0.4")
     assert first_lines(v04, 2) == "Signed in the source\n-----BEGIN SSH SIGNATURE-----"
     assert sum(line.startswith("-----BEGIN") for line in lines(v04)) == 1, v04
-    v05 = message(run_process, signed.target, "v0.5")
+    v05 = tag_message(run_process, signed.target, "v0.5")
     assert first_lines(v05, 2) == "No line break\n-----BEGIN SSH SIGNATURE-----"
     assert has_match("No differences", c.out_lines), r.out + c.out
 
@@ -926,12 +799,10 @@ def test_sign_signs_a_tag_signed_in_the_source_anew_and_ends_an_unended_message_
 def test_without_sign_gives_a_tag_signed_in_the_source_no_signature_and_keeps_an_unended_message(
     run_process, sig_replays
 ):
-    """run-replay.py without --sign gives a tag whose source was signed no signature, and keeps a message without a final line break as it is"""  # noqa: E501 # the description word for word
     unsigned = sig_replays.unsigned
     r, c = unsigned.result, unsigned.compared
     assert (r.status, c.status) == (0, 0), r.out + c.out
-    assert message(run_process, unsigned.target, "v0.4").rstrip("\n") == "Signed in the source"
+    assert tag_message(run_process, unsigned.target, "v0.4").rstrip("\n") == "Signed in the source"
     v05 = run_process("git", "--git-dir", unsigned.target.repo, "cat-file", "tag", "v0.5").out
-    # tail -c 14 in $(...): the last 14 bytes, without their final newlines.
     assert v05.encode("utf-8")[-14:].decode("utf-8").rstrip("\n") == "\nNo line break"
     assert has_match("No differences", c.out_lines), r.out + c.out
