@@ -4,7 +4,7 @@ How to plan a replay, run it and compare its result with the scripts of [`replay
 
 ## Planning a replay
 
-The mailmap maps the author and committer of every commit, in the format that [rewrite/README.md](../../rewrite/README.md#steps) describes. These two lines give an old address and GitHub, as the committer of changes made on github.com, the owner's identity, here an invented one:
+The mailmap maps the author and committer of every commit, in the format that [rewrite/README.md](../../rewrite/README.md#getting-started) describes. These two lines give an old address and GitHub, as the committer of changes made on github.com, the owner's identity, here an invented one:
 
 ```
 Ada Example <ada@example.com> <old@example.com>
