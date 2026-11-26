@@ -1,4 +1,5 @@
 #!/bin/sh
+# Needs git filter-repo; without it, it skips every check and exits with 0.
 # KEEP=1 keeps the temporary folder of the repositories.
 # GitHub is never contacted: an original given as a path has no rulesets.
 # shellcheck disable=SC2016,SC2034 # check() evaluates each check's quoted variables only later
