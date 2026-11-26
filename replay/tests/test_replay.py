@@ -87,8 +87,8 @@ def read_json(path):
 
 
 def held_links(target):
-    """The target's sub-issue links whose list is not empty, as links_hold of
-    the shell test reads them; a missing file fails."""
+    """The target's sub-issue links whose list is not empty; a missing file
+    fails."""
     return {k: v for k, v in read_json(target.folder / "links.json").items() if v}
 
 
@@ -195,10 +195,10 @@ def one(root, target_env):
 
 
 def ran(target, runs, progress=None):
-    """What runs of replay.py into a target left, as the shell test records
-    it right after them: their statuses, their output appended in one, the
-    target's writes, whether it is still absent, and whether the progress
-    file given exists."""
+    """What runs of replay.py into a target left, read right after them,
+    before a later run changes the target: their statuses, their output
+    appended in one, the target's writes, whether it is still absent, and
+    whether the progress file given exists."""
     out = "".join(r.out for r in runs)
     return SimpleNamespace(
         target=target,
@@ -1331,8 +1331,8 @@ def test_names_the_replays_main_beside_the_sources_master_and_prints_no_command_
 def old_default(root, source, run_plan, replay_a, compare_finished, replay, compare):
     """A's event file without target_default_branch, as one planned before
     the rename, with a copy of A's state file that records its hash; run into
-    A and compared after the comparisons of the finished A, as in the shell
-    test; A's writes right before the run and after both."""
+    A and compared after the comparisons of the finished A; A's writes right
+    before the run and after both."""
     run_lines = run_plan.file.read_text(encoding="utf-8").splitlines()
     header = json.loads(run_lines[0])
     del header["target_default_branch"]
