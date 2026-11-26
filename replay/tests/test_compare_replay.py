@@ -143,7 +143,9 @@ def test_names_every_difference_it_finds_and_exits_with_1(compare_diff):
     assert has_search("^Differences: [0-9]*$", out), r.out
 
 
-CR_COMMIT = "docs: note the line endings\r\n\r\nA Windows line\r\nand a lone\rreturn\n"
+CR_BODY = "\r\n\r\nA Windows line\r\nand a lone\rreturn\n"
+# Without a type, so that the plan types and lowercases a title that ends in "\r\n".
+CR_COMMIT = "Note the line endings" + CR_BODY
 CR_TAG = "Line endings\r\nkept\r\n"
 
 
@@ -187,7 +189,8 @@ def line_endings(root, base_env, source, run_plan, plan, source_gh, make_target,
     lost = copy_target(root, target, "gh-cr-lost")
     head = lost.git("rev-parse", "refs/heads/main")
     parent = lost.git("rev-parse", "refs/heads/main^")
-    without = CR_COMMIT.replace("\r\n", "\n").replace("\r", "\n")
+    kept = raw_message(target, "refs/heads/main")
+    without = kept.replace("\r\n", "\n").replace("\r", "\n")
     remade = run(
         ["git", "--git-dir", lost.repo, "commit-tree", f"{head}^{{tree}}", "-p", parent],
         {**base_env, **env},
@@ -227,10 +230,14 @@ def raw_message(target, ref):
 
 def test_plans_and_recreates_the_carriage_returns_of_a_commit_and_a_tag_message(line_endings):
     commits = [c for e in line_endings.events for c in e.get("commits", [])]
-    assert commits[-1]["message"] == CR_COMMIT, commits[-1]
+    planned = commits[-1]
+    assert planned["original_title"] == "Note the line endings", planned
+    title, _, body = planned["message"].partition("\r")
+    assert re.fullmatch(r"[a-z]+: note the line endings", title), planned
+    assert "\r" + body == CR_BODY, planned
     tags = [e for e in line_endings.events if e.get("kind") == "create-tag" and e["name"] == "cr"]
     assert [e["message"] for e in tags] == [CR_TAG], tags
-    assert raw_message(line_endings.target, "refs/heads/main") == CR_COMMIT
+    assert raw_message(line_endings.target, "refs/heads/main") == planned["message"]
     assert raw_message(line_endings.target, "refs/tags/cr") == CR_TAG
 
 

@@ -106,21 +106,20 @@ def usage(status=2):
 def run(args, stdin=None, env=None, new_session=False):
     # A git call that needs a password fails instead of waiting for one.
     env = {**(os.environ if env is None else env), "GIT_TERMINAL_PROMPT": "0"}
-    # Bytes, not text mode, which turns "\r\n" and a lone "\r" of a message into "\n".
     try:
-        result = subprocess.run(
+        return subprocess.run(
             args,
-            input=None if stdin is None else stdin.encode("utf-8"),
+            input=stdin,
             stdin=subprocess.DEVNULL if stdin is None else None,
             capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
             env=env,
             start_new_session=new_session,
         )
     except FileNotFoundError:
         raise ReplayError(f"{args[0]} is missing") from None
-    result.stdout = result.stdout.decode("utf-8", errors="replace")
-    result.stderr = result.stderr.decode("utf-8", errors="replace")
-    return result
 
 
 def git(repo, *args, stdin=None, env=None):
