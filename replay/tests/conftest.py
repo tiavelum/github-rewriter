@@ -1141,7 +1141,7 @@ NOTES_MESSAGE = (
 
 @pytest.fixture(scope="session")
 def mirror_msg(root, base_env, hashes, mirror_extra):
-    """mirror-msg.git: mirror-extra.git with tag notes, and tags HEAD and -x that git tag refuses."""
+    """mirror-msg.git: mirror-extra.git with tag notes, and the tags HEAD and -x git tag refuses."""
     mirror = root / "mirror-msg.git"
     shutil.copytree(mirror_extra, mirror, symlinks=True)
     message = root / "notes-message"
