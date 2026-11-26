@@ -1,13 +1,9 @@
-"""The checks of plan-replay.py against the source of the session."""
-
 import pytest
 from conftest import TOOL, has_match
 
 
 @pytest.fixture(scope="module")
 def gh(plan_gh):
-    """The fake gh of every plan of this module but the check of the fake
-    itself: that of planned, in conftest.py, whose log one check reads."""
     return plan_gh
 
 
@@ -41,7 +37,6 @@ TOTALS = [
 
 
 def test_writes_the_plan_and_prints_the_totals_without_warnings(planned):
-    """plan-replay.py writes the plan and prints the totals, without warnings"""
     main = planned.main
     assert main.status == 0, main.err
     assert main.err == ""
@@ -51,7 +46,6 @@ def test_writes_the_plan_and_prints_the_totals_without_warnings(planned):
 
 
 def test_creates_the_items_in_number_order_issues_and_pull_requests_interleaved(main_plan):
-    """plan-replay.py creates the items in number order, issues and pull requests interleaved"""
     items = [
         (e["number"], e["kind"])
         for e in main_plan.events
@@ -68,7 +62,6 @@ def test_creates_the_items_in_number_order_issues_and_pull_requests_interleaved(
 
 
 def test_orders_the_events_by_time_after_the_labels(main_plan):
-    """plan-replay.py orders the events by time, after the labels"""
     events = main_plan.events
     assert [e["seq"] for e in events] == list(range(1, len(events) + 1))
     assert [e["kind"] for e in events[:2]] == ["create-label"] * 2
@@ -81,7 +74,6 @@ def test_orders_the_events_by_time_after_the_labels(main_plan):
 def test_places_a_branch_that_merges_a_later_commit_of_the_default_branch_after_it(
     main_plan, hashes
 ):
-    """plan-replay.py places a pull request whose branch merges a later commit of the default branch after that commit"""  # noqa: E501 # the description word for word
     events, of = main_plan.events, main_plan.of
     assert events.index(of("push-branch", 5)[0]) == events.index(of("push-commits")[-1]) + 1
     assert main_plan.commit(hashes["N2"])["parents"] == [hashes["N1"], hashes["C5"]]
@@ -93,7 +85,6 @@ def test_places_a_branch_that_merges_a_later_commit_of_the_default_branch_after_
 
 
 def test_pushes_a_branch_right_before_its_pull_request_and_comments_after_the_item(main_plan):
-    """plan-replay.py pushes a branch right before its pull request and comments after the item"""
     events, of = main_plan.events, main_plan.of
     assert all(
         events.index(of("push-branch", n)[0]) + 1 == events.index(of("create-pull", n)[0])
@@ -107,7 +98,6 @@ def test_pushes_a_branch_right_before_its_pull_request_and_comments_after_the_it
 
 
 def test_applies_the_mailmap_to_author_and_committer_not_the_committed_mailmap(main_plan, hashes):
-    """plan-replay.py applies the mailmap to author and committer, not the committed .mailmap"""
     assert {
         (p["name"], p["email"])
         for e in main_plan.events
@@ -118,7 +108,6 @@ def test_applies_the_mailmap_to_author_and_committer_not_the_committed_mailmap(m
 
 
 def test_keeps_the_original_dates_trees_and_parents(main_plan, hashes):
-    """plan-replay.py keeps the original dates, trees and parents"""
     commit, of = main_plan.commit, main_plan.of
     assert commit(hashes["C1"])["author"]["date"] == "2026-03-01T10:00:00+00:00"
     assert commit(hashes["C3"])["committer"]["date"] == "2026-03-05T14:00:00+02:00"
@@ -129,7 +118,6 @@ def test_keeps_the_original_dates_trees_and_parents(main_plan, hashes):
 
 
 def test_takes_the_type_from_the_branch_prefix(main_plan, hashes):
-    """plan-replay.py takes the type from the branch prefix"""
     assert main_plan.title(hashes["B1"]) == "feat: add thing"
     assert main_plan.of("create-pull", 3)[0]["title"] == "fix: repair the parser"
     assert main_plan.title(hashes["N1"]) == "docs: add notes"
@@ -137,13 +125,11 @@ def test_takes_the_type_from_the_branch_prefix(main_plan, hashes):
 
 
 def test_keeps_a_type_that_is_present(main_plan, hashes):
-    """plan-replay.py keeps a type that is present"""
     assert main_plan.title(hashes["C2"]) == "ci: add the test workflow"
     assert main_plan.commit(hashes["C2"])["type_from"] == "present"
 
 
 def test_guesses_and_marks_the_type_of_a_direct_commit(main_plan, hashes):
-    """plan-replay.py guesses and marks the type of a direct commit"""
     marked = [
         (main_plan.title(hashes[k]), main_plan.commit(hashes[k])["type_from"])
         for k in ("C1", "C3", "C5")
@@ -156,20 +142,17 @@ def test_guesses_and_marks_the_type_of_a_direct_commit(main_plan, hashes):
 
 
 def test_respects_the_override_file(main_plan, hashes):
-    """plan-replay.py respects the override file"""
     assert main_plan.title(hashes["C4"]) == "chore: tidy the scripts"
     assert main_plan.commit(hashes["C4"])["type_from"] == "override"
 
 
 def test_lowercases_only_a_capitalised_ordinary_first_word(main_plan, hashes):
-    """plan-replay.py lowercases only a capitalised ordinary first word"""
     assert main_plan.title(hashes["B2"]) == "feat: README: mention thing"
     assert main_plan.title(hashes["C5"]).endswith("POSIX sh")
     assert main_plan.of("create-pull", 2)[0]["title"] == "feat: add thing"
 
 
 def test_keeps_bodies_as_they_are(main_plan, hashes):
-    """plan-replay.py keeps bodies as they are"""
     of, commit = main_plan.of, main_plan.commit
     assert of("create-pull", 2)[0]["body"] == "Adds thing.\n\nCloses #1"
     assert of("create-pull", 3)[0]["body"].count("\r\n") == 8
@@ -180,7 +163,6 @@ def test_keeps_bodies_as_they_are(main_plan, hashes):
 
 
 def test_squash_merges_a_squashed_pull_request_with_its_typed_title_and_body(main_plan, hashes):
-    """plan-replay.py squash-merges a squashed pull request with its typed title and body"""
     merge = main_plan.of("merge-pull", 2)[0]
     assert merge["commit_title"] == "feat: add thing (#2)"
     assert merge["commit_message"] == "* Add thing\n\n* README: mention thing"
@@ -188,7 +170,6 @@ def test_squash_merges_a_squashed_pull_request_with_its_typed_title_and_body(mai
 
 
 def test_turns_a_merge_commit_into_a_squash_merge_summing_up_the_description(main_plan):
-    """plan-replay.py turns a merge commit into a squash merge, summing up the description past keywords, headings and lead-ins"""  # noqa: E501 # the description word for word
     m = main_plan.of("merge-pull", 3)[0]
     assert m
     assert (m["method"], m["source_method"], m["commit_title"], m["commit_message"]) == (
@@ -202,7 +183,6 @@ def test_turns_a_merge_commit_into_a_squash_merge_summing_up_the_description(mai
 def test_gives_a_closed_unmerged_pull_request_a_branch_create_and_close_but_no_merge(
     main_plan, hashes
 ):
-    """plan-replay.py gives a closed unmerged pull request a branch, create and close but no merge"""  # noqa: E501 # the description word for word
     of = main_plan.of
     assert [c["sha"] for c in of("push-branch", 5)[0]["commits"]] == [hashes["N1"], hashes["N2"]]
     assert of("create-pull", 5)[0]["state"] == "closed"
@@ -211,7 +191,6 @@ def test_gives_a_closed_unmerged_pull_request_a_branch_create_and_close_but_no_m
 
 
 def test_closes_issues_with_their_state_reason_and_keeps_labels_and_assignees(main_plan):
-    """plan-replay.py closes issues with their state reason and keeps labels and assignees"""
     of = main_plan.of
     assert [(e["number"], e["state_reason"]) for e in of("close-item")] == [
         (1, "completed"),
@@ -223,7 +202,6 @@ def test_closes_issues_with_their_state_reason_and_keeps_labels_and_assignees(ma
 
 
 def test_pushes_direct_commits_in_a_row_as_one_push(main_plan, hashes):
-    """plan-replay.py pushes direct commits in a row as one push"""
     assert [[c["sha"] for c in e["commits"]] for e in main_plan.of("push-commits")] == [
         [hashes["C1"]],
         [hashes["C2"], hashes["C3"], hashes["C4"]],
@@ -232,7 +210,6 @@ def test_pushes_direct_commits_in_a_row_as_one_push(main_plan, hashes):
 
 
 def test_lists_every_recreated_source_commit_in_the_header(main_plan, hashes):
-    """plan-replay.py lists every recreated source commit in the header"""
     header = main_plan.header
     assert header["kind"] == "header"
     assert header["source"] == "ada-example/tool"
@@ -241,7 +218,6 @@ def test_lists_every_recreated_source_commit_in_the_header(main_plan, hashes):
 
 
 def test_prints_every_changed_title_marking_guessed_types(planned, hashes):
-    """plan-replay.py prints every changed title, marking guessed types"""
     main = planned.main
     c1 = hashes["C1"][:7]
     assert f"  {c1}  guessed  Add the readme  ->  docs: add the readme" in main.out_lines, main.out
@@ -251,7 +227,6 @@ def test_prints_every_changed_title_marking_guessed_types(planned, hashes):
 
 
 def test_prints_every_squash_message_it_writes_for_a_merge_commit(planned):
-    """plan-replay.py prints every squash message it writes for a merge commit"""
     main = planned.main
     assert "Squash messages written for merge commits: 1" in main.out_lines, main.out
     assert "  #3  fix: repair the parser (#3)" in main.out_lines
@@ -262,7 +237,6 @@ def test_prints_every_squash_message_it_writes_for_a_merge_commit(planned):
 # --no-types changes only the first line of the squash merge of #3, to its
 # pull request's title.
 def test_plans_with_no_types_and_with_keep_merges_without_warnings(planned):
-    """plan-replay.py plans with --no-types and with --keep-merges, without warnings"""
     plain, merges = planned.plain, planned.merges
     assert (plain.status, merges.status) == (0, 0), plain.err + merges.err
     assert plain.err == ""
@@ -274,14 +248,12 @@ def test_plans_with_no_types_and_with_keep_merges_without_warnings(planned):
 
 
 def test_no_types_ignores_the_type_lines_of_the_override_file_without_a_warning(planned):
-    """plan-replay.py --no-types ignores the type lines of the override file without a warning"""
     plain_typed = planned.plain_typed
     assert plain_typed.status == 0, plain_typed.err
     assert plain_typed.err == ""
 
 
 def test_no_types_keeps_every_title_as_it_is(plain_plan, hashes):
-    """plan-replay.py --no-types keeps every title as it is"""
     assert plain_plan.title(hashes["B1"]) == "Add thing"
     assert plain_plan.title(hashes["C2"]) == "ci: add the test workflow"
     assert plain_plan.of("create-pull", 3)[0]["title"] == "Repair the parser"
@@ -291,7 +263,6 @@ def test_no_types_keeps_every_title_as_it_is(plain_plan, hashes):
 
 
 def test_takes_the_summary_of_a_squash_message_from_the_override_file(plain_plan):
-    """plan-replay.py takes the summary of a squash message from the override file"""
     m = plain_plan.of("merge-pull", 3)[0]
     assert m
     assert (m["commit_title"], m["commit_message"]) == (
@@ -301,7 +272,6 @@ def test_takes_the_summary_of_a_squash_message_from_the_override_file(plain_plan
 
 
 def test_keep_merges_merges_a_merge_commit_with_its_message_and_tree(merges_plan, hashes):
-    """plan-replay.py --keep-merges merges a merge commit with its message and tree"""
     m = merges_plan.of("merge-pull", 3)[0]
     assert m
     assert (
@@ -324,7 +294,6 @@ def test_keep_merges_merges_a_merge_commit_with_its_message_and_tree(merges_plan
 
 
 def test_reads_every_page_and_calls_gh_only_with_get_requests(planned, gh):
-    """plan-replay.py reads every page and calls gh only with GET requests"""
     assert not gh.refused.exists(), gh.refused.read_text(encoding="utf-8")
     calls = gh.calls()
     assert any("issues?state=all&per_page=100&page=3" in call for call in calls), calls
@@ -332,7 +301,6 @@ def test_reads_every_page_and_calls_gh_only_with_get_requests(planned, gh):
 
 
 def test_the_fake_gh_refuses_writing_requests(source_gh):
-    """the fake gh refuses writing requests"""
     guard = source_gh("guard")
     assert guard.run("gh", "api", "-X", "POST", "repos/a/b/issues").status != 0
     assert guard.run("gh", "api", "repos/a/b/issues", "-f", "title=x").status != 0
@@ -343,7 +311,6 @@ def test_the_fake_gh_refuses_writing_requests(source_gh):
 def test_stops_with_a_message_at_a_branch_that_merges_a_commit_no_pull_request_holds(
     root, source, plan, gh, api_stray, hashes
 ):
-    """plan-replay.py stops with a message at a branch that merges a commit no pull request holds"""
     stray = root / "stray.jsonl"
     result = plan(source.mirror, TOOL, source.mailmap, stray, env=gh.using(FAKE_GH_API=api_stray))
     assert result.status != 0
@@ -354,7 +321,6 @@ def test_stops_with_a_message_at_a_branch_that_merges_a_commit_no_pull_request_h
 
 
 def test_refuses_an_existing_event_file_and_a_missing_folder(root, source, plan, gh, planned):
-    """plan-replay.py refuses an existing event file and a missing folder"""
     s, events = source, planned.files.events
     assert plan(s.mirror, TOOL, s.mailmap, events, env=gh.env).status != 0
     assert events.read_text(encoding="utf-8").count("\n") == 23
@@ -366,7 +332,6 @@ def test_refuses_an_existing_event_file_and_a_missing_folder(root, source, plan,
 
 
 def test_refuses_a_missing_mailmap_and_a_wrong_line_in_the_override_file(root, source, plan, gh):
-    """plan-replay.py refuses a missing mailmap and a wrong line in the override file"""
     s, other = source, root / "other.jsonl"
     assert plan(s.mirror, TOOL, root / "nothing", other, env=gh.env).status != 0
     bad_types = root / "bad-types"
