@@ -52,12 +52,13 @@ gh workflow run test -R tiavelum/github-rewriter --ref <branch>
 
 ## After changing the skill
 
-Package the skill as a ZIP that holds its folder:
+Once the change is on `main`, package the skill as `main` holds it, whichever branch the clone has checked out, into a ZIP that holds its folder:
 
 ```bash
-cd ~/vc/github-rewriter/.claude/skills
-rm -f ~/Downloads/replay-repository.zip
-zip -q -r ~/Downloads/replay-repository.zip replay-repository -x '*.DS_Store'
+git -C ~/vc/github-rewriter fetch -q origin main && \
+  git -C ~/vc/github-rewriter archive --format=zip \
+    --prefix=replay-repository/ -o ~/Downloads/replay-repository.zip \
+    origin/main:.claude/skills/replay-repository
 ```
 
 Then upload `~/Downloads/replay-repository.zip` in the Claude app: in the sidebar, open More, which shows the plugins, connectors and skills, then click Add and Upload a skill.
