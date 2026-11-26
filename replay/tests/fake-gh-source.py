@@ -1,5 +1,9 @@
 """A fake gh that answers GitHub's API for the source of a replay from $FAKE_GH_API, and refuses
-every call but a plain GET, so that a script that would write to the source fails its test."""
+every call but a plain GET, so that a script that would write to the source fails its test.
+
+$FAKE_GH_LOG       gets a line with the arguments of each call
+$FAKE_GH_REFUSED   gets a line for each call it refuses, such as "POST <endpoint>" or "option -f"
+"""
 
 import os
 import re

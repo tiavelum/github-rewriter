@@ -291,6 +291,7 @@ def test_keep_merges_merges_a_merge_commit_with_its_message_and_tree(merges_plan
     assert merges_plan.of("create-pull", 3)[0]["title"] == "fix: repair the parser"
 
 
+# After planned, whose four plans write the calls to gh that this test reads in its log.
 def test_reads_every_page_and_calls_gh_only_with_get_requests(planned, gh):
     assert not gh.refused.exists(), gh.refused.read_text(encoding="utf-8")
     calls = gh.calls()
