@@ -2,7 +2,7 @@
 
 Where a run of `run-replay.py`, one of the scripts of [`replay/`](../../replay/README.md), stops and how it resumes, for whoever runs a replay.
 
-Ctrl-C stops the run after the event in progress; a second Ctrl-C stops it at once. A run also stops, with a message, at the first of these:
+Ctrl-C stops the run after the event in progress; a second Ctrl-C stops it at once. It reaches a running `git` too, so the run may stop in the middle of an event, which the next run checks and finishes. A run also stops, with a message, at the first of these:
 
 - An issue or pull request gets a number other than the planned one, as when someone else creates an issue in the target during the run; nothing more is done.
 - After a merge, the tree of the default branch differs from the source's tree after that merge.
