@@ -3,16 +3,21 @@
 import json
 import re
 import shutil
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from conftest import (
+    ADA_OLD,
     NBSP_TAG,
     RELEASES,
+    TOOL,
     TOOL_NEW,
     TOOL_SOMEONE_ELSES_ISSUE,
     TOOL_TAGS_RELEASES,
+    Git,
+    as_committer,
     copy_target,
     has_match,
     has_search,
@@ -136,6 +141,113 @@ def test_names_every_difference_it_finds_and_exits_with_1(compare_diff):
     tree = r"^  main, step 7 \([0-9a-f]{7}\): tree [0-9a-f]{7}, the source's [0-9a-f]{7}$"
     assert has_search(tree, out), r.out
     assert has_search("^Differences: [0-9]*$", out), r.out
+
+
+CR_BODY = "\r\n\r\nA Windows line\r\nand a lone\rreturn\n"
+# Without a type, so that the plan types and lowercases a title that ends in "\r\n".
+CR_COMMIT = "Note the line endings" + CR_BODY
+CR_TAG = "Line endings\r\nkept\r\n"
+
+
+@pytest.fixture(scope="module")
+def line_endings(root, base_env, source, run_plan, plan, source_gh, make_target, replay, compare):
+    """A replay of the source whose main ends in a commit, tagged cr with an annotated tag, whose
+    messages hold carriage returns; its comparison; and that of copies that lost them."""
+    mirror = root / "mirror-cr.git"
+    shutil.copytree(source.mirror, mirror, symlinks=True)
+    git = Git(base_env, root)
+    identity = {"GIT_AUTHOR_NAME": ADA_OLD[0], "GIT_AUTHOR_EMAIL": ADA_OLD[1]}
+    date = "2026-03-09T10:00:00+00:00"
+    env = {**identity, "GIT_AUTHOR_DATE": date, **as_committer(ADA_OLD, date)}
+    made = run(
+        ["git", "--git-dir", mirror, "commit-tree", "main^{tree}", "-p", "main"],
+        {**base_env, **env},
+        root,
+        stdin=CR_COMMIT,
+    )
+    assert made.status == 0, made.err
+    tip = made.out.strip()
+    git("--git-dir", mirror, "update-ref", "refs/heads/main", tip)
+    message = root / "cr-tag-message"
+    message.write_bytes(CR_TAG.encode("utf-8"))
+    tag = ("tag", "-a", "--cleanup=verbatim", "-F", message, "cr", tip)
+    git("--git-dir", mirror, *tag, env=env)
+    events = root / "cr.jsonl"
+    s = source
+    planned = plan(
+        *("--types", s.types, mirror, TOOL, s.mailmap, events),
+        env=source_gh("cr-gh").using(FAKE_GH_API=run_plan.api),
+        merged=True,
+    )
+    assert planned.status == 0, planned.out
+    target = make_target("gh-cr")
+    state = root / "cr.state.json"
+    tail = (events, mirror, TOOL_NEW)
+    result = replay(target, TOOL_NEW, "--pace", "0", "--state", state, *tail, merged=True)
+    assert result.status == 0, result.out
+    clean = compare(target, "--state", state, *tail, api=run_plan.api)
+    lost = copy_target(root, target, "gh-cr-lost")
+    head = lost.git("rev-parse", "refs/heads/main")
+    parent = lost.git("rev-parse", "refs/heads/main^")
+    kept = raw_message(target, "refs/heads/main")
+    without = kept.replace("\r\n", "\n").replace("\r", "\n")
+    remade = run(
+        ["git", "--git-dir", lost.repo, "commit-tree", f"{head}^{{tree}}", "-p", parent],
+        {**base_env, **env},
+        root,
+        stdin=without,
+    )
+    assert remade.status == 0, remade.err
+    lost.git("update-ref", "refs/heads/main", remade.out.strip())
+    plain = root / "cr-tag-plain"
+    plain.write_text(CR_TAG.replace("\r\n", "\n"), encoding="utf-8")
+    retag = ("tag", "-f", "-a", "--cleanup=verbatim", "-F", plain, "cr", head)
+    retagged = run(
+        ["git", "--git-dir", lost.repo, *retag],
+        {**base_env, **env},
+        root,
+    )
+    assert retagged.status == 0, retagged.err
+    return SimpleNamespace(
+        events=read_events(events),
+        target=target,
+        clean=clean,
+        lost=compare(lost, "--state", state, *tail, api=run_plan.api),
+    )
+
+
+def read_events(path):
+    with path.open(encoding="utf-8", newline="") as f:
+        return [json.loads(line) for line in f]
+
+
+def raw_message(target, ref):
+    shown = subprocess.run(
+        ["git", "--git-dir", target.repo, "cat-file", "-p", ref], capture_output=True, check=True
+    )
+    return shown.stdout.decode("utf-8").partition("\n\n")[2]
+
+
+def test_plans_and_recreates_the_carriage_returns_of_a_commit_and_a_tag_message(line_endings):
+    commits = [c for e in line_endings.events for c in e.get("commits", [])]
+    planned = commits[-1]
+    assert planned["original_title"] == "Note the line endings", planned
+    title, _, body = planned["message"].partition("\r")
+    assert re.fullmatch(r"[a-z]+: note the line endings", title), planned
+    assert "\r" + body == CR_BODY, planned
+    tags = [e for e in line_endings.events if e.get("kind") == "create-tag" and e["name"] == "cr"]
+    assert [e["message"] for e in tags] == [CR_TAG], tags
+    assert raw_message(line_endings.target, "refs/heads/main") == planned["message"]
+    assert raw_message(line_endings.target, "refs/tags/cr") == CR_TAG
+
+
+def test_finds_no_difference_in_carriage_returns_kept_and_names_each_one_lost(line_endings):
+    assert line_endings.clean.status == 0, line_endings.clean.out
+    assert line_endings.clean.last_out_line == "No differences", line_endings.clean.out
+    out = line_endings.lost.out_lines
+    assert line_endings.lost.status == 1, line_endings.lost.out
+    assert has_search(r"^  main, step \d+ \([0-9a-f]{7}\): the message differs; ", out), out
+    assert has_search(r"^  tag cr: the message differs; ", out), out
 
 
 def test_refuses_a_replay_that_its_state_file_records_unfinished(

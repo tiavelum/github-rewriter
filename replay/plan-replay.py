@@ -145,15 +145,16 @@ def usage(status=2):
 
 
 def run(args, stdin=None):
+    # Bytes, not text mode, which turns "\r\n" and a lone "\r" of a message into "\n".
     try:
         result = subprocess.run(
-            args, input=stdin, capture_output=True, text=True, encoding="utf-8", errors="replace"
+            args, input=None if stdin is None else stdin.encode("utf-8"), capture_output=True
         )
     except FileNotFoundError:
         die(f"{args[0]} is missing")
     if result.returncode:
-        die(f"{' '.join(args[:4])} … failed: {result.stderr.strip()}")
-    return result.stdout
+        die(f"{' '.join(args[:4])} … failed: {result.stderr.decode(errors='replace').strip()}")
+    return result.stdout.decode("utf-8", errors="replace")
 
 
 def gh_get(endpoint):
@@ -611,8 +612,12 @@ def typed_title(title, resolve):
 
 
 def split_message(message):
+    # The "\r" of a title ending in "\r\n" goes with the rest, so that the title is typed as
+    # any other and the message keeps its line ending.
     title, _, rest = message.partition("\n")
-    return title, ("\n" + rest if rest or message.endswith("\n") else "")
+    ending = "\r" if title.endswith("\r") else ""
+    title = title.removesuffix("\r")
+    return title, (ending + "\n" + rest if rest or message.endswith("\n") else ending)
 
 
 def summary(body):
@@ -835,10 +840,10 @@ def plan(mirror, repo, overrides, typed=True, keep_merges=False, off=()):
             warn(f"the merge commit of #{n} does not merge its head; its tree is the merge's")
         if method == "merge":
             commit_title, kind, source = title, None, None
-            commit_message = rest.strip("\n")
+            commit_message = rest.strip("\r\n")
         elif source_method == "squash":
             commit_title, kind, source = retitle(title, resolve_merge)
-            commit_message = rest.strip("\n")
+            commit_message = rest.strip("\r\n")
         else:
             pull_title, kind, source = retitle(items[n]["title"], resolve_merge)
             commit_title = f"{pull_title} (#{n})"
