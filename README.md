@@ -26,7 +26,7 @@ The tests run every script in throwaway repositories and contact no server; the 
 24 passed, 0 failed
 ```
 
-The second, the pytest suite of the replay, takes about six minutes and ends with a line such as:
+The second, the pytest suite of the replay, takes three to six minutes and ends with a line such as:
 
 ```
 ======================= 199 passed in 371.16s (0:06:11) ========================

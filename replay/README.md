@@ -296,7 +296,7 @@ Where GitHub names the target's default branch other than the plan names it, the
 gh api -X PATCH repos/tiavelum/github-rewriter-trial -f default_branch=main
 ```
 
-It checks that the mirror holds every tree of the event file, that GitHub answers for the target under the name you gave (a renamed repository stops it), and that the target is empty, prints what it will do in totals, with the labels the target already has, and asks for the target's `owner/repo`; anything else stops it without a write. It then prints one line per event, and at the end what it did and the target's URL. This is the output of a run of the test's source, `ada-example/tool`, into a fake target, as the suite in [`tests/`](tests) makes it; the answer typed at the prompt does not show, since the test pipes it in:
+It checks that the mirror holds every tree of the event file, that GitHub answers for the target under the name you gave (a renamed repository stops it), and that the target is empty, prints what it will do in totals, with the labels the target already has, and asks for the target's `owner/repo`; anything else stops it without a write. It then prints one line per event, and at the end what it did and the target's URL. This is the output of a run of the test's source, `ada-example/tool`, into a fake target, as the fixture `replay_a` of [`tests/conftest.py`](tests/conftest.py) makes it, with its target `ada-example/tool-new` given a name of the form a run file asks for; the answer typed at the prompt does not show, since the test pipes it in:
 
 ```
 Replay ada-example/tool into ada-example/tool-replay-20261116-1215: 23 events
