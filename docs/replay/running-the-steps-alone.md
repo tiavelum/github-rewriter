@@ -61,7 +61,7 @@ Type ada-example/tool-replay-20261116-1215 to confirm:
 
 With a key other than an Ed25519 SSH key, it adds `this key does not sign a commit the same way twice: a run stopped in a push of signed commits, or in a signed tag, cannot resume`, as [Stopping and resuming](stopping-and-resuming.md#stopping-and-resuming) explains. It ends with the target's URL.
 
-Where GitHub names the target's default branch other than the plan names it, the source's or `main` for a source's `master`, as [What the target ends with](what-a-replay-carries.md#what-the-target-ends-with) describes, the run goes on while the target is empty. Once it is done, make the plan's the default branch, here `main`; where a resumed run stops at `the default branch of tiavelum/github-rewriter-trial is master, the replay's main`, do so first and run it again:
+Where GitHub names the target's default branch other than the plan names it, as [What the target ends with](what-a-replay-carries.md#what-the-target-ends-with) describes, the run goes on while the target is empty. Once it is done, make the plan's the default branch, here `main`; where a resumed run stops at `the default branch of tiavelum/github-rewriter-trial is master, the replay's main`, do so first and run it again:
 
 ```sh
 gh api -X PATCH repos/tiavelum/github-rewriter-trial -f default_branch=main
