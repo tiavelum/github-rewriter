@@ -1,6 +1,4 @@
-"""The checks of compare-replay.py against the finished targets of the
-uninterrupted replay and of the replay with --final-name and against changed
-copies of them, and the replays of tags and releases they compare."""
+"""compare-replay.py, and the replays of tags and releases it compares."""
 
 import json
 import re
@@ -28,17 +26,12 @@ PUBLISH = f"PATCH repos/{TOOL_TAGS_RELEASES}/releases/2"
 
 
 def edit_json(path, change):
-    """Changes the JSON in a file of a target in place, or replaces it with
-    what change returns, and writes it back as json.dumps writes it, on one
-    line."""
     value = json.loads(path.read_text(encoding="utf-8"))
     changed = change(value)
     path.write_text(json.dumps(value if changed is None else changed), encoding="utf-8")
 
 
 def call_lines(target):
-    """The lines of the target's log of calls, split with str.splitlines();
-    a missing log fails, as open() does."""
     return (target.folder / "calls").read_text(encoding="utf-8").splitlines()
 
 
@@ -49,9 +42,6 @@ def releases_by_tag(target):
 def asset_bytes(target, asset):
     return (target.folder / "assets" / str(asset["id"])).read_bytes()
 
-
-# compare-replay.py against the finished targets of the uninterrupted replay
-# and of the replay with --final-name.
 
 FINISHED_TOTALS = (
     "items +6",
@@ -68,7 +58,6 @@ FINISHED_TOTALS = (
 def test_finds_no_difference_in_a_finished_replay_with_final_name_and_without_and_writes_nothing(
     compare_finished,
 ):
-    """compare-replay.py finds no difference in a finished replay, with --final-name and without, and writes nothing"""  # noqa: E501 # the description word for word
     c = compare_finished
     plain, named = c.uninterrupted, c.final_name
     assert (plain.status, named.status) == (0, 0), plain.out + named.out
@@ -83,7 +72,6 @@ def test_finds_no_difference_in_a_finished_replay_with_final_name_and_without_an
 def test_notes_each_branch_the_target_keeps_and_the_source_no_longer_has_and_the_merge_authors(
     compare_finished,
 ):
-    """compare-replay.py notes each branch the target keeps and the source no longer has, and who authored the merges"""  # noqa: E501 # the description word for word
     out = compare_finished.uninterrupted.out_lines
     for b in ("docs/5-notes", "feat/2-thing", "fix/3-parser"):
         note = f"  branch {b} stays in the target; the source no longer has it"
@@ -93,10 +81,6 @@ def test_notes_each_branch_the_target_keeps_and_the_source_no_longer_has_and_the
 
 @pytest.fixture(scope="module")
 def compare_diff(root, base_env, source, run_plan, replay_uninterrupted, compare_finished, compare):
-    """The copy of the uninterrupted replay's target, made after its
-    comparison: #4 closed as completed, a footer on the last comment, the
-    colour of a label, a missing branch, the head of #3 at another commit,
-    and a last commit on main with the tree of the one before; compared."""
     target = copy_target(root, replay_uninterrupted.target, "gh-diff")
     folder = target.folder
 
@@ -137,7 +121,6 @@ DIFF_LINES = (
 
 
 def test_names_every_difference_it_finds_and_exits_with_1(compare_diff):
-    """compare-replay.py names every difference it finds and exits with 1"""
     r = compare_diff
     out = r.out_lines
     assert r.status == 1, r.out
@@ -153,7 +136,6 @@ def test_names_every_difference_it_finds_and_exits_with_1(compare_diff):
 def test_refuses_a_replay_that_its_state_file_records_unfinished(
     source, run_plan, replay_someone_elses_issue, final_name_again, compare
 ):
-    """compare-replay.py refuses a replay that its state file records unfinished"""
     # After final_name_again, whose runs with the default state file,
     # run.state.json, come before this comparison, which reads that file.
     target = replay_someone_elses_issue.target
@@ -166,15 +148,8 @@ def test_refuses_a_replay_that_its_state_file_records_unfinished(
     assert has_search(unfinished, r.out_lines), r.out
 
 
-# The plan that carries three tags and three releases and leaves behind two
-# branches, replayed; compared as it is, with a tag and a release that the
-# source lacks, and with the plan of the uninterrupted replay, which leaves
-# nothing behind, against the same source.
-
-
 @pytest.fixture(scope="module")
 def compare_tags_releases(extra_plan, mirror_extra, api_extra, replay_tags_releases, compare):
-    """The replay of tags and releases compared with the source of extra.jsonl."""
     return compare(
         replay_tags_releases.target,
         extra_plan.file,
@@ -188,8 +163,6 @@ def compare_tags_releases(extra_plan, mirror_extra, api_extra, replay_tags_relea
 def compare_tags_releases_more(
     root, extra_plan, mirror_extra, api_extra, replay_tags_releases, compare_tags_releases, compare
 ):
-    """A copy of the replay of tags and releases with a tag v9 and a release
-    v0.4 that the source lacks, compared."""
     target = copy_target(root, replay_tags_releases.target, "gh-tags-releases-more")
     target.git("tag", "v9", "main")
     later = {"id": 9, "tag_name": "v0.4", "name": "Later", "draft": False, "prerelease": False}
@@ -201,7 +174,6 @@ def compare_tags_releases_more(
 def compare_uninterrupted_extra(
     source, run_plan, mirror_extra, api_extra, replay_uninterrupted, compare_finished, compare
 ):
-    """The uninterrupted replay compared with the source that has tags and releases."""
     tail = (run_plan.file, mirror_extra, TOOL_NEW)
     return compare(
         replay_uninterrupted.target, "--state", replay_uninterrupted.state, *tail, api=api_extra
@@ -212,9 +184,6 @@ def compare_uninterrupted_extra(
 def compare_uninterrupted_tags(
     root, hashes, run_plan, mirror_extra, api_extra, replay_uninterrupted, compare_finished, compare
 ):
-    """A copy of the uninterrupted replay's target that carries v0.1 and v0.2
-    at the recreated commits, v0.2 as an annotated tag of an annotated tag,
-    compared with the same source."""
     target = copy_target(root, replay_uninterrupted.target, "gh-uninterrupted-tags")
     target.git("tag", "v0.1", recreated(replay_uninterrupted.state, hashes["M2"]))
     target.git(
@@ -229,8 +198,6 @@ def compare_uninterrupted_tags(
 def compare_tags_releases_lost(
     root, extra_plan, mirror_extra, api_extra, replay_tags_releases, compare_tags_releases, compare
 ):
-    """A copy of the replay of tags and releases without the branch of #3,
-    which the replay pushed, compared."""
     target = copy_target(root, replay_tags_releases.target, "gh-tags-releases-lost")
     target.git("update-ref", "-d", "refs/heads/fix/3-parser")
     return compare(target, extra_plan.file, mirror_extra, TOOL_TAGS_RELEASES, api=api_extra)
@@ -240,9 +207,6 @@ def compare_tags_releases_lost(
 def replay_before_left_behind(
     root, extra_plan, mirror_extra, api_extra, make_target, replay, compare
 ):
-    """The plan of tags and releases with a header that predates left_behind,
-    old.jsonl, replayed into a target that deletes head branches on merge,
-    and compared."""
     lines = extra_plan.file.read_text(encoding="utf-8").splitlines()
     header = json.loads(lines[0])
     del header["left_behind"], header["turned_off"]
@@ -262,9 +226,6 @@ def replay_before_left_behind(
 def replay_source_deletes_branches(
     root, leave, mirror_extra, api_extra_del, plan_extra, make_target, replay, compare
 ):
-    """The plan of the source that deletes head branches on merge, which
-    leaves behind the branches of #2 and #3 as well, replayed into a target
-    that deletes them, and compared."""
     leave_del = root / "leave-del"
     leave_del.write_text(
         "branch feat/2-thing\nbranch fix/3-parser\n" + leave.read_text(encoding="utf-8"),
@@ -285,7 +246,6 @@ def replay_source_deletes_branches(
 
 @pytest.fixture(scope="module")
 def compare_tags_releases_odd(extra_plan, mirror_odd, api_extra, replay_tags_releases, compare):
-    """The replay of tags and releases compared with the source of the odd tags."""
     return compare(
         replay_tags_releases.target, extra_plan.file, mirror_odd, TOOL_TAGS_RELEASES, api=api_extra
     )
@@ -294,7 +254,6 @@ def compare_tags_releases_odd(extra_plan, mirror_odd, api_extra, replay_tags_rel
 def test_notes_each_branch_left_behind_takes_each_tag_and_release_as_carried_and_finds_none(
     replay_tags_releases, compare_tags_releases
 ):
-    """compare-replay.py notes each branch of the source that the plan left behind, takes each tag and release it carries as carried, and finds no difference"""  # noqa: E501 # the description word for word
     r, c = replay_tags_releases.result, compare_tags_releases
     out = c.out_lines
     assert (r.status, c.status) == (0, 0), r.out + c.out
@@ -310,7 +269,6 @@ def test_notes_each_branch_left_behind_takes_each_tag_and_release_as_carried_and
 def test_names_a_tag_and_a_release_of_the_target_that_the_source_lacks_as_differences(
     compare_tags_releases_more,
 ):
-    """compare-replay.py names a tag and a release of the target that the source lacks as differences"""  # noqa: E501 # the description word for word
     r = compare_tags_releases_more
     out = r.out_lines
     assert r.status == 1, r.out
@@ -334,7 +292,6 @@ UNINTERRUPTED_EXTRA_LINES = (
 def test_names_each_tag_release_and_branch_the_target_lacks_and_the_plan_kept_as_a_difference(
     compare_uninterrupted_extra,
 ):
-    """compare-replay.py names as a difference each tag, release and branch of the source that the target lacks and the plan did not leave behind"""  # noqa: E501 # the description word for word
     r = compare_uninterrupted_extra
     out = r.out_lines
     assert r.status == 1, r.out
@@ -352,7 +309,6 @@ def test_names_each_tag_release_and_branch_the_target_lacks_and_the_plan_kept_as
 def test_takes_a_tag_at_the_recreated_commit_lightweight_or_annotated_as_carried_unplanned(
     compare_uninterrupted_tags,
 ):
-    """compare-replay.py takes a tag of the target at the recreated commit, lightweight or annotated, as carried, where the event file plans no tag"""  # noqa: E501 # the description word for word
     r = compare_uninterrupted_tags
     out = r.out_lines
     assert r.status == 1, r.out
@@ -365,7 +321,6 @@ def test_takes_a_tag_at_the_recreated_commit_lightweight_or_annotated_as_carried
 def test_names_a_pushed_branch_the_target_lacks_once_as_a_branch_of_the_replay(
     compare_tags_releases_lost,
 ):
-    """compare-replay.py names a pushed branch the target lacks once, as a branch of the replay"""
     r = compare_tags_releases_lost
     assert r.status == 1, r.out
     assert has_match("Differences: 1", r.out_lines), r.out
@@ -375,7 +330,6 @@ def test_names_a_pushed_branch_the_target_lacks_once_as_a_branch_of_the_replay(
 def test_notes_an_event_file_before_left_behind_and_takes_branches_deleted_on_merge_as_carried(
     replay_before_left_behind,
 ):
-    """compare-replay.py notes an event file that predates left_behind, and takes the branches the target deleted on merge as carried"""  # noqa: E501 # the description word for word
     r, c = replay_before_left_behind.result, replay_before_left_behind.compared
     out = c.out_lines
     assert (r.status, c.status) == (0, 1), r.out + c.out
@@ -388,7 +342,6 @@ def test_notes_an_event_file_before_left_behind_and_takes_branches_deleted_on_me
 def test_notes_as_left_behind_a_pushed_branch_the_plan_left_behind_as_the_target_deletes_it(
     replay_source_deletes_branches,
 ):
-    """compare-replay.py notes as left behind a pushed branch that the plan left behind, since the target deletes it on merge"""  # noqa: E501 # the description word for word
     r, c = replay_source_deletes_branches.result, replay_source_deletes_branches.compared
     out = c.out_lines
     assert (r.status, c.status) == (0, 0), r.out + c.out
@@ -400,7 +353,6 @@ def test_notes_as_left_behind_a_pushed_branch_the_plan_left_behind_as_the_target
 def test_names_a_tag_of_a_tag_a_tag_of_a_tree_and_a_nbsp_tag_without_a_traceback(
     compare_tags_releases_odd,
 ):
-    """compare-replay.py names a tag of a tag, a tag of a tree and a tag whose name holds a no-break space, without a traceback"""  # noqa: E501 # the description word for word
     r = compare_tags_releases_odd
     out = r.out_lines
     assert r.status == 1, r.out
@@ -410,19 +362,9 @@ def test_names_a_tag_of_a_tag_a_tag_of_a_tree_and_a_nbsp_tag_without_a_traceback
     assert not has_search("Traceback", out), r.out
 
 
-# Releases: the target of the replay of tags and releases, which has
-# immutable releases, as the run created its releases; a copy of it with
-# releases that differ, compared and checked again by run-replay.py from a
-# copy of its state file; the same replay stopped by lost answers and a
-# half-done upload and resumed; one stopped at the publication of v0.2; one
-# from a source whose assets have other bytes; and one with --with-times,
-# compared.
-
-
 def test_creates_each_release_on_its_tag_with_its_name_body_kind_latest_and_assets(
     api, hashes, replay_tags_releases
 ):
-    """run-replay.py creates each release on its tag, the pre-release and the draft included, in a target with immutable releases, with the planned name, the body with its hashes replaced, the source's latest as the latest, and each asset of the source whole"""  # noqa: E501 # the description word for word
     target = replay_tags_releases.target
     m = json.loads(replay_tags_releases.state.read_text(encoding="utf-8"))["hashes"]
     r = releases_by_tag(target)
@@ -456,7 +398,6 @@ def test_creates_each_release_on_its_tag_with_its_name_body_kind_latest_and_asse
 def test_records_each_release_and_asset_in_the_state_file_and_removes_each_download(
     root, replay_tags_releases
 ):
-    """run-replay.py records each release and asset in the state file, and removes each download and its folder once uploaded"""  # noqa: E501 # the description word for word
     target = replay_tags_releases.target
     v = [
         a["id"] for x in target.load("releases", []) if x["tag_name"] == "v0.2" for a in x["assets"]
@@ -480,7 +421,6 @@ TAGS_RELEASES_TOTALS = (
 def test_counts_the_releases_their_assets_and_their_size_and_prints_a_line_per_release(
     root, replay_tags_releases, replay_uninterrupted
 ):
-    """run-replay.py counts the releases, their assets and their size in its totals, and prints a line per release"""  # noqa: E501 # the description word for word
     out, plain = replay_tags_releases.result.out_lines, replay_uninterrupted.result.out_lines
     assert not (root / "extra.downloads").exists()
     for t in TAGS_RELEASES_TOTALS:
@@ -507,12 +447,6 @@ def changed_releases(
     compare,
     replay,
 ):
-    """A copy of the replay of tags and releases whose v0.1.1 has another name
-    and body and is a draft, not a pre-release, whose v0.2 lacks notes.txt,
-    has another size, content type and digest of tool.tar.gz and an asset
-    more, and is not the latest, which lacks v0.3 and has a release v0.4
-    more; compared, and checked again by run-replay.py from a copy of the
-    replay's state file."""
     target = copy_target(root, replay_tags_releases.target, "gh-changed-releases")
     state = root / "changed-releases.state.json"
     shutil.copyfile(replay_tags_releases.state, state)
@@ -578,7 +512,6 @@ CHANGED_RELEASES_LINES = (
 def test_names_each_release_that_differs_in_kind_assets_or_latest_one_it_lacks_and_one_more(
     changed_releases,
 ):
-    """compare-replay.py names a release with another name, body, draft and pre-release, one that lacks an asset, has another, and has one of another size, content type and digest, one that is not the latest as planned, one it lacks, and one the source lacks"""  # noqa: E501 # the description word for word
     r = changed_releases.compared
     out = r.out_lines
     assert r.status == 1, r.out
@@ -596,7 +529,6 @@ def test_names_each_release_that_differs_in_kind_assets_or_latest_one_it_lacks_a
 def test_checks_the_releases_after_the_last_event_and_stops_at_each_that_differs(
     changed_releases,
 ):
-    """run-replay.py checks the target's releases after the last event, and stops at a release of another kind, one with other assets, a latest release that differs, a release it lacks and one more"""  # noqa: E501 # the description word for word
     r = changed_releases.again
     differs = (
         "run-replay.py: ada-example/tool-tags-releases differs from the plan: release v0.1.1 is on"
@@ -611,12 +543,6 @@ def test_checks_the_releases_after_the_last_event_and_stops_at_each_that_differs
 
 @pytest.fixture(scope="module")
 def resumed_releases(root, api, extra_plan, mirror_extra, api_extra, make_target, replay, compare):
-    """The replay of tags and releases stopped by an answer lost after the
-    creation of the first release, by one lost after the upload of
-    tool.tar.gz, and by an upload of notes.txt that GitHub leaves half done,
-    and resumed each time, the last time with a download left behind of an
-    asset uploaded and a damaged one of notes.txt; then compared. The output
-    of the four runs in one, in the order they ran."""
     target = make_target("gh-resumed-releases", TOOL_TAGS_RELEASES)
     state = root / "resumed-releases.state.json"
     tail = (extra_plan.file, mirror_extra, TOOL_TAGS_RELEASES)
@@ -636,11 +562,9 @@ def resumed_releases(root, api, extra_plan, mirror_extra, api_extra, make_target
         resume(f"{UPLOADS}?name=tool.tar.gz"),
         resume(""),
     ]
-    # A download of tool.tar.gz, which is recorded as uploaded, as a stop
-    # between that record and the download's removal leaves it, and the
-    # download of notes.txt, which the stopped run left, damaged. Where the
-    # stopped runs left no such folder, neither is written, and the checks
-    # find the last run without them.
+    # Asset 11, tool.tar.gz, as a stop between its upload's record and its removal leaves it,
+    # asset 12, notes.txt, damaged;
+    # where the stopped runs left no such folder, the checks find the last run without them.
     downloads = root / "resumed-releases.downloads"
     if downloads.is_dir():
         shutil.copyfile(api / f"{RELEASES}_assets_11.bin", downloads / "11")
@@ -659,7 +583,6 @@ def resumed_releases(root, api, extra_plan, mirror_extra, api_extra, make_target
 def test_resumes_a_release_after_its_draft_and_between_uploads_with_each_asset_once(
     resumed_releases,
 ):
-    """run-replay.py resumes a release stopped after the creation of its draft and between two uploads with one release and each asset once, removes the asset an upload left half done and a download left behind, and downloads again one it finds damaged"""  # noqa: E501 # the description word for word
     resumed = resumed_releases
     target = resumed.target
     releases = target.load("releases", [])
@@ -697,7 +620,6 @@ def test_resumes_a_release_after_its_draft_and_between_uploads_with_each_asset_o
 def test_says_what_it_found_done_when_it_resumes_a_release_and_the_comparison_finds_none(
     root, resumed_releases
 ):
-    """run-replay.py says what it found done when it resumes a release, and the comparison finds no difference"""  # noqa: E501 # the description word for word
     resumed = resumed_releases
     c, out = resumed.compared, resumed.out_lines
     assert c.status == 0, resumed.out + c.out
@@ -720,10 +642,6 @@ def test_says_what_it_found_done_when_it_resumes_a_release_and_the_comparison_fi
 
 @pytest.fixture(scope="module")
 def published_releases(root, extra_plan, mirror_extra, api_extra, make_target, replay, compare):
-    """The replay of tags and releases into a target with immutable releases,
-    stopped where GitHub refuses the publication of v0.2 and by an answer
-    lost after it, and resumed; copies of the state file and of the target's
-    releases as each run left them; then compared."""
     target = make_target("gh-published-releases", TOOL_TAGS_RELEASES)
     (target.folder / "immutable").touch()
     state = root / "published-releases.state.json"
@@ -762,7 +680,6 @@ def published_releases(root, extra_plan, mirror_extra, api_extra, make_target, r
 def test_publishes_a_release_once_its_assets_are_uploaded_and_resumes_around_the_publication(
     published_releases,
 ):
-    """run-replay.py publishes a release once its assets are uploaded to its draft, and resumes a stop before and after the publication without a second release, asset or publication"""  # noqa: E501 # the description word for word
     published = published_releases
     assert published.statuses == ["1", "1", "0"], published.out
     st = [json.loads(p.read_text(encoding="utf-8"))["releases"] for p in published.states]
@@ -798,7 +715,6 @@ def test_publishes_a_release_once_its_assets_are_uploaded_and_resumes_around_the
 def test_names_a_refused_publication_finds_one_published_after_a_lost_answer_and_compares_clean(
     published_releases,
 ):
-    """run-replay.py names a refused publication, says it found a release published after a lost answer, and the comparison finds no difference"""  # noqa: E501 # the description word for word
     published = published_releases
     c, out = published.compared, published.out_lines
     assert c.status == 0, published.out + c.out
@@ -819,9 +735,6 @@ def test_names_a_refused_publication_finds_one_published_after_a_lost_answer_and
 
 @pytest.fixture(scope="module")
 def bad_downloads(root, api, extra_plan, mirror_extra, make_target, replay):
-    """The replay of tags and releases from a source whose tool.tar.gz has
-    other bytes, then whose notes.txt has another size; the output of both
-    runs in one."""
     api_bad = root / "api-bad"
     shutil.copytree(api, api_bad)
     bad = api_bad / f"{RELEASES}_assets"
@@ -851,7 +764,6 @@ def bad_downloads(root, api, extra_plan, mirror_extra, make_target, replay):
 
 
 def test_stops_at_a_download_whose_digest_or_size_differs_and_uploads_none_of_it(bad_downloads):
-    """run-replay.py stops at a download whose digest or size differs from what GitHub lists, and uploads none of it"""  # noqa: E501 # the description word for word
     bad = bad_downloads
     out = bad.out_lines
     calls = bad.target.calls()
@@ -868,7 +780,6 @@ def test_stops_at_a_download_whose_digest_or_size_differs_and_uploads_none_of_it
         " command again to download it again"
     )
     assert has_text(size, out), bad.out
-    # In grep's basic patterns, ? is no operator but the character itself.
     uploads = [c for c in calls if re.search(r"/releases/2/assets\?name=tool\.tar\.gz$", c)]
     assert len(uploads) == 1, calls
     assert not has_search(r"assets\?name=notes", calls), calls
@@ -876,8 +787,6 @@ def test_stops_at_a_download_whose_digest_or_size_differs_and_uploads_none_of_it
 
 @pytest.fixture(scope="module")
 def timed_releases(root, extra_plan, mirror_extra, api_extra, make_target, replay, compare):
-    """The replay of tags and releases with --with-times, compared with
-    --with-times."""
     target = make_target("gh-timed-releases", TOOL_TAGS_RELEASES)
     state = root / "timed-releases.state.json"
     tail = (extra_plan.file, mirror_extra, TOOL_TAGS_RELEASES)
@@ -899,7 +808,6 @@ def timed_releases(root, extra_plan, mirror_extra, api_extra, make_target, repla
 def test_with_times_appends_to_a_release_body_its_publication_time_or_a_drafts_created_at(
     hashes, timed_releases
 ):
-    """run-replay.py --with-times appends to a release's body the time of its publication, or a draft's created_at"""  # noqa: E501 # the description word for word
     timed = timed_releases
     m = json.loads(timed.state.read_text(encoding="utf-8"))["hashes"]
     r = {x["tag_name"]: x["body"] for x in timed.target.load("releases", [])}
@@ -914,7 +822,6 @@ def test_with_times_appends_to_a_release_body_its_publication_time_or_a_drafts_c
 def test_with_times_finds_no_difference_in_a_replay_with_with_times_that_carries_releases(
     timed_releases,
 ):
-    """compare-replay.py --with-times finds no difference in a replay with --with-times that carries releases"""  # noqa: E501 # the description word for word
     r, c = timed_releases.result, timed_releases.compared
     assert (r.status, c.status) == (0, 0), r.out + c.out
     assert has_match("No differences", c.out_lines), c.out
@@ -922,9 +829,6 @@ def test_with_times_finds_no_difference_in_a_replay_with_with_times_that_carries
 
 @pytest.fixture(scope="module")
 def drafts(root, drafts_plan, mirror_extra, make_target, replay, compare):
-    """The plan of the drafts, replayed and compared; and a copy of its target
-    whose draft on v0.2 has another name and is published, compared and
-    checked again by run-replay.py from a copy of the replay's state file."""
     api = drafts_plan.api
     target = make_target("gh-drafts-replay", TOOL_TAGS_RELEASES)
     state = root / "drafts-replay.state.json"
@@ -970,7 +874,6 @@ def drafts(root, drafts_plan, mirror_extra, make_target, replay, compare):
 def test_creates_a_draft_for_a_commit_at_the_recreated_one_without_a_tag_and_encodes_its_asset(
     hashes, drafts
 ):
-    """run-replay.py creates a draft for a commit at the recreated one, makes no tag of it, and uploads an asset whose name needs percent-encoding under that name"""  # noqa: E501 # the description word for word
     target = drafts.target
     m = json.loads(drafts.state.read_text(encoding="utf-8"))["hashes"]
     releases = target.load("releases", [])
@@ -989,7 +892,6 @@ def test_creates_a_draft_for_a_commit_at_the_recreated_one_without_a_tag_and_enc
 
 
 def test_publishes_a_release_not_the_latest_with_make_latest_false_and_a_draft_beside_one(drafts):
-    """run-replay.py publishes a release that is not the source's latest with make_latest false, so that the latest one published before it stays the latest, and creates a draft beside a published release of its tag"""  # noqa: E501 # the description word for word
     releases = drafts.target.load("releases", [])
     r = {(x["tag_name"], x["draft"]): x for x in releases}
     assert r
@@ -1002,7 +904,6 @@ def test_publishes_a_release_not_the_latest_with_make_latest_false_and_a_draft_b
 def test_takes_drafts_for_a_commit_and_beside_a_release_as_carried_and_notes_one_left_behind(
     drafts,
 ):
-    """compare-replay.py takes a draft for a recreated commit and a draft beside a published release of its tag as carried, and notes a draft it cannot place as left behind"""  # noqa: E501 # the description word for word
     r, c = drafts.replayed, drafts.compared
     out = c.out_lines
     assert (r.status, c.status) == (0, 0), r.out + c.out
@@ -1014,7 +915,6 @@ def test_takes_drafts_for_a_commit_and_beside_a_release_as_carried_and_notes_one
 def test_both_check_a_draft_and_a_published_release_of_one_tag_and_name_the_draft_by_its_kind(
     drafts,
 ):
-    """compare-replay.py and run-replay.py check a draft and a published release of one tag each, and name the draft by its kind"""  # noqa: E501 # the description word for word
     c, again = drafts.compared_published, drafts.published_again
     out = c.out_lines
     assert (c.status, again.status) == (1, 1), c.out + again.out
@@ -1028,22 +928,15 @@ def test_both_check_a_draft_and_a_published_release_of_one_tag_and_name_the_draf
     assert has_text(differs, again.out_lines), again.out
 
 
-# The plan with tags and releases turned off, replayed and compared; and a
-# copy of its target that holds the tag v0.1 at the recreated commit and the
-# release v0.2, which a replay with them turned off creates neither of.
-
-
 @pytest.fixture(scope="module")
 def turned_off(root, hashes, off_plan, mirror_extra, api_extra, make_target, replay, compare):
-    """The plan with tags and releases turned off, replayed with the default
-    state file, off.state.json, and compared; and its copy with the tag and
-    the release, compared."""
     slug = "ada-example/tool-turned-off"
     target = make_target("gh-turned-off", slug)
     tail = (off_plan.file, mirror_extra, slug)
     result = replay(target, slug, "--pace", "0", *tail, merged=True)
     compared = compare(target, *tail, api=api_extra)
     more = copy_target(root, target, "gh-turned-off-more")
+    # off.state.json: the default state file of the replay of off_plan.
     more.git("tag", "v0.1", recreated(root / "off.state.json", hashes["M2"]))
     (more.folder / "releases.json").write_text(
         '[{"id": 1, "tag_name": "v0.2", "name": "Second", "draft": false, "prerelease": false}]\n',
@@ -1066,7 +959,6 @@ TURNED_OFF_NOTES = (
 
 
 def test_notes_each_tag_and_release_as_turned_off_where_the_plan_turns_them_off(turned_off):
-    """compare-replay.py notes each tag and release of the source as turned off where the plan turns them off, not as a difference or as left behind as planned"""  # noqa: E501 # the description word for word
     r, c = turned_off.result, turned_off.compared
     out = c.out_lines
     assert (r.status, c.status) == (0, 0), r.out + c.out
@@ -1080,7 +972,6 @@ def test_notes_each_tag_and_release_as_turned_off_where_the_plan_turns_them_off(
 def test_names_a_tag_or_release_in_the_target_a_difference_where_the_plan_turns_its_kind_off(
     turned_off,
 ):
-    """compare-replay.py names a tag or release of the source in the target a difference where the plan turns its kind off"""  # noqa: E501 # the description word for word
     r = turned_off.compared_more
     out = r.out_lines
     assert r.status == 1, r.out
@@ -1091,21 +982,15 @@ def test_names_a_tag_or_release_in_the_target_a_difference_where_the_plan_turns_
 
 
 def test_creates_no_tag_where_the_plan_turns_tags_off(turned_off):
-    """run-replay.py creates no tag where the plan turns tags off"""
     off = turned_off
     assert off.target.git("for-each-ref", "refs/tags/") == ""
     assert has_match("  tags +0", off.result.out_lines), off.result.out
     assert has_match("  tags +0", off.compared.out_lines), off.compared.out
 
 
-# Tags: the target of the replay of tags and releases, as the run created its
-# tags.
-
-
 def test_creates_each_tag_at_the_recreated_commit_with_its_message_tagger_and_date_unsigned(
     hashes, replay_tags_releases
 ):
-    """run-replay.py creates each tag at the recreated commit, lightweight or annotated, with the planned message, its hashes replaced, the mapped tagger and the original date, unsigned"""  # noqa: E501 # the description word for word
     git = replay_tags_releases.target.git
     state = json.loads(replay_tags_releases.state.read_text(encoding="utf-8"))
     m = state["hashes"]
@@ -1137,7 +1022,6 @@ def test_creates_each_tag_at_the_recreated_commit_with_its_message_tagger_and_da
 def test_counts_the_tags_in_its_totals_and_prints_a_line_per_tag(
     replay_tags_releases, replay_uninterrupted
 ):
-    """run-replay.py counts the tags in its totals and prints a line per tag"""
     m2 = replay_tags_releases.target.git("rev-parse", "refs/tags/v0.1")[:7]
     out, plain = replay_tags_releases.result.out_lines, replay_uninterrupted.result.out_lines
     assert has_match("  tags +3", out), replay_tags_releases.result.out
