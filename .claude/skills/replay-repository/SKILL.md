@@ -5,7 +5,7 @@ description: Replay a GitHub repository into a new, empty one with the scripts o
 
 # Replay a repository
 
-These steps take a replay from the owner's first answers to the replay holding the source's name. The commands, the run file's fields and what each script prints are in `replay/README.md` of tiavelum/github-rewriter; read it from `main` before the first step, and take each command from the part these steps name.
+These steps take a replay from the owner's first answers to the replay holding the source's name. The commands, the run file's fields and what each script prints are in `replay/README.md` of tiavelum/github-rewriter and in the documents it links; read it from `main` before the first step, and take each command from the part these steps name, which the README holds or links.
 
 ## Roles
 
