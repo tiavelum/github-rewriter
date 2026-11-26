@@ -1,59 +1,5 @@
-"""A fake gh that plays GitHub for the targets a replay writes to.
-
-It answers "gh api --include --method M <endpoint> [--input -]" against the
-target named in $FAKE_GITHUB/name, whose items, comments and labels it keeps
-in JSON files in $FAKE_GITHUB and whose git repository is the bare
-$FAKE_GITHUB/repo.git. It numbers issues and pull requests in one sequence,
-merges as GitHub does, with GitHub as committer and fixed dates, and closes
-the issues a merged pull request names with a closing keyword. It logs every
-call, with its time, in $FAKE_GITHUB/calls and every closing in closes.json;
-a pull request gets refs/pull/<number>/head, as on GitHub. It answers a GET of
-another repository from the files in $FAKE_GH_API, as the fake gh of the
-source does, and a call without --include with the body alone, as gh does.
-Each FAKE_GH_* variable names a call "<method> <endpoint>" and acts on its
-first occurrence: RATE_LIMIT answers 403 with Retry-After: 1 and does nothing,
-DENY answers 403 without a rate limit and does nothing, INTERRUPT sends the
-caller a SIGINT, as a Ctrl-C does, LOSE does the call and answers 502;
-FAKE_GH_SKIP gives its number to an issue someone else creates, and
-FAKE_GH_LAG leaves the highest-numbered item and every pull request out of
-the first answer to the list of issues it names, as GitHub's list lags behind
-an item just created. It lists the signing keys of the account from
-ssh_signing_keys.json and gpg_keys.json, none where a file is missing; with
-FAKE_GH_NO_SCOPE, it refuses those lists as GitHub refuses a token without
-the scope they need. Where $FAKE_GITHUB/absent exists, the target does not
-exist until a POST user/repos or orgs/*/repos creates it, private where
-asked, with the default branch $FAKE_GH_DEFAULT, main where it is unset; PUT
-actions/permissions keeps Actions in actions.json, a PATCH of the repository
-keeps its settings in settings.json, but refuses a default branch the target
-lacks and records that in rejected, and a merge deletes the head branch where
-delete_branch_on_merge is on. It keeps the sub-issue links of every
-repository in links.json, by parent, as lists of issue ids, with the ids of
-the target's items 7000 plus the number and those of other repositories from
-their issues in $FAKE_GH_API; it gives each issue it lists from there its
-parent_issue_url and sub_issues_summary, and logs the body of each move of a
-sub-issue in priorities. It keeps the target's releases in releases.json,
-with their assets, whose content lies in assets/<id>, as GitHub's REST pages
-Releases and Release assets describe them: POST releases answers 201 with
-the release's id and upload_url, makes it the latest unless make_latest is
-"false" or it is a draft or a pre-release, and creates a published release's
-missing tag at its target_commitish; PATCH releases/<id> with draft false
-publishes a draft as Update a release describes, creating its missing tag and
-making it the latest as POST does, and answers 200; GET releases/latest
-answers 404 where none is the latest; an upload, "POST <upload_url without
-its template>?name=<name>[&label=]" with -H "Content-Type: <type>" and
---input <file>, answers 201 with the asset, its size and its sha256 digest,
-and 422 for a name the release has already, and, where $FAKE_GITHUB/immutable
-exists, for a release that is no draft, with the message that reports of
-GitHub's immutable releases quote, since GitHub's pages name no answer for
-it; DELETE releases/assets/<id> answers 204. A GET of another repository's
-releases/assets/<id> with -H "Accept: application/octet-stream" prints the
-content of <path>.bin in $FAKE_GH_API, as gh does after it follows GitHub's
-redirect to it. FAKE_GH_HALF makes an upload leave an empty asset in the
-state starter and answer 502, as GitHub's page says an upstream failure may.
-
-The suite runs it through a gh it writes first on PATH, which execs it, so
-that the caller a SIGINT goes to is the script that ran gh.
-"""
+"""A fake gh that plays GitHub's API for the target in $FAKE_GITHUB, as GitHub's REST pages
+describe it; the FAKE_GH_* variables set up a rate limit, a lost answer, a lag and other cases."""
 
 import hashlib
 import json
@@ -69,7 +15,6 @@ from urllib.parse import parse_qs, unquote
 root = Path(os.environ["FAKE_GITHUB"])
 slug = (root / "name").read_text().strip()
 repo = root / "repo.git"
-# The headers and the content of --input <file> of the call, which main sets.
 request_headers, upload_data = {}, None
 REASONS = {
     200: "OK",
@@ -240,7 +185,6 @@ def from_files(path, q):
 
 
 def known_issues():
-    """Every issue the fake knows, by repository and number, with its repository_url."""
     found = {}
     for f in Path(os.environ.get("FAKE_GH_API", "/nonexistent")).glob("repos_*_issues-*.json"):
         owner, repo = re.fullmatch(r"repos_(.+?)_(.+)_issues-\d+\.json", f.name).groups()
@@ -393,12 +337,14 @@ def upload_asset(path, q, call):
     if upload_data is None or not request_headers.get("content-type") or not q.get("name"):
         return invalid("an upload needs the name, a Content-Type and the asset's data")
     if (root / "immutable").exists() and not release["draft"]:
+        # The message reports of immutable releases quote, since GitHub's pages name none.
         return 422, {"message": "Cannot upload assets to an immutable release."}
     if any(a["name"] == q["name"] for a in release.get("assets", [])):
         return 422, {
             "message": "Validation Failed",
             "errors": [{"resource": "ReleaseAsset", "code": "already_exists", "field": "name"}],
         }
+    # An empty asset in the state starter, as GitHub's page says an upstream failure may leave.
     half = once("FAKE_GH_HALF", call)
     data = b"" if half else upload_data
     # Each asset ever uploaded keeps its file, so that no id comes twice.
@@ -661,8 +607,10 @@ elif endpoint.startswith("user/") and os.environ.get("FAKE_GH_NO_SCOPE"):
     ]
 else:
     if once("FAKE_GH_INTERRUPT", call):
+        # The suite's gh execs this script, so its parent is the script that ran gh.
         os.kill(os.getppid(), signal.SIGINT)
     status, data = handle(method, endpoint, body)
+    # GitHub's list of issues lags behind an item just created.
     if status == 200 and isinstance(data, list) and data and once("FAKE_GH_LAG", call):
         top = max(x["number"] for x in data)
         data = [d for d in data if d["number"] != top and "pull_request" not in d]

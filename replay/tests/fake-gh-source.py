@@ -1,14 +1,5 @@
-"""A fake gh that plays GitHub's API for the source of a replay, read-only.
-
-It answers "gh api <endpoint>" from the JSON files in $FAKE_GH_API, a listed
-page that has no file with an empty list, and anything else without a file
-with 404, as gh reports it on standard error. It logs every call in
-$FAKE_GH_LOG, and refuses, and records in $FAKE_GH_REFUSED, every method but
-GET, every field and every other option, --paginate included, so that a
-script that would write to the source fails its test.
-
-The suite runs it through a gh it writes first on PATH.
-"""
+"""A fake gh that answers GitHub's API for the source of a replay from $FAKE_GH_API, and refuses
+every call but a plain GET, so that a script that would write to the source fails its test."""
 
 import os
 import re
