@@ -296,7 +296,7 @@ Where GitHub names the target's default branch other than the plan names it, the
 gh api -X PATCH repos/tiavelum/github-rewriter-trial -f default_branch=main
 ```
 
-It checks that the mirror holds every tree of the event file, that GitHub answers for the target under the name you gave (a renamed repository stops it), and that the target is empty, prints what it will do in totals, with the labels the target already has, and asks for the target's `owner/repo`; anything else stops it without a write. It then prints one line per event, and at the end what it did and the target's URL. This is the output of a run of the test's source, `ada-example/tool`, into a fake target, as `test-replay.sh` makes it; the answer typed at the prompt does not show, since the test pipes it in:
+It checks that the mirror holds every tree of the event file, that GitHub answers for the target under the name you gave (a renamed repository stops it), and that the target is empty, prints what it will do in totals, with the labels the target already has, and asks for the target's `owner/repo`; anything else stops it without a write. It then prints one line per event, and at the end what it did and the target's URL. This is the output of a run of the test's source, `ada-example/tool`, into a fake target, as the suite in [`tests/`](tests) makes it; the answer typed at the prompt does not show, since the test pipes it in:
 
 ```
 Replay ada-example/tool into ada-example/tool-replay-20261116-1215: 23 events
@@ -669,5 +669,4 @@ Events follow the original times, with these constraints: items are created stri
 | `plan-replay.py` | Reads the source from a mirror and from GitHub and writes the event file |
 | `run-replay.py` | Applies the event file to an empty target, the assets of its releases downloaded from the source, and keeps the state file, so that a stopped run resumes |
 | `compare-replay.py` | Compares the finished target with the source, the event file and the state file, read-only, and names every difference |
-| `test-replay.sh` | Tests the scripts of this folder against a source built in a temporary folder and fake GitHub targets, without contacting GitHub |
-| `tests/` | The pytest suite that tests the scripts of this folder, as processes, against the same source and fake `gh` scripts, without contacting GitHub, with its fixtures, the fakes and the pinned requirements; it takes over the checks of `test-replay.sh` a part at a time ([#70](https://github.com/tiavelum/github-rewriter/issues/70)) |
+| `tests/` | The pytest suite that tests the scripts of this folder, as processes, against a source built in a temporary folder and fake `gh` scripts for the source and the targets, without contacting GitHub, with its fixtures, the fakes and the pinned requirements; `--basetemp <folder>` keeps the folder it builds them in |
