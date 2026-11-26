@@ -695,8 +695,8 @@ def test_stops_before_the_confirmation_without_a_write_where_a_sub_issue_link_wo
         " ada-example/plans#9; ada-example/plans#11 under #6. GitHub refuses such a link"
         " whoever makes it, so replay.py cannot carry it. Move or remove these links in the"
         " source first, or replay with plan-replay.py and run-replay.py alone, which leave"
-        " links alone, and leave these links out of the first move in the README's Taking"
-        " over the source's name"
+        " links alone, and leave these links out of the first move in"
+        " docs/replay/taking-over-the-sources-name.md"
     )
     assert crossing in out, replay_py_crossing_owners.out
     survey = escape_but_dots(
