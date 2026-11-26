@@ -555,31 +555,32 @@ def test_sign_signs_exactly_the_recreated_commits_whose_committer_has_the_addres
 
 
 @pytest.fixture(scope="module")
-def roles(root, base_env, source, run_plan, plan, source_gh, ssh_key, sign_target, replay):
-    """A signed replay of the source with two commits on main, Bob's committed by Ada and back."""
-    mirror = root / "mirror-roles.git"
+def swapped_roles(root, base_env, source, run_plan, plan, source_gh, ssh_key, sign_target, replay):
+    """A signed replay of the source with main ending in a commit Bob authored and Ada
+    committed, and one Ada authored and Bob committed."""
+    mirror = root / "mirror-swapped-roles.git"
     shutil.copytree(source.mirror, mirror, symlinks=True)
     git = Git(base_env, root)
     made = {}
     for name, author, committer, date in (
-        ("by Bob", BOB, ADA_OLD, "2026-03-09T10:00:00+00:00"),
-        ("by Ada", ADA_OLD, BOB, "2026-03-09T11:00:00+00:00"),
+        ("Bob authored", BOB, ADA_OLD, "2026-03-09T10:00:00+00:00"),
+        ("Ada authored", ADA_OLD, BOB, "2026-03-09T11:00:00+00:00"),
     ):
         identity = {"GIT_AUTHOR_NAME": author[0], "GIT_AUTHOR_EMAIL": author[1]}
         env = {**identity, "GIT_AUTHOR_DATE": date, **as_committer(committer, date)}
-        message = f"docs: note a change {name}"
+        message = f"docs: note a change {name.lower()}"
         made[name] = git(
             *("--git-dir", mirror, "commit-tree", "main^{tree}", "-p", "main", "-m", message),
             env=env,
         )
         git("--git-dir", mirror, "update-ref", "refs/heads/main", made[name])
-    events = root / "roles.jsonl"
-    env = source_gh("roles-gh").using(FAKE_GH_API=run_plan.api)
+    events = root / "swapped-roles.jsonl"
+    env = source_gh("swapped-roles-gh").using(FAKE_GH_API=run_plan.api)
     s = source
     planned = plan("--types", s.types, mirror, TOOL, s.mailmap, events, env=env, merged=True)
     assert planned.status == 0, planned.out
-    target = sign_target("gh-roles")
-    state = root / "roles.state.json"
+    target = sign_target("gh-swapped-roles")
+    state = root / "swapped-roles.state.json"
     args = ("--pace", "0", *sign_args(state, events, mirror))
     result = replay(target, TOOL_NEW, *args, merged=True, GIT_CONFIG_GLOBAL=ssh_key.config)
     assert result.status == 0, result.out
@@ -588,13 +589,15 @@ def roles(root, base_env, source, run_plan, plan, source_gh, ssh_key, sign_targe
 
 
 @needs_ssh_keygen
-def test_sign_signs_a_commit_by_its_committer_not_by_its_author(ssh_key, roles):
+def test_sign_signs_a_commit_by_its_committer_not_by_its_author(ssh_key, swapped_roles):
     allowed = f"gpg.ssh.allowedSignersFile={ssh_key.signers}"
     marks = {
-        name: roles.target.git("-c", allowed, "log", "-1", "--format=%G?", roles.hashes[sha])
-        for name, sha in roles.made.items()
+        name: swapped_roles.target.git(
+            "-c", allowed, "log", "-1", "--format=%G?", swapped_roles.hashes[sha]
+        )
+        for name, sha in swapped_roles.made.items()
     }
-    assert marks == {"by Bob": "G", "by Ada": "N"}, marks
+    assert marks == {"Bob authored": "G", "Ada authored": "N"}, marks
 
 
 def commits_without_hashes(run_process, target):
