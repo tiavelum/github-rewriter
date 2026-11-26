@@ -1,12 +1,5 @@
-"""The fixtures and helpers of the suite that tests the replay scripts.
-
-The suite runs each script as a process, as a user runs it, with the
-interpreter that runs pytest, against a source it builds once per session in
-a temporary folder: a mirror with pull request refs, made by
-rewrite/backup-mirror.sh, and a fake gh, first on PATH, that answers the
-source's API from JSON files the fixtures write. GitHub is never contacted,
-and the developer's own git configuration is not read.
-"""
+"""Runs each replay script as a process against a source built once per session and a fake gh
+first on PATH, so that no test contacts GitHub or reads the user's own git configuration."""
 
 import hashlib
 import json
@@ -44,31 +37,25 @@ GITHUB = ("GitHub", "noreply@github.com")
 
 
 def lines(text):
-    # Split at newlines alone, as grep does: str.splitlines() also splits at
-    # a carriage return, so a line "x\r" would match "x" exactly.
+    # Not str.splitlines(), which also splits at a carriage return, so that a
+    # line "x\r" does not match "x" exactly.
     return text.removesuffix("\n").split("\n") if text else []
 
 
 def has_match(pattern, lines):
-    """Whether a line matches the pattern whole, as grep -x or grep -Ex finds it."""
     return any(re.fullmatch(pattern, line) for line in lines)
 
 
 def has_search(pattern, lines):
-    """Whether the pattern matches in a line, as grep finds it without -x."""
     return any(re.search(pattern, line) for line in lines)
 
 
 def has_text(text, lines):
-    """Whether a line holds the text, as grep -F finds it without -x."""
     return any(text in line for line in lines)
 
 
 @dataclass(frozen=True)
 class Result:
-    """What a process left: its exit status, standard output and error,
-    with their lines as grep reads them."""
-
     status: int
     out: str
     err: str
@@ -83,14 +70,10 @@ class Result:
 
     @property
     def last_out_line(self):
-        """The last line of standard output, as $(tail -n 1) gives it."""
         return (self.out_lines or [""])[-1]
 
 
 def run(args, env, cwd, stdin=None, merged=False):
-    """Runs a process and returns what it left. stdin, where given, is the
-    text it reads, as printf piped into it; merged puts its standard error
-    into its standard output, in the order written, as 2>&1 does."""
     done = subprocess.run(
         [str(a) for a in args],
         env=env,
@@ -100,9 +83,8 @@ def run(args, env, cwd, stdin=None, merged=False):
         stderr=subprocess.STDOUT if merged else subprocess.PIPE,
         check=False,
     )
-    # Decoded here rather than in text mode, which would turn "\r\n" and a
-    # lone "\r" into "\n", so that a line ending in "\r" fails an exact match
-    # as it does with grep -x.
+    # Not in text mode, which turns "\r\n" and a lone "\r" into "\n", so that
+    # a line ending in "\r" fails an exact match.
     return Result(
         done.returncode,
         done.stdout.decode("utf-8", errors="replace"),
@@ -111,8 +93,6 @@ def run(args, env, cwd, stdin=None, merged=False):
 
 
 class Git:
-    """Runs git in one work tree, with the suite's environment."""
-
     def __init__(self, env, cwd):
         self.env = env
         self.cwd = Path(cwd)
@@ -134,8 +114,6 @@ class Git:
         return self("rev-parse", rev)
 
     def save(self, date, message, author=ADA_OLD, committer=None):
-        """Commits the index by that author, and by that committer or else the
-        author, on that date."""
         committer = committer or author
         self(
             "commit",
@@ -153,7 +131,6 @@ class Git:
         )
 
     def change(self, file, date, message, author=ADA_OLD):
-        """Appends the message to the file and commits it."""
         path = self.cwd / file
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as f:
@@ -164,22 +141,17 @@ class Git:
 
 @pytest.fixture(scope="session")
 def root(tmp_path_factory):
-    """The temporary folder of the session."""
     return tmp_path_factory.mktemp("replay-test")
 
 
 @pytest.fixture(scope="session")
 def base_env(root):
-    """The environment of the scripts, without the fake gh.
-
-    A git configuration of the suite's own, and SOURCE_DATE_EPOCH, the
-    committer date run-replay.py gives each recreated commit, in UTC so that
-    its offset is +0000: two runs build the same hashes.
-    """
     config = root / "global"
     config.write_text(GLOBAL_CONFIG, encoding="utf-8")
     unset = ("GIT_DIR", "GIT_WORK_TREE", "GIT_TERMINAL_PROMPT")
     env = {k: v for k, v in os.environ.items() if k not in unset}
+    # SOURCE_DATE_EPOCH is the committer date of each recreated commit, in UTC
+    # so that its offset is +0000: two runs build the same hashes.
     env.update(
         GIT_CONFIG_GLOBAL=str(config),
         GIT_CONFIG_NOSYSTEM="1",
@@ -191,8 +163,6 @@ def base_env(root):
 
 @dataclass(frozen=True)
 class Source:
-    """The source the session builds, and the files every plan of it reads."""
-
     root: Path
     bare: Path
     work: Path
@@ -205,14 +175,6 @@ class Source:
 
 @pytest.fixture(scope="session")
 def source(root, base_env):
-    """The source, as on GitHub, mirrored by backup-mirror.sh.
-
-    Direct commits; #2 squash-merged; #3 merged with a merge commit; #5 closed
-    unmerged, after its branch merged main past the opening of #6; issues #1,
-    #4 and #6 between them. GitHub commits the merges; a committed .mailmap
-    must not count. refs/pull/7/head merges a commit no pull request holds,
-    for a check that uses another API.
-    """
     bare, work = root / "source.git", root / "work"
     Git(base_env, root)("init", "-q", "--bare", bare)
     Git(base_env, root)("clone", "-q", bare, work)
@@ -274,6 +236,7 @@ def source(root, base_env):
     hashes["N1"] = git.head()
     git("push", "-q", "origin", "HEAD:refs/pull/5/head")
     git("switch", "-q", "main")
+    # A committed .mailmap, which the plan must not apply.
     (work / ".mailmap").write_text(
         "Wrong Name <wrong@example.com> <ada.old@example.com>\n", encoding="utf-8"
     )
@@ -286,6 +249,7 @@ def source(root, base_env):
     git.save("2026-03-07T13:00:00+00:00", "Merge main into docs/5-notes")
     hashes["N2"] = git.head()
     git("push", "-q", "origin", "HEAD:refs/pull/5/head")
+    # refs/pull/7/head merges a commit no pull request holds; only api_stray lists #7.
     git("switch", "-q", "-c", "side", hashes["C1"])
     git.change("side.md", "2026-03-08T09:00:00+00:00", "Add a side note")
     hashes["S1"] = git.head()
@@ -314,8 +278,6 @@ def source(root, base_env):
 
 @pytest.fixture(scope="session")
 def hashes(source):
-    """The source's hashes by name, such as C1, B1, M2 and TREE3, as source
-    records them."""
     return source.hashes
 
 
@@ -484,7 +446,6 @@ def write_json(path, data):
 
 @pytest.fixture(scope="session")
 def api(root, hashes):
-    """The folder of the API of the source, ada-example/tool, that the fake gh answers from."""
     folder = root / "api"
     folder.mkdir()
 
@@ -492,10 +453,8 @@ def api(root, hashes):
         return folder / f"{API_BASE}{name}"
 
     write_json(file(".json"), {"default_branch": "main"})
-    # The content of the two assets of the release v0.2 that a later copy
-    # of this API lists, which a download with Accept:
-    # application/octet-stream gets; here, so that every copy has them. The
-    # first holds bytes that are no text.
+    # The assets of v0.2, which only api_extra lists, stand here so that every
+    # copy of this API has them; the first is no text.
     file("_releases_assets_11.bin").write_bytes(b"\037\213\010\000tool\377\000\n")
     file("_releases_assets_12.bin").write_bytes(b"Notes for v0.2\n")
     write_json(file("_labels-1.json"), LABELS)
@@ -508,8 +467,6 @@ def api(root, hashes):
 
 @pytest.fixture(scope="session")
 def api_stray(root, api, hashes):
-    """The same API, with a pull request #7 whose branch merges a commit that
-    neither the default branch nor a pull request holds."""
     folder = root / "api-stray"
     shutil.copytree(api, folder)
     seven = pull(7, "feat/7-side", hashes["H7"], None, None, "2026-03-08T11:00:00Z")
@@ -519,31 +476,23 @@ def api_stray(root, api, hashes):
 
 @dataclass(frozen=True)
 class FakeGh:
-    """An environment with the fake gh of the source first on PATH."""
-
     env: dict
     log: Path
     refused: Path
     cwd: Path
 
     def run(self, *args):
-        """Runs a command in this environment, from the session's folder."""
         return run(args, self.env, self.cwd)
 
     def using(self, **variables):
-        """The environment with these variables set, such as another FAKE_GH_API."""
         return {**self.env, **{k: str(v) for k, v in variables.items()}}
 
     def calls(self):
-        """The lines of the log, one per call; a missing log fails, as grep does."""
         return lines(self.log.read_text(encoding="utf-8"))
 
 
 @pytest.fixture(scope="session")
 def source_gh(root, base_env, api):
-    """Makes an environment whose gh is the fake of the source, answering from
-    the API folder, with the log and the refused-calls file named <name>-calls
-    and <name>-refused in the session's folder."""
     bin_dir = root / "bin"
     bin_dir.mkdir()
     gh = bin_dir / "gh"
@@ -567,9 +516,6 @@ def source_gh(root, base_env, api):
 
 @pytest.fixture(scope="session")
 def plan(root):
-    """Runs plan-replay.py with these arguments in that environment, from the
-    session's folder, with the interpreter that runs pytest."""
-
     def plan(*args, env, merged=False):
         return run([sys.executable, REPLAY / "plan-replay.py", *args], env, root, merged=merged)
 
@@ -577,28 +523,22 @@ def plan(root):
 
 
 class Plan:
-    """An event file: its header, and its events, in their order."""
-
     def __init__(self, path):
         with Path(path).open(encoding="utf-8") as f:
             self.header, *self.events = [json.loads(line) for line in f]
 
     def of(self, kind, number=None):
-        """The events of a kind, of item number where one is given."""
         return [e for e in self.events if e["kind"] == kind and number in (None, e.get("number"))]
 
     def commit(self, sha):
-        """The planned commit of that source commit."""
         return next(c for e in self.events for c in e.get("commits", []) if c["sha"] == sha)
 
     def title(self, sha):
-        """The first line of the message of that planned commit."""
         return self.commit(sha)["message"].partition("\n")[0]
 
 
 @pytest.fixture(scope="session")
 def read_plan():
-    """Reads an event file as a Plan."""
     return Plan
 
 
@@ -607,18 +547,13 @@ TOOL = "ada-example/tool"
 
 @pytest.fixture(scope="session")
 def plan_gh(source_gh):
-    """The fake gh of the four plans of planned, and of the other checks of
-    plan-replay.py on the source but the check of the fake itself, whose log
-    the check of the calls to gh reads."""
+    # One log for every plan of the source in test_plan_replay.py, which the
+    # check of the calls to gh reads.
     return source_gh("plan-gh")
 
 
 @pytest.fixture(scope="session")
 def planned(root, source, plan, plan_gh):
-    """The four plans of the source that the checks of plan-replay.py read,
-    events.jsonl first, made together, since the check of the calls to gh
-    reads the log of all four; several checks read what the first printed,
-    kept as main."""
     s, gh = source, plan_gh
     files = SimpleNamespace(
         events=root / "events.jsonl",
@@ -643,9 +578,6 @@ def planned(root, source, plan, plan_gh):
 
 @dataclass(frozen=True)
 class Planned:
-    """A plan the session makes once: its event file, the API folder it was
-    planned from, and what plan-replay.py printed, standard error included."""
-
     file: Path
     api: Path
     result: Result
@@ -653,10 +585,6 @@ class Planned:
 
 @pytest.fixture(scope="session")
 def run_plan(root, source, api, plan, source_gh):
-    """The plan run-replay.py applies, run.jsonl: the source's, with a fourth
-    comment, on #6, after every merge, that names a direct commit and a squash
-    merge by their hashes, and a word of hex characters that is no commit. Its
-    API, api-run, is a copy of the source's with that comment."""
     folder = root / "api-run"
     shutil.copytree(api, folder)
     page = folder / f"{API_BASE}_issues_comments-1.json"
@@ -679,8 +607,7 @@ def run_plan(root, source, api, plan, source_gh):
     return Planned(events, folder, result)
 
 
-# The labels GitHub gives a new repository: the text of a new target's
-# labels.json.
+# The labels GitHub gives a new repository.
 NEW_LABELS = (
     '[{"name": "bug", "color": "ee0701", "description": "Something is wrong"},\n'
     '      {"name": "enhancement", "color": "a2eeef", "description": "New feature or request"}]\n'
@@ -688,40 +615,29 @@ NEW_LABELS = (
 
 
 class Target:
-    """A target of the fake gh of the targets: the folder that holds its
-    name, its JSON files, its log of calls and its bare repository."""
-
     def __init__(self, folder, env):
         self.folder = Path(folder)
         self.env = env
         self.repo = self.folder / "repo.git"
 
     def load(self, name, default):
-        """A JSON file the fake keeps, or default where it has none."""
         path = self.folder / f"{name}.json"
         return json.loads(path.read_text(encoding="utf-8")) if path.exists() else default
 
     def calls(self):
-        """The lines of the log of calls, each its time and "<method> <endpoint>";
-        none where the fake logged no call."""
         path = self.folder / "calls"
         return lines(path.read_text(encoding="utf-8")) if path.exists() else []
 
     def writes(self):
-        """The calls that write, with their times: every line without " GET "."""
         return [c for c in self.calls() if " GET " not in c]
 
     def git(self, *args):
-        """The output of git in the target's repository, stripped; a failing
-        git raises, so that the check that called it fails."""
         done = run(["git", "--git-dir", self.repo, *args], self.env, self.folder)
         if done.status:
             raise RuntimeError(f"git {' '.join(map(str, args))} failed:\n{done.err}")
         return done.out.strip()
 
     def dump(self):
-        """The target's items, comments, labels and closings, the bytes of the
-        four files one after another, then its refs; a missing file fails."""
         files = ("items", "comments", "labels", "closes")
         content = b"".join((self.folder / f"{name}.json").read_bytes() for name in files)
         refs = run(["git", "--git-dir", self.repo, "for-each-ref"], self.env, self.folder)
@@ -730,26 +646,23 @@ class Target:
 
 
 def copy_target(root, target, name):
-    """A copy of the target's folder, as cp -R makes it."""
     shutil.copytree(target.folder, root / name, symlinks=True)
     return Target(root / name, target.env)
 
 
 def recreated(state_file, sha):
-    """The recreated commit of a source commit, from a state file."""
     return json.loads(Path(state_file).read_text(encoding="utf-8"))["hashes"][sha]
 
 
 def shell_status(result):
-    """The exit status as a POSIX shell reports it: a process that a signal
-    killed, which subprocess reports as minus the signal's number, gets 128
-    plus that number, such as 137 for a kill -9."""
+    # subprocess gives a process a signal killed minus the signal's number,
+    # where a POSIX shell gives 128 plus it, such as 137 for a kill -9.
     return 128 - result.status if result.status < 0 else result.status
 
 
 def past_header(text):
-    """The text without its lines up to the first empty one after the first,
-    as sed "1,/^$/d" prints it: the message of a tag that cat-file prints."""
+    # The message of a tag that cat-file prints, as sed "1,/^$/d" leaves it:
+    # the first line never ends the header.
     found = re.findall(r"[^\n]*\n|[^\n]+$", text)
     for i in range(1, len(found)):
         if found[i] == "\n":
@@ -758,17 +671,14 @@ def past_header(text):
 
 
 def write_hook(target, name, script):
-    """A hook of the target's repository, executable, as cat > and chmod +x make it."""
     hook = target.repo / "hooks" / name
     hook.write_text(script, encoding="utf-8")
     hook.chmod(0o755)
 
 
 def kill_hook(ref):
-    """A post-receive hook that kills the run-replay.py whose push of the ref
-    it receives, once, as a machine that stops right after the push would.
-    It finds the run among the hook's ancestors by its command line, which
-    holds the path of run-replay.py after that of the interpreter."""
+    # Kills run-replay.py once its push of the ref arrives, as a machine that
+    # stops right after the push would.
     return f"""\
 #!/bin/sh
 grep -q ' {ref}$' || exit 0
@@ -788,7 +698,6 @@ done
 
 
 def refuse_hook(ref):
-    """A pre-receive hook that refuses the push of the ref once."""
     return f"""\
 #!/bin/sh
 grep -q ' {ref}$' || exit 0
@@ -800,11 +709,6 @@ exit 1
 
 
 class TargetView:
-    """What the checks of a replay read of a target: items by number,
-    comments as (number, body), labels and closes from the fake's files, the
-    state file and its map of source to target hashes, the events of the plan
-    run-replay.py applied, and git in the target's repository."""
-
     def __init__(self, target, state_file, plan):
         self.items = {int(k): v for k, v in target.load("items", {}).items()}
         self.comments = [(c["number"], c["body"]) for c in target.load("comments", [])]
@@ -817,10 +721,6 @@ class TargetView:
 
 @pytest.fixture(scope="session")
 def target_env(root, source_gh):
-    """The environment under which the scripts reach the fake gh of the
-    targets, first on PATH before the fake of the source, with FAKE_GH_API
-    the source's API, from which the fake of the targets answers a GET of
-    another repository."""
     bin_dir = root / "bin-target"
     bin_dir.mkdir()
     gh = bin_dir / "gh"
@@ -835,9 +735,6 @@ def target_env(root, source_gh):
 
 @pytest.fixture(scope="session")
 def make_target(root, base_env):
-    """Makes an empty target in a folder of the session, ada-example/tool-new
-    by default, with two labels as GitHub gives a new repository."""
-
     def make(name, slug="ada-example/tool-new"):
         folder = root / name
         folder.mkdir()
@@ -851,11 +748,6 @@ def make_target(root, base_env):
 
 @pytest.fixture(scope="session")
 def replay(root, target_env):
-    """Runs run-replay.py with these arguments against the target, with the
-    answer typed at the confirmation, the variables given set and those of
-    unset removed, from the session's folder, with the interpreter that runs
-    pytest."""
-
     def replay(target, answer, *args, merged=False, unset=(), **variables):
         env = {**target_env, "FAKE_GITHUB": str(target.folder)}
         env.update({k: str(v) for k, v in variables.items()})
@@ -869,26 +761,20 @@ def replay(root, target_env):
 
 @dataclass(frozen=True)
 class Replayed:
-    """A replay the session makes once: its target, its state file and what
-    run-replay.py printed, with the log of calls and the dump of the target
-    as the run left them, before later runs add to the log."""
-
     target: Target
     state: Path
     result: Result
+    # The log and the dump as the run left them, before later runs add to the log.
     calls: list
     dump: bytes | None
 
     @property
     def writes(self):
-        """The calls of this run that write, as Target.writes() reads them."""
         return [c for c in self.calls if " GET " not in c]
 
 
 @pytest.fixture(scope="session")
 def replay_uninterrupted(root, source, run_plan, make_target, replay):
-    """One uninterrupted run, paced at 0.1 s, that hits a rate limit once;
-    its standard output and error apart."""
     target = make_target("gh-uninterrupted")
     state = root / "uninterrupted.state.json"
     slug = "ada-example/tool-new"
@@ -903,9 +789,6 @@ def replay_uninterrupted(root, source, run_plan, make_target, replay):
 
 @pytest.fixture(scope="session")
 def replay_someone_elses_issue(root, source, run_plan, make_target, replay):
-    """A replay into a target where someone else creates an issue, with the
-    default state file, run.state.json, and --with-times; it stops at #4 and
-    leaves the replay unfinished."""
     slug = TOOL_SOMEONE_ELSES_ISSUE
     target = make_target("gh-someone-elses-issue", slug)
     result = replay(
@@ -921,8 +804,6 @@ def replay_someone_elses_issue(root, source, run_plan, make_target, replay):
 
 @pytest.fixture(scope="session")
 def replay_final_name(root, source, run_plan, make_target, replay):
-    """An unsigned replay with --final-name, whose squash messages name the
-    source, the name the target takes over."""
     slug = TOOL_FINAL_NAME
     target = make_target("gh-final-name", slug)
     state = root / "final-name.state.json"
@@ -938,9 +819,6 @@ def replay_final_name(root, source, run_plan, make_target, replay):
 
 @pytest.fixture(scope="session")
 def run_process(root, base_env):
-    """Runs a command through run(), with the suite's environment, from the
-    session's folder; merged as run() takes it."""
-
     def run_process(*args, merged=False):
         return run(args, base_env, root, merged=merged)
 
@@ -949,8 +827,6 @@ def run_process(root, base_env):
 
 @pytest.fixture(scope="session")
 def view(read_plan, run_plan):
-    """Reads a target as a TargetView, with the state file given and the
-    events of run.jsonl."""
     plan = read_plan(run_plan.file)
 
     def view(target, state_file):
@@ -966,12 +842,9 @@ TOOL_TAGS_RELEASES = "ada-example/tool-tags-releases"
 
 
 # again, lag and final_name_again are session fixtures, so that
-# compare_finished, which compares the uninterrupted replay and the replay
-# with --final-name after them, can ask for them first.
+# compare_finished can ask for them and compare after their runs.
 @pytest.fixture(scope="session")
 def again(root, source, run_plan, replay_uninterrupted, replay):
-    """A run on the finished uninterrupted replay, and one into it with
-    another state file; the count of its writes before them."""
     target = replay_uninterrupted.target
     writes_before = len(target.writes())
     common = ("--pace", "0", "--state")
@@ -985,12 +858,7 @@ def again(root, source, run_plan, replay_uninterrupted, replay):
 
 @pytest.fixture(scope="session")
 def lag(source, run_plan, replay_uninterrupted, replay, again):
-    """A run on the finished uninterrupted replay whose first list of issues
-    lacks the highest-numbered item and every pull request; the reads of #2
-    and #6 before it. It runs after those of again. Its prompt is the content
-    of the target's prompt file right after it, the last run of run-replay.py
-    into that target, since the comparison of the uninterrupted replay that
-    follows writes the file again."""
+    # Asks for again, so that it runs after the runs of again.
     target = replay_uninterrupted.target
 
     def reads(n):
@@ -1008,6 +876,8 @@ def lag(source, run_plan, replay_uninterrupted, replay, again):
         FAKE_GH_LAG="GET repos/ada-example/tool-new/issues?state=all&per_page=100&page=1",
     )
     after = {2: reads(2), 6: reads(6)}
+    # Read here, after the last run into the target, since the comparison of
+    # the uninterrupted replay writes the file again.
     prompt = target.folder / "prompt"
     return SimpleNamespace(
         result=result,
@@ -1020,10 +890,8 @@ def lag(source, run_plan, replay_uninterrupted, replay, again):
 
 @pytest.fixture(scope="session")
 def final_name_again(source, run_plan, replay_final_name, replay_someone_elses_issue, replay):
-    """A resume of the replay with --final-name without it, and two runs into
-    its target with a wrong --final-name and a wrong --sign, with the default
-    state file, run.state.json, which the replay into a target where someone
-    else creates an issue wrote before them."""
+    # Asks for replay_someone_elses_issue, so that bad_name and bad_sign run
+    # after it wrote the default state file, run.state.json.
     target, slug = replay_final_name.target, TOOL_FINAL_NAME
     tail = (run_plan.file, source.mirror, slug)
     state = replay_final_name.state
@@ -1033,13 +901,11 @@ def final_name_again(source, run_plan, replay_final_name, replay_someone_elses_i
     return SimpleNamespace(resumed=resumed, bad_name=bad_name, bad_sign=bad_sign)
 
 
-# A tag name with a no-break space, which git allows in a ref's name.
 NBSP_TAG = "sp\N{NO-BREAK SPACE}ace"
 
 
 def as_committer(person, date):
-    """The environment that makes git record that person and date as the
-    committer, and so as the tagger of an annotated tag."""
+    # git takes the committer as the tagger of an annotated tag.
     return {
         "GIT_COMMITTER_NAME": person[0],
         "GIT_COMMITTER_EMAIL": person[1],
@@ -1049,13 +915,6 @@ def as_committer(person, date):
 
 @pytest.fixture(scope="session")
 def mirror_extra(root, source, base_env):
-    """mirror-extra.git, what a replay leaves behind: a copy of the mirror with
-    a lightweight tag v0.1 at the squash merge of #2, an annotated v0.2 at a
-    direct commit, by Ada's old address and naming a commit by its hash, and
-    an annotated v0.1.1 at the commit of #3's branch, by Bob; and four
-    branches, those of #2 and #3 at their pull requests' heads, that of #5 at
-    another commit than its pull request's head, and wip/idea, the head of no
-    pull request."""
     h = source.hashes
     mirror = root / "mirror-extra.git"
     shutil.copytree(source.mirror, mirror, symlinks=True)
@@ -1076,7 +935,6 @@ def mirror_extra(root, source, base_env):
 
 
 def release(release_id, tag, name, draft, prerelease, target, body, created, published):
-    """A release as GitHub lists it, by ada-example."""
     return {
         "id": release_id,
         "tag_name": tag,
@@ -1096,10 +954,6 @@ RELEASES = f"{API_BASE}_releases"
 
 @pytest.fixture(scope="session")
 def api_extra(root, run_plan, hashes):
-    """api-extra: a copy of the API of run.jsonl with three releases: v0.2,
-    published and the latest, whose body names a commit by its hash, with two
-    assets, one without a digest; v0.1.1, a pre-release; and v0.3, a draft for
-    main, whose tag the source lacks."""
     folder = root / "api-extra"
     shutil.copytree(run_plan.api, folder)
     c4 = hashes["C4"]
@@ -1140,7 +994,6 @@ def api_extra(root, run_plan, hashes):
 
 @pytest.fixture(scope="session")
 def api_extra_del(root, api_extra):
-    """api-extra-del: the same source deleting head branches on merge."""
     folder = root / "api-extra-del"
     shutil.copytree(api_extra, folder)
     (folder / f"{API_BASE}.json").write_text(
@@ -1151,9 +1004,8 @@ def api_extra_del(root, api_extra):
 
 @pytest.fixture(scope="session")
 def leave(root):
-    """leave: a file of --leave-behind that accepts the two branches the
-    plans of mirror-extra.git leave behind, two tags and two releases they
-    carry, and a tag the source lacks."""
+    # Beside the two branches the plans of mirror-extra.git leave behind, tags
+    # and releases they carry and a tag v9 the source lacks, of which they warn.
     path = root / "leave"
     path.write_text(
         "# left to the archive\nbranch docs/5-notes\nbranch wip/idea\ntag v0.1\ntag v0.2\n"
@@ -1165,7 +1017,6 @@ def leave(root):
 
 @pytest.fixture(scope="session")
 def leave_branches(root):
-    """leave-branches: a file of --leave-behind that accepts those two branches alone."""
     path = root / "leave-branches"
     path.write_text("branch docs/5-notes\nbranch wip/idea\n", encoding="utf-8")
     return path
@@ -1173,9 +1024,6 @@ def leave_branches(root):
 
 @pytest.fixture(scope="session")
 def plan_extra(source, plan, source_gh, mirror_extra):
-    """Plans mirror-extra.git, or another mirror where one is given, against
-    the API folder given, into the event file given, with --types and the
-    options given; merged as run() takes it."""
     gh = source_gh("extra-gh")
 
     def plan_extra(api, events, *options, mirror=None, merged=False):
@@ -1191,37 +1039,23 @@ def plan_extra(source, plan, source_gh, mirror_extra):
 
 @pytest.fixture(scope="session")
 def extra_plan(root, api_extra, leave, plan_extra):
-    """extra.jsonl: the plan of mirror-extra.git that carries three tags and
-    three releases and leaves behind two branches, as the file leave accepts
-    them; its standard output and error apart."""
     events = root / "extra.jsonl"
     return Planned(events, api_extra, plan_extra(api_extra, events, "--leave-behind", leave))
 
 
 @dataclass(frozen=True)
 class Pasted:
-    """A plan that stops at what no --leave-behind accepts, its standard error
-    apart; the file of --leave-behind made of the lines it printed; and the
-    plan made again with that file, its output and error in one."""
-
     stop: Planned
     leave: Path
     planned: Planned
 
 
 def leave_lines(text):
-    """The lines of a stop's message that name what the replay leaves behind,
-    each with its newline, as grep '^  [a-z]* ' prints them."""
     return "".join(f"{line}\n" for line in lines(text) if re.match(r"  [a-z]* ", line))
 
 
 @pytest.fixture(scope="session")
 def plan_pasted(root, plan_extra):
-    """Plans a mirror against an API folder into the event file stop, writes
-    the lines it stops with to the file leave, and plans it again with them
-    as --leave-behind into the event file events; all three in the session's
-    folder."""
-
     def plan_pasted(api, mirror, stop, leave, events):
         stop, leave, events = root / stop, root / leave, root / events
         stopped = plan_extra(api, stop, mirror=mirror)
@@ -1234,14 +1068,10 @@ def plan_pasted(root, plan_extra):
 
 @pytest.fixture(scope="session")
 def mirror_odd(root, base_env, hashes, mirror_extra):
-    """mirror-odd.git: mirror-extra.git with a tag v0.3 of the annotated tag
-    v0.2, a tag of a tree, and a tag whose name holds a no-break space, at a
-    commit that only refs/pull/7/head holds, which the replay does not
-    recreate. The first is named v0.3, so that the draft of that name stands
-    on a tag the replay leaves behind."""
     mirror = root / "mirror-odd.git"
     shutil.copytree(mirror_extra, mirror, symlinks=True)
     git = Git(base_env, root)
+    # Named v0.3, so that the draft of that name stands on a tag the replay leaves behind.
     git(
         "-c",
         "advice.nestedTag=false",
@@ -1255,12 +1085,12 @@ def mirror_odd(root, base_env, hashes, mirror_extra):
         "v0.2",
     )
     git("--git-dir", mirror, "tag", "tree-tag", f"{hashes['C5']}^{{tree}}")
+    # Only refs/pull/7/head holds S1, so the replay does not recreate it.
     git("--git-dir", mirror, "tag", NBSP_TAG, hashes["S1"])
     return mirror
 
 
-# The message of the tag notes: the lines of a signature in its text, which
-# git takes for no signature, since text follows them.
+# The lines of a signature, which git takes for no signature, since text follows them.
 NOTES_MESSAGE = (
     "Release notes\n\n-----BEGIN PGP SIGNATURE-----\nthis is documentation\n"
     "-----END PGP SIGNATURE-----\n\nmore text after\n"
@@ -1269,10 +1099,6 @@ NOTES_MESSAGE = (
 
 @pytest.fixture(scope="session")
 def mirror_msg(root, base_env, hashes, mirror_extra):
-    """mirror-msg.git: mirror-extra.git with an annotated tag notes by Bob,
-    whose message, in notes-message of the session's folder, holds the lines
-    of a signature in its text; and two tags that git tag refuses to create,
-    set with update-ref: HEAD, annotated, and -x, lightweight."""
     mirror = root / "mirror-msg.git"
     shutil.copytree(mirror_extra, mirror, symlinks=True)
     message = root / "notes-message"
@@ -1283,6 +1109,7 @@ def mirror_msg(root, base_env, hashes, mirror_extra):
         env=as_committer(BOB, "2026-03-07T16:00:00+00:00"),
     )
     notes = git("--git-dir", mirror, "rev-parse", "refs/tags/notes")
+    # update-ref, since git tag refuses these names.
     git("--git-dir", mirror, "update-ref", "refs/tags/HEAD", notes)
     git("--git-dir", mirror, "update-ref", "refs/tags/-x", hashes["C5"])
     return mirror
@@ -1290,16 +1117,11 @@ def mirror_msg(root, base_env, hashes, mirror_extra):
 
 @pytest.fixture(scope="session")
 def msg_plans(api_extra, mirror_msg, plan_pasted):
-    """The plan of mirror-msg.git that stops, msg-stop.jsonl, and the plan with
-    the lines it printed as --leave-behind, msg.jsonl."""
     return plan_pasted(api_extra, mirror_msg, "msg-stop.jsonl", "leave-msg", "msg.jsonl")
 
 
 @pytest.fixture(scope="session")
 def off_plan(root, api_extra, leave_branches, plan_extra):
-    """off.jsonl: the plan of mirror-extra.git with --no-tags --no-releases,
-    whose --leave-behind accepts its branches alone; its standard output and
-    error apart."""
     events = root / "off.jsonl"
     options = ("--no-tags", "--no-releases", "--leave-behind", leave_branches)
     return Planned(events, api_extra, plan_extra(api_extra, events, *options))
@@ -1307,13 +1129,6 @@ def off_plan(root, api_extra, leave_branches, plan_extra):
 
 @pytest.fixture(scope="session")
 def api_drafts(root, api_extra, hashes):
-    """api-drafts: api-extra with two more drafts whose tags the source lacks,
-    v0.9 for a commit the replay recreates, named by a prefix of its hash,
-    with an asset whose name needs percent-encoding in a URL, and v1.0-rc for
-    the branch wip/idea, which it does not push; a draft on the tag v0.2,
-    beside the published release of that tag; a published release on v0.1,
-    published after v0.2, which stays the latest; and an asset of v0.2 that an
-    upload left in the state starter."""
     folder = root / "api-drafts"
     shutil.copytree(api_extra, folder)
     page = folder / f"{RELEASES}-1.json"
@@ -1369,6 +1184,7 @@ def api_drafts(root, api_extra, hashes):
     (folder / f"{RELEASES}_assets_14.bin").write_bytes(data)
     asset = {
         "id": 14,
+        # A name that needs percent-encoding in a URL.
         "name": "notes+v0.9.txt",
         "label": "",
         "content_type": "text/plain",
@@ -1382,9 +1198,6 @@ def api_drafts(root, api_extra, hashes):
 
 @pytest.fixture(scope="session")
 def drafts_plan(root, api_drafts, leave_branches, plan_extra):
-    """drafts.jsonl: the plan of mirror-extra.git against api-drafts, whose
-    --leave-behind, leave-drafts, accepts its branches and the draft
-    v1.0-rc; its standard output and error apart."""
     leave = root / "leave-drafts"
     leave.write_text(
         leave_branches.read_text(encoding="utf-8") + "release v1.0-rc\n", encoding="utf-8"
@@ -1395,10 +1208,6 @@ def drafts_plan(root, api_drafts, leave_branches, plan_extra):
 
 @pytest.fixture(scope="session")
 def compare(root, target_env):
-    """Runs compare-replay.py with these arguments against the target, with
-    the source's API in the folder api, from the session's folder, with the
-    interpreter that runs pytest; its output and error in one."""
-
     def compare(target, *args, api):
         env = {**target_env, "FAKE_GITHUB": str(target.folder), "FAKE_GH_API": str(api)}
         return run([sys.executable, REPLAY / "compare-replay.py", *args], env, root, merged=True)
@@ -1410,11 +1219,6 @@ def compare(root, target_env):
 def compare_finished(
     source, run_plan, replay_uninterrupted, replay_final_name, lag, final_name_again, compare
 ):
-    """compare-replay.py against the finished targets of the uninterrupted
-    replay and of the replay with --final-name, with the API of run.jsonl,
-    after the runs of lag and final_name_again; the count of the uninterrupted
-    replay's writes right before the comparisons and right after them, and the
-    content of its file of refused calls after them, None where it has none."""
     plain, named = replay_uninterrupted, replay_final_name
     writes_before = len(plain.target.writes())
     tail = (run_plan.file, source.mirror)
@@ -1434,10 +1238,6 @@ def compare_finished(
 
 @pytest.fixture(scope="session")
 def replay_tags_releases(root, extra_plan, mirror_extra, make_target, replay):
-    """The plan that carries three tags and three releases and leaves behind
-    two branches, extra.jsonl, replayed into a target with immutable releases,
-    with the default state file, extra.state.json; its output and error in
-    one."""
     slug = TOOL_TAGS_RELEASES
     target = make_target("gh-tags-releases", slug)
     (target.folder / "immutable").touch()
