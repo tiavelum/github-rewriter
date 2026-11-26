@@ -80,7 +80,7 @@ def test_notes_each_branch_the_target_keeps_and_the_source_no_longer_has_and_the
 
 
 @pytest.fixture(scope="module")
-def compare_diff(root, base_env, source, run_plan, replay_uninterrupted, compare_finished, compare):
+def compare_diff(root, base_env, source, run_plan, replay_uninterrupted, compare):
     target = copy_target(root, replay_uninterrupted.target, "gh-diff")
     folder = target.folder
 
@@ -134,7 +134,7 @@ def test_names_every_difference_it_finds_and_exits_with_1(compare_diff):
 
 
 def test_refuses_a_replay_that_its_state_file_records_unfinished(
-    source, run_plan, replay_someone_elses_issue, final_name_again, compare
+    source, run_plan, replay_someone_elses_issue, compare
 ):
     target = replay_someone_elses_issue.target
     r = compare(target, run_plan.file, source.mirror, TOOL_SOMEONE_ELSES_ISSUE, api=run_plan.api)
@@ -159,7 +159,7 @@ def compare_tags_releases(extra_plan, mirror_extra, api_extra, replay_tags_relea
 
 @pytest.fixture(scope="module")
 def compare_tags_releases_more(
-    root, extra_plan, mirror_extra, api_extra, replay_tags_releases, compare_tags_releases, compare
+    root, extra_plan, mirror_extra, api_extra, replay_tags_releases, compare
 ):
     target = copy_target(root, replay_tags_releases.target, "gh-tags-releases-more")
     target.git("tag", "v9", "main")
@@ -169,9 +169,7 @@ def compare_tags_releases_more(
 
 
 @pytest.fixture(scope="module")
-def compare_uninterrupted_extra(
-    source, run_plan, mirror_extra, api_extra, replay_uninterrupted, compare_finished, compare
-):
+def compare_uninterrupted_extra(run_plan, mirror_extra, api_extra, replay_uninterrupted, compare):
     tail = (run_plan.file, mirror_extra, TOOL_NEW)
     return compare(
         replay_uninterrupted.target, "--state", replay_uninterrupted.state, *tail, api=api_extra
@@ -180,7 +178,7 @@ def compare_uninterrupted_extra(
 
 @pytest.fixture(scope="module")
 def compare_uninterrupted_tags(
-    root, hashes, run_plan, mirror_extra, api_extra, replay_uninterrupted, compare_finished, compare
+    root, hashes, run_plan, mirror_extra, api_extra, replay_uninterrupted, compare
 ):
     target = copy_target(root, replay_uninterrupted.target, "gh-uninterrupted-tags")
     target.git("tag", "v0.1", recreated(replay_uninterrupted.state, hashes["M2"]))
@@ -194,7 +192,7 @@ def compare_uninterrupted_tags(
 
 @pytest.fixture(scope="module")
 def compare_tags_releases_lost(
-    root, extra_plan, mirror_extra, api_extra, replay_tags_releases, compare_tags_releases, compare
+    root, extra_plan, mirror_extra, api_extra, replay_tags_releases, compare
 ):
     target = copy_target(root, replay_tags_releases.target, "gh-tags-releases-lost")
     target.git("update-ref", "-d", "refs/heads/fix/3-parser")
@@ -441,7 +439,6 @@ def changed_releases(
     mirror_extra,
     api_extra,
     replay_tags_releases,
-    compare_tags_releases,
     compare,
     replay,
 ):

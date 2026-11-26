@@ -938,9 +938,7 @@ def replay_py_releases_off(root, source_extra, replay_setup, run_file, replay_py
 
 
 @pytest.fixture(scope="module")
-def replay_py_tags_releases_off(
-    root, source_extra, replay_py_releases_off, replay_setup, run_file, replay_py
-):
+def replay_py_tags_releases_off(root, source_extra, replay_setup, run_file, replay_py):
     name = "replay-py-tags-releases-off"
     target = replay_setup(name)
     path = run_file(
@@ -955,7 +953,7 @@ def replay_py_tags_releases_off(
 
 
 def test_no_releases_alone_carries_the_tags_and_names_the_releases_turned_off_not_the_tags(
-    replay_py_releases_off, replay_py_tags_releases_off
+    replay_py_releases_off,
 ):
     out = replay_py_releases_off.out_lines
     assert replay_py_releases_off.statuses == [0], replay_py_releases_off.out
@@ -1316,7 +1314,7 @@ def test_names_the_replays_main_beside_the_sources_master_and_prints_no_command_
 
 
 @pytest.fixture(scope="module")
-def old_default(root, source, run_plan, replay_uninterrupted, compare_finished, replay, compare):
+def old_default(root, source, run_plan, replay_uninterrupted, replay, compare):
     run_lines = run_plan.file.read_text(encoding="utf-8").splitlines()
     header = json.loads(run_lines[0])
     del header["target_default_branch"]

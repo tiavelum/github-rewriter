@@ -132,7 +132,7 @@ def late_start(root, source, run_plan, make_target, replay):
 
 
 @pytest.fixture(scope="module")
-def old_dates(root, source, run_plan, replay_uninterrupted, compare_finished, compare):
+def old_dates(root, source, run_plan, replay_uninterrupted, compare):
     state = json.loads(replay_uninterrupted.state.read_text(encoding="utf-8"))
     del state["committer_dates"]
     path = root / "old-dates.state.json"
@@ -142,9 +142,7 @@ def old_dates(root, source, run_plan, replay_uninterrupted, compare_finished, co
 
 
 @pytest.fixture(scope="module")
-def early_commit(
-    root, base_env, hashes, source, run_plan, replay_uninterrupted, old_dates, compare
-):
+def early_commit(root, base_env, hashes, source, run_plan, replay_uninterrupted, compare):
     target = copy_target(root, replay_uninterrupted.target, "gh-order")
     f1, m2 = hashes["F1"], hashes["M2"]
     stamp = "1000000000 +0000"
