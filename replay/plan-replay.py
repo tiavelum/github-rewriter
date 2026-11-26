@@ -607,7 +607,7 @@ def split_message(message):
 
 
 def summary(body):
-    # The short summary of the description that GW-40 asks of a squash message.
+    # GW-40 asks a squash message for a short summary of the description.
     for paragraph in re.split(r"\n\s*\n", (body or "").replace("\r\n", "\n")):
         text = paragraph.strip()
         if (
@@ -1096,6 +1096,7 @@ def review_text(review, comments):
             where = f"lines {start} to {end}"
         else:
             where = f"line {end}"
+        # GitHub's side LEFT is the file before the change.
         side = ", before the change" if c.get("side") == "LEFT" and where != "file" else ""
         reply = ", a reply" if c.get("in_reply_to_id") else ""
         parts.append(f"**`{c.get('path')}`, {where}{side}{reply}**\n\n{c.get('body') or ''}")

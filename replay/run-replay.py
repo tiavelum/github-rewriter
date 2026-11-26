@@ -430,6 +430,7 @@ class Replay:
             )
 
     def check_signing(self):
+        # The same check as rewrite/sign-commits.sh makes.
         key = git_config("user.signingkey")
         if not key:
             raise ReplayError("--sign needs a user.signingkey in your git configuration")
@@ -753,7 +754,7 @@ class Replay:
         for parent in parents:
             args += ["-p", parent]
         if signed:
-            # -c goes before the command, -S<key> after it.
+            # git takes -c before the subcommand and -S after it.
             args = [*self.sign_options[:2], *args, self.sign_options[2]]
         sha = git(self.work, *args, stdin=self.replace_hashes(commit["message"]), env=env)
         recorded = self.hashes.get(commit["sha"])
@@ -1106,6 +1107,8 @@ class Replay:
                 "assets": {},
                 "published": False,
             }
+        # Saved before the first asset, after each one and after the publication, so that a
+        # resumed run takes over what is done.
         self.created_releases[key] = record
         self.save_state()
         existing, taken, removed = None, 0, 0
@@ -1370,6 +1373,7 @@ class Replay:
         highest, refs = self.read_target()
         self.check_target(resumed, highest, refs)
         self.refs = refs
+        # Only before the first event, so that a resumed run does not change them again.
         updated, removed = self.label_changes() if self.done == 0 else ([], [])
         self.summary(resumed, updated, removed)
         print(f"Type {self.slug} to confirm: ", end="", flush=True)
