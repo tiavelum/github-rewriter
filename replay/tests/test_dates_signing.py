@@ -439,7 +439,7 @@ def sign_replay(source, run_plan, ssh_key, replay):
 
 @pytest.fixture(scope="module")
 def pass_key(root, base_env, source, run_plan, ssh_key, sign_target, replay):
-    # The passphrase x in place of the empty one after -N; no agent holds the key.
+    # No agent holds this key, so signing would ask for its passphrase at every commit.
     made = run([*ssh_key.keygen[:5], "x", *ssh_key.keygen[6:], root / "pass-key"], base_env, root)
     assert made.status == 0, made.err
     text = ssh_key.config.read_text(encoding="utf-8")

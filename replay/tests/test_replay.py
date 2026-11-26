@@ -161,6 +161,7 @@ def replay_py(root, target_env):
 
 
 def after_runs(target, runs, progress=None):
+    # A snapshot: read now, before a later run changes the target.
     out = "".join(r.out for r in runs)
     return SimpleNamespace(
         target=target,

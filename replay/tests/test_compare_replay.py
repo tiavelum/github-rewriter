@@ -562,7 +562,8 @@ def resumed_releases(root, api, extra_plan, mirror_extra, api_extra, make_target
         resume(f"{UPLOADS}?name=tool.tar.gz"),
         resume(""),
     ]
-    # 11 as a stop between its upload's record and its removal leaves it, and 12 damaged;
+    # Asset 11, tool.tar.gz, as a stop between its upload's record and its removal leaves it,
+    # asset 12, notes.txt, damaged;
     # where the stopped runs left no such folder, the checks find the last run without them.
     downloads = root / "resumed-releases.downloads"
     if downloads.is_dir():
