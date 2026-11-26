@@ -145,15 +145,16 @@ def usage(status=2):
 
 
 def run(args, stdin=None):
+    # Bytes, not text mode, which turns "\r\n" and a lone "\r" of a message into "\n".
     try:
         result = subprocess.run(
-            args, input=stdin, capture_output=True, text=True, encoding="utf-8", errors="replace"
+            args, input=None if stdin is None else stdin.encode("utf-8"), capture_output=True
         )
     except FileNotFoundError:
         die(f"{args[0]} is missing")
     if result.returncode:
-        die(f"{' '.join(args[:4])} … failed: {result.stderr.strip()}")
-    return result.stdout
+        die(f"{' '.join(args[:4])} … failed: {result.stderr.decode(errors='replace').strip()}")
+    return result.stdout.decode("utf-8", errors="replace")
 
 
 def gh_get(endpoint):

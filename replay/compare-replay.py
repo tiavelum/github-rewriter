@@ -84,19 +84,20 @@ def usage(status=2):
 
 def run(args, stdin=None):
     env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+    # Bytes, not text mode, which turns "\r\n" and a lone "\r" of a message into "\n".
     try:
-        return subprocess.run(
+        result = subprocess.run(
             args,
-            input=stdin,
+            input=None if stdin is None else stdin.encode("utf-8"),
             stdin=subprocess.DEVNULL if stdin is None else None,
             capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
             env=env,
         )
     except FileNotFoundError:
         raise CompareError(f"{args[0]} is missing") from None
+    result.stdout = result.stdout.decode("utf-8", errors="replace")
+    result.stderr = result.stderr.decode("utf-8", errors="replace")
+    return result
 
 
 def git(repo, *args, stdin=None):
