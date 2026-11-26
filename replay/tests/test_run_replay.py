@@ -281,7 +281,7 @@ def test_with_times_appends_the_original_creation_time_to_bodies_and_comments(
 
 
 def test_runs_gh_with_git_terminal_prompt_0_so_no_call_through_run_waits_for_a_password(
-    replay_uninterrupted, lag
+    lag,
 ):
     prompt = lag.prompt
     assert prompt is not None

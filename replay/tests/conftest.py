@@ -920,7 +920,7 @@ def lag(source, run_plan, replay_uninterrupted, replay, again):
 
 
 @pytest.fixture(scope="session")
-def final_name_again(source, run_plan, replay_final_name, replay_someone_elses_issue, replay):
+def final_name_again(source, run_plan, replay_final_name, replay):
     """A resume of replay_final_name without --final-name; runs with a bad one and a bad --sign."""
     target, slug = replay_final_name.target, TOOL_FINAL_NAME
     tail = (run_plan.file, source.mirror, slug)
