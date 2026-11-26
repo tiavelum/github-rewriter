@@ -41,7 +41,6 @@ SLUG = re.compile(r"[\w.-]+/[\w.-]+")
 ADDRESS = re.compile(r"[^@\s]+@[^@\s]+")
 STEPS = ("mirror", "plan", "create", "settings", "replay", "compare", "links", "commands")
 REQUIRED = ("source", "target", "mailmap")
-# The kinds a run file's no_<kind> turns off.
 SWITCHES = ("tags", "releases", "reviews")
 DEFAULTS = {
     "final_name": None,

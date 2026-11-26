@@ -23,8 +23,8 @@ jobs:
   test:
     # Adding a label other than test-macos changes nothing to test.
     if: github.event.action != 'labeled' || github.event.label.name == 'test-macos'
-    # macOS runners often queue for longer than the tests take, so a pull request
-    # gets one only with the label test-macos (#75).
+    # macOS tests the scripts under bash 3.2 and the BSD tools, Linux under dash and the GNU tools;
+    # macOS runners queue long, so a pull request gets one only with the label test-macos (#75).
     strategy:
       fail-fast: false
       matrix:
@@ -71,6 +71,7 @@ jobs:
           pipx run --spec ruff==0.16.6 ruff format --check .
           pipx run --spec ruff==0.16.6 ruff check .
 
+      # shfmt takes its options from .editorconfig.
       - name: Check the format of the shell files
         if: runner.os == 'Linux'
         run: pipx run --spec shfmt-py==3.13.0.3 shfmt -d $(git ls-files '*.sh')

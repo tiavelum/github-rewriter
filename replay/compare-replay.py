@@ -277,7 +277,7 @@ class Comparison:
         self.differences.append(text)
 
     def text(self, value):
-        # The text as run-replay.py writes it, with the hashes of recreated commits replaced.
+        # The text as run-replay.py writes it.
         if not value:
             return value or ""
 
@@ -581,6 +581,7 @@ class Comparison:
             )
 
     def committed_in_order(self, work, sources):
+        # A rebase can commit a commit before its parent.
         pairs = [(s, self.hashes[s]) for s in sources if s in self.hashes]
         found = read_commits(work, [sha for _, sha in pairs])
         parents = sorted({p for _, sha in pairs if sha in found for p in found[sha]["parents"]})
@@ -729,6 +730,7 @@ class Comparison:
         carried = [e for e in self.events if e["kind"] == "create-release"]
         latest = None
         if carried:
+            # GitHub answers 404 where a repository has no release.
             latest = (gh_found(f"repos/{self.slug}/releases/latest") or {}).get("id")
         assets, matched = 0, set()
         for e in carried:
