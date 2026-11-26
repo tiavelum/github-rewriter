@@ -1,6 +1,8 @@
-"""The checks of committer dates and of signing: CK, CL, CE, CB and LS, A
-compared under changed state files, and the replays with --sign, through a
-fake gpg or a throwaway SSH key: SA, SB, SC, XS, SG and SU."""
+"""The checks of committer dates and of signing: replays killed, on the
+machine's clock, at an early or a bad SOURCE_DATE_EPOCH and started before
+committer dates, the uninterrupted replay compared under changed state
+files, and the replays with --sign, through a fake gpg or a throwaway SSH
+key."""
 
 import datetime
 import json
@@ -33,7 +35,11 @@ from conftest import (
 )
 
 ADA = "ada@example.com"
-CL, CE, CB, LS, CK = (f"ada-example/tool-{x}" for x in ("cl", "ce", "cb", "ls", "ck"))
+TOOL_KILLED_DATES = "ada-example/tool-killed-dates"
+TOOL_ON_CLOCK = "ada-example/tool-on-clock"
+TOOL_EARLY_EPOCH = "ada-example/tool-early-epoch"
+TOOL_BAD_EPOCHS = "ada-example/tool-bad-epochs"
+TOOL_LATE_START = "ada-example/tool-late-start"
 
 # The SSH checks need ssh-keygen, to make the keys and to sign and verify.
 needs_ssh_keygen = pytest.mark.skipif(
@@ -49,30 +55,32 @@ def date_replay(replay, source, run_plan, target, slug, state, **variables):
     return replay(target, slug, *tail, merged=True, **variables)
 
 
-# Committer dates: CK, a replay killed after its push of feat/2-thing, by a
-# hook of the target's repository, and resumed at a later time, which has to
+# Committer dates: a replay killed after its push of feat/2-thing, by a hook
+# of the target's repository, and resumed at a later time, which has to
 # rebuild the pushed commits with the committer dates the state file
-# records; CL, a replay on the machine's clock; CE, one whose fixed time lies
-# before the dates the fake gives its merges; CB, four replays at a
-# SOURCE_DATE_EPOCH the run cannot use; LS, a run that started before
-# committer dates were the time of the replay, made by refusing the first
-# push to main once and removing from the state file the dates it records;
-# and copies of A's state file, one that predates committer dates and one
-# that maps the source commit of #3's branch to a commit made before its
+# records; a replay on the machine's clock; one whose fixed time lies before
+# the dates the fake gives its merges; four replays at a SOURCE_DATE_EPOCH
+# the run cannot use; a run that started before committer dates were the
+# time of the replay, made by refusing the first push to main once and
+# removing from the state file the dates it records; and copies of the
+# uninterrupted replay's state file, one that predates committer dates and
+# one that maps the source commit of #3's branch to a commit made before its
 # parent.
 
 
 @pytest.fixture(scope="module")
 def killed_dates(root, source, run_plan, make_target, replay):
-    """CK killed and resumed, the second run at SOURCE_DATE_EPOCH 1794009999."""
-    target = make_target("gh-ck", CK)
+    """A replay killed after its push of feat/2-thing and resumed, the second
+    run at SOURCE_DATE_EPOCH 1794009999."""
+    target = make_target("gh-killed-dates", TOOL_KILLED_DATES)
     write_hook(target, "post-receive", kill_hook("refs/heads/feat/2-thing"))
-    state = root / "ck.state.json"
-    first = date_replay(replay, source, run_plan, target, CK, state)
+    state = root / "killed-dates.state.json"
+    first = date_replay(replay, source, run_plan, target, TOOL_KILLED_DATES, state)
     # The killed run's push goes on without it: time to end before the resume.
     time.sleep(1)
     second = date_replay(
-        replay, source, run_plan, target, CK, state, SOURCE_DATE_EPOCH="1794009999"
+        *(replay, source, run_plan, target, TOOL_KILLED_DATES, state),
+        SOURCE_DATE_EPOCH="1794009999",
     )
     runs = [first, second]
     return SimpleNamespace(
@@ -82,12 +90,14 @@ def killed_dates(root, source, run_plan, make_target, replay):
 
 @pytest.fixture(scope="module")
 def on_clock(root, source, run_plan, make_target, replay):
-    """CL, without SOURCE_DATE_EPOCH, and the clock's seconds right before and
-    right after it, as date +%s gives them."""
-    target = make_target("gh-cl", CL)
-    state = root / "cl.state.json"
+    """A replay on the machine's clock, without SOURCE_DATE_EPOCH, and the
+    clock's seconds right before and right after it, as date +%s gives them."""
+    target = make_target("gh-on-clock", TOOL_ON_CLOCK)
+    state = root / "on-clock.state.json"
     clock_from = int(time.time())
-    result = date_replay(replay, source, run_plan, target, CL, state, unset=("SOURCE_DATE_EPOCH",))
+    result = date_replay(
+        *(replay, source, run_plan, target, TOOL_ON_CLOCK, state), unset=("SOURCE_DATE_EPOCH",)
+    )
     clock_to = int(time.time())
     return SimpleNamespace(
         target=target, state=state, result=result, clock_from=clock_from, clock_to=clock_to
@@ -96,31 +106,35 @@ def on_clock(root, source, run_plan, make_target, replay):
 
 @pytest.fixture(scope="module")
 def early_epoch(root, source, run_plan, make_target, replay):
-    """CE, at SOURCE_DATE_EPOCH 1000000000 in a zone 5:30 east of UTC."""
-    target = make_target("gh-ce", CE)
-    state = root / "ce.state.json"
+    """A replay at SOURCE_DATE_EPOCH 1000000000, before the dates the fake
+    gives its merges, in a zone 5:30 east of UTC."""
+    target = make_target("gh-early-epoch", TOOL_EARLY_EPOCH)
+    state = root / "early-epoch.state.json"
     result = date_replay(
         replay,
-        *(source, run_plan, target, CE, state),
+        *(source, run_plan, target, TOOL_EARLY_EPOCH, state),
         SOURCE_DATE_EPOCH="1000000000",
         TZ="XXX-5:30",
     )
     return SimpleNamespace(target=target, state=state, result=result)
 
 
-# The values of SOURCE_DATE_EPOCH of CB: empty, a fraction, a digit that is
-# no ASCII digit, the superscript two, U+00B2, and a time no machine can date.
+# The values of SOURCE_DATE_EPOCH the run cannot use: empty, a fraction, a
+# digit that is no ASCII digit, the superscript two, U+00B2, and a time no
+# machine can date.
 BAD_EPOCHS = ("", "1.5", os.fsdecode(b"\302\262"), "99999999999999999999")
 
 
 @pytest.fixture(scope="module")
 def bad_epochs(root, source, run_plan, make_target, replay):
-    """CB's four runs into one target with one state file; their statuses,
-    and their output and error in one, in the order they ran."""
-    target = make_target("gh-cb", CB)
-    state = root / "cb.state.json"
+    """Four runs at the bad epochs into one target with one state file; their
+    statuses, and their output and error in one, in the order they ran."""
+    target = make_target("gh-bad-epochs", TOOL_BAD_EPOCHS)
+    state = root / "bad-epochs.state.json"
     runs = [
-        date_replay(replay, source, run_plan, target, CB, state, SOURCE_DATE_EPOCH=epoch)
+        date_replay(
+            *(replay, source, run_plan, target, TOOL_BAD_EPOCHS, state), SOURCE_DATE_EPOCH=epoch
+        )
         for epoch in BAD_EPOCHS
     ]
     out = "".join(r.out for r in runs)
@@ -131,18 +145,18 @@ def bad_epochs(root, source, run_plan, make_target, replay):
 
 @pytest.fixture(scope="module")
 def late_start(root, source, run_plan, make_target, replay):
-    """LS: the first run refused its push to main once, its state file then
-    stripped of the committer dates and of the hashes of their commits, and
-    resumed."""
-    target = make_target("gh-ls", LS)
+    """A run started before committer dates were the time of the replay: the
+    first run refused its push to main once, its state file then stripped of
+    the committer dates and of the hashes of their commits, and resumed."""
+    target = make_target("gh-late-start", TOOL_LATE_START)
     write_hook(target, "pre-receive", refuse_hook("refs/heads/main"))
-    state = root / "ls.state.json"
-    first = date_replay(replay, source, run_plan, target, LS, state)
+    state = root / "late-start.state.json"
+    first = date_replay(replay, source, run_plan, target, TOOL_LATE_START, state)
     recorded = json.loads(state.read_text(encoding="utf-8"))
     for sha in recorded.pop("committer_dates"):
         recorded["hashes"].pop(sha, None)
     state.write_text(json.dumps(recorded), encoding="utf-8")
-    second = date_replay(replay, source, run_plan, target, LS, state)
+    second = date_replay(replay, source, run_plan, target, TOOL_LATE_START, state)
     runs = [first, second]
     return SimpleNamespace(
         target=target, state=state, runs=runs, statuses=[shell_status(r) for r in runs]
@@ -150,23 +164,26 @@ def late_start(root, source, run_plan, make_target, replay):
 
 
 @pytest.fixture(scope="module")
-def old_dates(root, source, run_plan, replay_a, compare_finished, compare):
-    """A compared under a copy of its state file without committer_dates,
-    after the comparisons of the finished A."""
-    state = json.loads(replay_a.state.read_text(encoding="utf-8"))
+def old_dates(root, source, run_plan, replay_uninterrupted, compare_finished, compare):
+    """The uninterrupted replay compared under a copy of its state file
+    without committer_dates, after the comparisons of the finished replay."""
+    state = json.loads(replay_uninterrupted.state.read_text(encoding="utf-8"))
     del state["committer_dates"]
     path = root / "old-dates.state.json"
     path.write_text(json.dumps(state), encoding="utf-8")
     tail = ("--state", path, run_plan.file, source.mirror, TOOL_NEW)
-    return compare(replay_a.target, *tail, api=run_plan.api)
+    return compare(replay_uninterrupted.target, *tail, api=run_plan.api)
 
 
 @pytest.fixture(scope="module")
-def early_commit(root, base_env, hashes, source, run_plan, replay_a, old_dates, compare):
-    """A copy of A whose branch of #3 holds a commit by Bob, dated before its
-    parent, the recreated squash merge of #2, and a copy of A's state file
-    that maps #3's commit to it with that date; compared."""
-    target = copy_target(root, replay_a.target, "gh-order")
+def early_commit(
+    root, base_env, hashes, source, run_plan, replay_uninterrupted, old_dates, compare
+):
+    """A copy of the uninterrupted replay's target whose branch of #3 holds a
+    commit by Bob, dated before its parent, the recreated squash merge of #2,
+    and a copy of the replay's state file that maps #3's commit to it with
+    that date; compared."""
+    target = copy_target(root, replay_uninterrupted.target, "gh-order")
     f1, m2 = hashes["F1"], hashes["M2"]
     stamp = "1000000000 +0000"
     env = {
@@ -176,8 +193,8 @@ def early_commit(root, base_env, hashes, source, run_plan, replay_a, old_dates, 
         "GIT_AUTHOR_DATE": stamp,
         **as_committer(BOB, stamp),
     }
-    tree = f"{recreated(replay_a.state, f1)}^{{tree}}"
-    parent = recreated(replay_a.state, m2)
+    tree = f"{recreated(replay_uninterrupted.state, f1)}^{{tree}}"
+    parent = recreated(replay_uninterrupted.state, m2)
     made = run(
         ["git", "--git-dir", target.repo, "commit-tree", tree, "-p", parent],
         env,
@@ -187,7 +204,7 @@ def early_commit(root, base_env, hashes, source, run_plan, replay_a, old_dates, 
     assert made.status == 0, made.err
     early = made.out.strip()
     target.git("update-ref", "refs/heads/fix/3-parser", early)
-    state = json.loads(replay_a.state.read_text(encoding="utf-8"))
+    state = json.loads(replay_uninterrupted.state.read_text(encoding="utf-8"))
     state["hashes"][f1] = early
     state["committer_dates"][f1] = stamp
     path = root / "order.state.json"
@@ -200,9 +217,9 @@ def test_resumes_a_push_its_kill_interrupted_with_the_recorded_dates_and_dates_l
     killed_dates, view, hashes
 ):
     """run-replay.py resumes a push its kill interrupted with the committer dates the state file records, and dates the commits after it anew"""  # noqa: E501 # the description word for word
-    ck = killed_dates
-    assert ck.statuses == [137, 0], "".join(r.out for r in ck.runs)
-    v = view(ck.target, ck.state)
+    killed = killed_dates
+    assert killed.statuses == [137, 0], "".join(r.out for r in killed.runs)
+    v = view(killed.target, killed.state)
     m, git = v.recreated, v.git
     assert git("log", "-1", "--format=%ct", m[hashes["B2"]]) == "1794000000"
     assert git("rev-parse", "feat/2-thing") == m[hashes["B2"]]
@@ -213,30 +230,30 @@ def test_gives_each_recreated_commit_the_machines_time_where_source_date_epoch_i
     on_clock, view, hashes
 ):
     """run-replay.py gives each recreated commit the machine's time as committer date where SOURCE_DATE_EPOCH is not set"""  # noqa: E501 # the description word for word
-    cl = on_clock
-    v = view(cl.target, cl.state)
+    clocked = on_clock
+    v = view(clocked.target, clocked.state)
     m, git = v.recreated, v.git
     committed = int(git("log", "-1", "--format=%ct", m[hashes["C3"]]))
-    assert cl.clock_from <= committed <= cl.clock_to
+    assert clocked.clock_from <= committed <= clocked.clock_to
     assert git("log", "-1", "--format=%ad", "--date=raw", m[hashes["C3"]]) == "1772712000 +0200"
 
 
 def test_replay_on_the_machines_clock_passes_the_comparison(source, run_plan, on_clock, compare):
     """run-replay.py's replay on the machine's clock passes the comparison"""
-    cl = on_clock
-    assert cl.result.status == 0, cl.result.out
-    tail = ("--state", cl.state, run_plan.file, source.mirror, CL)
-    c = compare(cl.target, *tail, api=run_plan.api)
-    assert c.status == 0, cl.result.out + c.out
-    assert has_match("No differences", c.out_lines), cl.result.out + c.out
+    clocked = on_clock
+    assert clocked.result.status == 0, clocked.result.out
+    tail = ("--state", clocked.state, run_plan.file, source.mirror, TOOL_ON_CLOCK)
+    c = compare(clocked.target, *tail, api=run_plan.api)
+    assert c.status == 0, clocked.result.out + c.out
+    assert has_match("No differences", c.out_lines), clocked.result.out + c.out
 
 
 def test_commits_no_recreated_commit_before_its_parent_which_githubs_clock_may_date_later(
     early_epoch, view, hashes
 ):
     """run-replay.py commits no recreated commit before its parent, which GitHub's clock may date later"""  # noqa: E501 # the description word for word
-    ce = early_epoch
-    v = view(ce.target, ce.state)
+    early = early_epoch
+    v = view(early.target, early.state)
     m, git = v.recreated, v.git
     f1 = git("log", "-1", "--format=%ct", m[hashes["F1"]])
     m2 = git("log", "-1", "--format=%ct", m[hashes["M2"]])
@@ -249,24 +266,24 @@ def test_stops_before_the_confirmation_without_a_write_at_an_epoch_that_is_no_wh
     bad_epochs,
 ):
     """run-replay.py stops before the confirmation, without a write, at a SOURCE_DATE_EPOCH that is no whole number of seconds"""  # noqa: E501 # the description word for word
-    cb = bad_epochs
-    out = cb.out_lines
-    assert cb.statuses == [1, 1, 1, 1], cb.out
+    bad = bad_epochs
+    out = bad.out_lines
+    assert bad.statuses == [1, 1, 1, 1], bad.out
     not_whole = "run-replay.py: SOURCE_DATE_EPOCH is .*, not a whole number of seconds"
-    assert sum(bool(re.fullmatch(not_whole, line)) for line in out) == 3, cb.out
+    assert sum(bool(re.fullmatch(not_whole, line)) for line in out) == 3, bad.out
     no_time = "run-replay.py: SOURCE_DATE_EPOCH .* is no time this machine can date"
-    assert has_match(no_time, out), cb.out
-    assert not has_search("Traceback|to confirm", out), cb.out
-    assert not cb.target.writes(), cb.target.writes()
+    assert has_match(no_time, out), bad.out
+    assert not has_search("Traceback|to confirm", out), bad.out
+    assert not bad.target.writes(), bad.target.writes()
 
 
 def test_resumes_a_run_started_before_committer_dates_with_the_original_ones_and_records_none(
     late_start, view, hashes
 ):
     """run-replay.py resumes a run started before committer dates were the time of the replay with the original ones, and records none"""  # noqa: E501 # the description word for word
-    ls = late_start
-    assert ls.statuses == [1, 0], "".join(r.out for r in ls.runs)
-    v = view(ls.target, ls.state)
+    late = late_start
+    assert late.statuses == [1, 0], "".join(r.out for r in late.runs)
+    v = view(late.target, late.state)
     m, git = v.recreated, v.git
     assert "committer_dates" not in v.state
 
@@ -294,11 +311,11 @@ def test_expects_the_original_committer_dates_from_a_state_file_that_predates_th
 
 
 def test_names_a_recreated_commit_that_is_committed_before_its_parent(
-    hashes, replay_a, early_commit
+    hashes, replay_uninterrupted, early_commit
 ):
     """compare-replay.py names a recreated commit that is committed before its parent"""
     r, early = early_commit.result, early_commit.early
-    parent = recreated(replay_a.state, hashes["M2"])
+    parent = recreated(replay_uninterrupted.state, hashes["M2"])
     assert r.status == 1, r.out
     named = (
         f"  the recreated commit {early[:7]} of {hashes['F1'][:7]} is committed before its"
@@ -574,14 +591,14 @@ def test_sign_names_the_scope_gh_lacks_to_list_the_signing_keys_and_stops_before
     nothing_written(target, state)
 
 
-# SA: one uninterrupted signed run.
+# One uninterrupted signed run.
 
 
 @pytest.fixture(scope="module")
 def signed_run(root, sign_target, sign_replay):
-    """SA, its target, state file and output."""
-    target = sign_target("gh-sa")
-    state = root / "sa.state.json"
+    """The uninterrupted signed run, its target, state file and output."""
+    target = sign_target("gh-signed-run")
+    state = root / "signed-run.state.json"
     return SimpleNamespace(target=target, state=state, result=sign_replay(target, TOOL_NEW, state))
 
 
@@ -640,42 +657,45 @@ def shape(run_process, target):
 
 
 @needs_ssh_keygen
-def test_sign_changes_no_tree_identity_date_or_subject(run_process, replay_a, signed_run):
+def test_sign_changes_no_tree_identity_date_or_subject(
+    run_process, replay_uninterrupted, signed_run
+):
     """run-replay.py --sign changes no tree, identity, date or subject"""
-    a, sa = shape(run_process, replay_a.target), shape(run_process, signed_run.target)
-    assert len(a) == 12, a
-    assert a == sa
+    unsigned = shape(run_process, replay_uninterrupted.target)
+    signed = shape(run_process, signed_run.target)
+    assert len(unsigned) == 12, unsigned
+    assert unsigned == signed
 
 
-# SB: the same signed run, killed right after it pushed the branch of #2, as
-# a crash would, then resumed; and SC, a copy of that target resumed from a
-# state file that records another hash for the branch's second commit, as a
-# key that signs differently each time would leave it.
+# The same signed run, killed right after it pushed the branch of #2, as a
+# crash would, then resumed; and a copy of that target resumed from a state
+# file that records another hash for the branch's second commit, as a key
+# that signs differently each time would leave it.
 
 
 @pytest.fixture(scope="module")
 def killed_signed(root, run_process, hashes, sign_target, sign_replay):
-    """SB killed and resumed, the output of both runs in one; and SC, copied
-    from SB after the kill, with its refs and the count of its writes before
-    its run, and resumed."""
-    target = sign_target("gh-sb")
+    """The signed run killed and resumed, the output of both runs in one;
+    and the copy with another commit hash, copied after the kill, with its
+    refs and the count of its writes before its run, and resumed."""
+    target = sign_target("gh-killed-signed")
     write_hook(target, "post-receive", kill_hook("refs/heads/feat/2-thing"))
-    state = root / "sb.state.json"
+    state = root / "killed-signed.state.json"
     first = sign_replay(target, TOOL_NEW, state)
     # The push the kill left running ends on its own; then the copy.
     time.sleep(1)
-    copy = copy_target(root, target, "gh-sc")
-    copy_state = root / "sc.state.json"
+    copy = copy_target(root, target, "gh-other-commit-hash")
+    copy_state = root / "other-commit-hash.state.json"
     recorded = json.loads(state.read_text(encoding="utf-8")) if state.exists() else {"hashes": {}}
-    # Where the killed run saved no hash, no state file of SC is written, so
-    # that only the check of SC fails for it.
+    # Where the killed run saved no hash, no state file of the copy is
+    # written, so that only the check of the copy fails for it.
     if hashes["B2"] in recorded["hashes"]:
         recorded["hashes"][hashes["B2"]] = "0123456789abcdef0123456789abcdef01234567"
         copy_state.write_text(json.dumps(recorded), encoding="utf-8")
-    sc_refs = run_process("git", "--git-dir", copy.repo, "for-each-ref").out
-    sc_writes = len(copy.writes())
+    other_hash_refs = run_process("git", "--git-dir", copy.repo, "for-each-ref").out
+    other_hash_writes = len(copy.writes())
     second = sign_replay(target, TOOL_NEW, state)
-    sc = sign_replay(copy, TOOL_NEW, copy_state)
+    other_hash = sign_replay(copy, TOOL_NEW, copy_state)
     # One text, the output of the second run right after that of the first.
     out = first.out + second.out
     return SimpleNamespace(
@@ -685,9 +705,9 @@ def killed_signed(root, run_process, hashes, sign_target, sign_replay):
         out=out,
         out_lines=lines(out),
         copy=copy,
-        sc_refs=sc_refs,
-        sc_writes=sc_writes,
-        sc=sc,
+        other_hash_refs=other_hash_refs,
+        other_hash_writes=other_hash_writes,
+        other_hash=other_hash,
     )
 
 
@@ -696,17 +716,19 @@ def test_sign_ends_a_run_killed_after_a_push_and_resumed_with_the_hashes_of_an_u
     run_process, signed_run, killed_signed
 ):
     """run-replay.py --sign ends a run killed after a push and resumed with the same hashes as an uninterrupted one"""  # noqa: E501 # the description word for word
-    sb, sa = killed_signed, signed_run
-    assert sb.statuses == [137, 0], sb.out
+    killed, signed = killed_signed, signed_run
+    assert killed.statuses == [137, 0], killed.out
     resumed = "Resume the replay of ada-example/tool into ada-example/tool-new at event 5 of 23"
-    assert has_search(resumed, sb.out_lines), sb.out
+    assert has_search(resumed, killed.out_lines), killed.out
     branch = run_process(
-        "git", "--git-dir", sb.copy.repo, "for-each-ref", "refs/heads/feat/2-thing"
+        "git", "--git-dir", killed.copy.repo, "for-each-ref", "refs/heads/feat/2-thing"
     )
     assert branch.out.rstrip("\n") != ""
-    assert sa.target.dump() == sb.target.dump()
-    a, b = (json.loads(f.read_text(encoding="utf-8"))["hashes"] for f in (sa.state, sb.state))
-    assert a == b
+    assert signed.target.dump() == killed.target.dump()
+    signed_hashes, killed_hashes = (
+        json.loads(f.read_text(encoding="utf-8"))["hashes"] for f in (signed.state, killed.state)
+    )
+    assert signed_hashes == killed_hashes
 
 
 @needs_ssh_keygen
@@ -714,26 +736,26 @@ def test_stops_before_pushing_where_a_rebuilt_commit_gets_another_hash_than_the_
     run_process, hashes, ssh_key, killed_signed
 ):
     """run-replay.py stops before pushing where a rebuilt commit gets another hash than the state file records"""  # noqa: E501 # the description word for word
-    sc = killed_signed
-    r = sc.sc
+    killed = killed_signed
+    r = killed.other_hash
     out = r.out_lines
     b2 = hashes["B2"][:7]
     assert r.status == 1, r.out
     rebuilt = (
         f"run-replay.py: commit {b2} was rebuilt as [0-9a-f]{{7}}, but"
-        f" {re.escape(ssh_key.shown)}/sc.state.json records 0123456; its signature differs from"
-        " the one the first run made: the signing key signs differently each time, or it is"
-        " another key. The run stops before it pushes a second history$"
+        f" {re.escape(ssh_key.shown)}/other-commit-hash.state.json records 0123456; its signature"
+        " differs from the one the first run made: the signing key signs differently each time,"
+        " or it is another key. The run stops before it pushes a second history$"
     )
     assert has_search(rebuilt, out), r.out
     assert has_search("^run-replay.py: stopped in event 5 of 23", out), r.out
-    refs = run_process("git", "--git-dir", sc.copy.repo, "for-each-ref").out
-    assert refs.rstrip("\n") == sc.sc_refs.rstrip("\n")
-    assert len(sc.copy.writes()) == sc.sc_writes
+    refs = run_process("git", "--git-dir", killed.copy.repo, "for-each-ref").out
+    assert refs.rstrip("\n") == killed.other_hash_refs.rstrip("\n")
+    assert len(killed.copy.writes()) == killed.other_hash_writes
 
 
-# XS: X's plan replayed with --sign, which signs v0.2, tagged by Ada, and not
-# v0.1.1, tagged by Bob; then compared.
+# The plan of tags and releases replayed with --sign, which signs v0.2,
+# tagged by Ada, and not v0.1.1, tagged by Bob; then compared.
 
 
 def verified(run_process, ssh_key, target, tag):
@@ -746,9 +768,10 @@ def verified(run_process, ssh_key, target, tag):
 
 @pytest.fixture(scope="module")
 def signed_tags(root, ssh_key, extra_plan, mirror_extra, api_extra, sign_target, replay, compare):
-    """XS replayed with --sign and compared with the source of extra.jsonl."""
-    target = sign_target("gh-xs")
-    state = root / "xs.state.json"
+    """The plan of tags and releases replayed with --sign and compared with
+    the source of extra.jsonl."""
+    target = sign_target("gh-signed-tags")
+    state = root / "signed-tags.state.json"
     args = ("--pace", "0", *sign_args(state, extra_plan.file, mirror_extra))
     result = replay(target, TOOL_NEW, *args, merged=True, GIT_CONFIG_GLOBAL=ssh_key.config)
     tail = ("--state", state, extra_plan.file, mirror_extra, TOOL_NEW)
@@ -762,8 +785,8 @@ def test_sign_signs_each_annotated_tag_whose_tagger_has_the_address_and_no_other
     run_process, ssh_key, signed_run, signed_tags
 ):
     """run-replay.py --sign signs each annotated tag whose tagger has the address, and no other, and says in the totals how many"""  # noqa: E501 # the description word for word
-    xs = signed_tags
-    r, c = xs.result, xs.compared
+    tags = signed_tags
+    r, c = tags.result, tags.compared
     out = r.out_lines
     assert (r.status, c.status) == (0, 0), r.out + c.out
     assert has_match("  tags to sign +1", out), r.out
@@ -771,19 +794,19 @@ def test_sign_signs_each_annotated_tag_whose_tagger_has_the_address_and_no_other
     assert has_search(v02, out), r.out
     v011 = r"^ *[0-9]+/[0-9]+  create-tag    v0\.1\.1, annotated, at [0-9a-f]{7}$"
     assert has_search(v011, out), r.out
-    assert verified(run_process, ssh_key, xs.target, "v0.2")
-    assert not verified(run_process, ssh_key, xs.target, "v0.1.1")
+    assert verified(run_process, ssh_key, tags.target, "v0.2")
+    assert not verified(run_process, ssh_key, tags.target, "v0.1.1")
     # The pipe's status is grep's: a failing cat-file finds no signature.
-    unsigned = run_process("git", "--git-dir", xs.target.repo, "cat-file", "tag", "v0.1.1")
+    unsigned = run_process("git", "--git-dir", tags.target.repo, "cat-file", "tag", "v0.1.1")
     assert not has_search("BEGIN SSH SIGNATURE", unsigned.out_lines), unsigned.out
     assert has_match("  tags to sign +0", signed_run.result.out_lines), signed_run.result.out
     assert has_match("No differences", c.out_lines), r.out + c.out
 
 
-# SG: a copy of the mirror with v0.4, an annotated tag by Ada's old address
-# that git signed with the key, and v0.5, one by the same address whose
-# message ends without a line break, as --cleanup=verbatim keeps it; planned,
-# replayed with --sign into SG and without it into SU, and compared.
+# A copy of the mirror with v0.4, an annotated tag by Ada's old address that
+# git signed with the key, and v0.5, one by the same address whose message
+# ends without a line break, as --cleanup=verbatim keeps it; planned,
+# replayed with --sign and without it, and compared.
 
 
 @pytest.fixture(scope="module")
@@ -832,8 +855,8 @@ def sig_plan(root, api_extra, leave, mirror_sig, plan_extra):
 def sig_replays(
     root, ssh_key, mirror_sig, sig_plan, api_extra, sign_target, make_target, replay, compare
 ):
-    """SG, sig.jsonl replayed with --sign, and SU, replayed without it; each
-    compared with the source of mirror-sig.git."""
+    """sig.jsonl replayed with --sign, and replayed without it; each compared
+    with the source of mirror-sig.git."""
     tail = (sig_plan.file, mirror_sig, TOOL_NEW)
 
     def replay_and_compare(target, state, *options, **variables):
@@ -842,14 +865,14 @@ def sig_replays(
         compared = compare(target, "--state", state, *tail, api=api_extra)
         return SimpleNamespace(target=target, result=result, compared=compared)
 
-    sg = replay_and_compare(
-        sign_target("gh-sg"),
-        root / "sg.state.json",
+    signed = replay_and_compare(
+        sign_target("gh-sig-signed"),
+        root / "sig-signed.state.json",
         *("--sign", ADA),
         GIT_CONFIG_GLOBAL=ssh_key.config,
     )
-    su = replay_and_compare(make_target("gh-su"), root / "su.state.json")
-    return SimpleNamespace(sg=sg, su=su)
+    unsigned = replay_and_compare(make_target("gh-sig-unsigned"), root / "sig-unsigned.state.json")
+    return SimpleNamespace(signed=signed, unsigned=unsigned)
 
 
 @needs_ssh_keygen
@@ -885,16 +908,16 @@ def test_sign_signs_a_tag_signed_in_the_source_anew_and_ends_an_unended_message_
     run_process, ssh_key, sig_replays
 ):
     """run-replay.py --sign signs a tag whose source was signed with a signature of its own, and ends a message without a final line break with one, so that both verify and the comparison finds no difference"""  # noqa: E501 # the description word for word
-    sg = sig_replays.sg
-    r, c = sg.result, sg.compared
+    signed = sig_replays.signed
+    r, c = signed.result, signed.compared
     assert (r.status, c.status) == (0, 0), r.out + c.out
     assert has_match("  tags to sign +3", r.out_lines), r.out
-    assert verified(run_process, ssh_key, sg.target, "v0.4")
-    assert verified(run_process, ssh_key, sg.target, "v0.5")
-    v04 = message(run_process, sg.target, "v0.4")
+    assert verified(run_process, ssh_key, signed.target, "v0.4")
+    assert verified(run_process, ssh_key, signed.target, "v0.5")
+    v04 = message(run_process, signed.target, "v0.4")
     assert first_lines(v04, 2) == "Signed in the source\n-----BEGIN SSH SIGNATURE-----"
     assert sum(line.startswith("-----BEGIN") for line in lines(v04)) == 1, v04
-    v05 = message(run_process, sg.target, "v0.5")
+    v05 = message(run_process, signed.target, "v0.5")
     assert first_lines(v05, 2) == "No line break\n-----BEGIN SSH SIGNATURE-----"
     assert has_match("No differences", c.out_lines), r.out + c.out
 
@@ -904,11 +927,11 @@ def test_without_sign_gives_a_tag_signed_in_the_source_no_signature_and_keeps_an
     run_process, sig_replays
 ):
     """run-replay.py without --sign gives a tag whose source was signed no signature, and keeps a message without a final line break as it is"""  # noqa: E501 # the description word for word
-    su = sig_replays.su
-    r, c = su.result, su.compared
+    unsigned = sig_replays.unsigned
+    r, c = unsigned.result, unsigned.compared
     assert (r.status, c.status) == (0, 0), r.out + c.out
-    assert message(run_process, su.target, "v0.4").rstrip("\n") == "Signed in the source"
-    v05 = run_process("git", "--git-dir", su.target.repo, "cat-file", "tag", "v0.5").out
+    assert message(run_process, unsigned.target, "v0.4").rstrip("\n") == "Signed in the source"
+    v05 = run_process("git", "--git-dir", unsigned.target.repo, "cat-file", "tag", "v0.5").out
     # tail -c 14 in $(...): the last 14 bytes, without their final newlines.
     assert v05.encode("utf-8")[-14:].decode("utf-8").rstrip("\n") == "\nNo line break"
     assert has_match("No differences", c.out_lines), r.out + c.out
