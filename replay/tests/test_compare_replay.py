@@ -95,7 +95,11 @@ def compare_diff(root, base_env, source, run_plan, replay_uninterrupted, compare
             if x["name"] == "bug":
                 x.update(color="ee0701")
 
-    edit_json(folder / "items.json", lambda items: items["4"].update(state_reason="completed"))
+    def item_changes(items):
+        items["4"].update(state_reason="completed")
+        items["6"].update(body="Seen once.")
+
+    edit_json(folder / "items.json", item_changes)
     edit_json(folder / "comments.json", footer)
     edit_json(folder / "labels.json", colour)
     target.git("update-ref", "-d", "refs/heads/fix/3-parser")
@@ -114,6 +118,7 @@ def compare_diff(root, base_env, source, run_plan, replay_uninterrupted, compare
 
 DIFF_LINES = (
     "#4 is closed as completed, the source's not_planned",
+    "#6: the body differs; they part at character 6: 'Seen once.', the source's 'Seen twice.'",
     "#6, comment 1: the body differs; it has a footer the source lacks",
     "label bug: colour ee0701, the source's d73a4a",
     "branch fix/3-parser is missing in the target",
