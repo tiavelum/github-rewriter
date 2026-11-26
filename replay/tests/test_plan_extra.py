@@ -1,6 +1,4 @@
-"""The checks of plan-replay.py against copies of the source with tags and
-releases: odd tags, tag messages and drafts, and the switches for tags and
-releases."""
+"""The checks of plan-replay.py against copies of the source with tags and releases."""
 
 import json
 import shutil
@@ -10,13 +8,10 @@ from conftest import NBSP_TAG, RELEASES, TOOL, has_match, has_search, has_text
 
 
 def count_starting(prefix, lines):
-    """The number of lines that start with the prefix, as grep -c "^prefix" counts them."""
     return sum(line.startswith(prefix) for line in lines)
 
 
 def events_of(path):
-    """The events of an event file without its header: its text split with
-    str.splitlines(), the first line left out."""
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()[1:]]
 
 
@@ -26,8 +21,6 @@ def without_seq(event):
 
 @pytest.fixture(scope="module")
 def pasted_extra(api_extra, mirror_extra, plan_pasted):
-    """extra-stop.jsonl, the plan of mirror-extra.git without --leave-behind,
-    which stops; and extra-pasted.jsonl, planned with the lines it printed."""
     return plan_pasted(
         api_extra, mirror_extra, "extra-stop.jsonl", "leave-pasted", "extra-pasted.jsonl"
     )
@@ -35,18 +28,12 @@ def pasted_extra(api_extra, mirror_extra, plan_pasted):
 
 @pytest.fixture(scope="module")
 def extra_del(root, api_extra_del, plan_extra):
-    """extra-del.jsonl: the plan of mirror-extra.git whose source deletes head
-    branches on merge, without --leave-behind; its output and error apart."""
     events = root / "extra-del.jsonl"
     return plan_extra(api_extra_del, events)
 
 
 @pytest.fixture(scope="module")
 def latest_left(root, api_extra, leave, plan_extra):
-    """latest-left.jsonl: the same source whose latest release, v9.9, is on a
-    tag the mirror lacks, and with a published release v0.1 older than v0.2:
-    v0.2, the newest one the replay carries, takes the place of the latest.
-    Its --leave-behind, leave-latest, is the file leave with a line for v9.9."""
     folder = root / "api-latest-left"
     shutil.copytree(api_extra, folder)
     page = folder / f"{RELEASES}-1.json"
@@ -78,35 +65,29 @@ def latest_left(root, api_extra, leave, plan_extra):
 
 @pytest.fixture(scope="module")
 def odd_plans(api_extra, mirror_odd, plan_pasted):
-    """odd-stop.jsonl, the plan of mirror-odd.git that stops; and odd.jsonl,
-    planned with the lines it printed."""
     return plan_pasted(api_extra, mirror_odd, "odd-stop.jsonl", "leave-odd", "odd.jsonl")
 
 
 @pytest.fixture(scope="module")
 def off_stop(root, api_extra, plan_extra):
-    """off-stop.jsonl: --no-releases --no-tags without --leave-behind."""
     events = root / "off-stop.jsonl"
     return events, plan_extra(api_extra, events, "--no-releases", "--no-tags")
 
 
 @pytest.fixture(scope="module")
-def norel(root, api_extra, leave_branches, plan_extra):
-    """norel.jsonl: --no-releases alone, with the branches in --leave-behind."""
+def no_releases_alone(root, api_extra, leave_branches, plan_extra):
     events = root / "norel.jsonl"
     return events, plan_extra(api_extra, events, "--no-releases", "--leave-behind", leave_branches)
 
 
 @pytest.fixture(scope="module")
 def off_all(root, api_extra, leave, plan_extra):
-    """off-all.jsonl: --no-tags --no-releases with the file leave as --leave-behind."""
     events = root / "off-all.jsonl"
     options = ("--no-tags", "--no-releases", "--leave-behind", leave)
     return events, plan_extra(api_extra, events, *options)
 
 
 def test_stops_and_writes_no_event_file_at_each_branch_left_behind_unaccepted(pasted_extra, hashes):
-    """plan-replay.py stops, and writes no event file, at each branch it leaves behind that --leave-behind does not accept, and carries the tags and releases"""  # noqa: E501 # the description word for word
     stop = pasted_extra.stop
     err = stop.result.err_lines
     n1, n2, c5 = hashes["N1"][:7], hashes["N2"][:7], hashes["C5"][:7]
@@ -131,7 +112,6 @@ def test_stops_and_writes_no_event_file_at_each_branch_left_behind_unaccepted(pa
 def test_records_what_leave_behind_accepts_in_the_header_and_plans_nothing_else_differently(
     extra_plan, run_plan, read_plan, hashes
 ):
-    """plan-replay.py records what --leave-behind accepts in the header, and plans nothing else differently but the tags and releases"""  # noqa: E501 # the description word for word
     p = read_plan(extra_plan.file)
     left = p.header["left_behind"]
     assert [(x["kind"], x["name"]) for x in left] == [
@@ -147,7 +127,6 @@ def test_records_what_leave_behind_accepts_in_the_header_and_plans_nothing_else_
 def test_plans_each_release_on_a_tag_it_carries_with_its_assets_and_the_latest(
     extra_plan, read_plan, hashes
 ):
-    """plan-replay.py plans each release on a tag it carries, a pre-release and a draft whose tag the source lacks included, with its assets, and the source's latest release as the latest"""  # noqa: E501 # the description word for word
     p = read_plan(extra_plan.file)
     r = {e["tag_name"]: e for e in p.of("create-release")}
     assert r
@@ -188,7 +167,6 @@ def test_plans_each_release_on_a_tag_it_carries_with_its_assets_and_the_latest(
 def test_plans_each_release_after_its_tag_and_a_draft_for_main_after_its_first_push(
     extra_plan, read_plan
 ):
-    """plan-replay.py plans each release after the event of its tag, and a draft for the default branch after its first push"""  # noqa: E501 # the description word for word
     p = read_plan(extra_plan.file)
     events, of = p.events, p.of
     r = {e["tag_name"]: events.index(e) for e in of("create-release")}
@@ -204,7 +182,6 @@ def test_plans_each_release_after_its_tag_and_a_draft_for_main_after_its_first_p
 def test_plans_each_tag_at_a_recreated_commit_with_mapped_message_tagger_and_date(
     extra_plan, read_plan, hashes
 ):
-    """plan-replay.py plans each tag at a recreated commit, lightweight or annotated, with the message and the tagger mapped through the mailmap and the original date"""  # noqa: E501 # the description word for word
     p = read_plan(extra_plan.file)
     t = {e["name"]: e for e in p.of("create-tag")}
     assert t
@@ -228,7 +205,6 @@ def test_plans_each_tag_at_a_recreated_commit_with_mapped_message_tagger_and_dat
 def test_plans_a_lightweight_tag_right_after_its_commit_and_an_annotated_one_at_its_date(
     extra_plan, read_plan, hashes
 ):
-    """plan-replay.py plans a lightweight tag right after the event that recreates its commit, and an annotated one at its date after that event"""  # noqa: E501 # the description word for word
     p = read_plan(extra_plan.file)
     events, of = p.events, p.of
     t = {e["name"]: events.index(e) for e in of("create-tag")}
@@ -246,7 +222,6 @@ def test_plans_a_lightweight_tag_right_after_its_commit_and_an_annotated_one_at_
 def test_makes_the_newest_carried_release_the_latest_where_the_latest_is_left_behind(
     latest_left, read_plan
 ):
-    """plan-replay.py makes the newest published release it carries the latest where the source's latest release is left behind, and warns of it"""  # noqa: E501 # the description word for word
     events, result = latest_left
     p = read_plan(events)
     assert [
@@ -267,7 +242,6 @@ EXTRA_WARNINGS = ("tag v0.1", "tag v0.2", "tag v9", "release v0.2", "release v0.
 def test_prints_what_it_leaves_behind_and_warns_of_an_accepted_line_that_names_nothing_left(
     extra_plan, planned
 ):
-    """plan-replay.py prints what it leaves behind, counts it, the tags, the releases and their assets, and warns of an accepted line that names nothing it leaves behind, a tag or release it carries included"""  # noqa: E501 # the description word for word
     r = extra_plan.result
     out = r.out_lines
     assert r.status == 0, r.err + r.out
@@ -288,7 +262,6 @@ def test_prints_what_it_leaves_behind_and_warns_of_an_accepted_line_that_names_n
 def test_leaves_behind_the_branch_of_a_merged_pull_request_where_the_source_deletes_it(
     extra_del,
 ):
-    """plan-replay.py leaves behind the branch of a merged pull request where the source deletes head branches on merge"""  # noqa: E501 # the description word for word
     err = extra_del.err_lines
     assert extra_del.status == 1, extra_del.err
     assert has_search("^plan-replay.py: the replay leaves behind 4 of", err), extra_del.err
@@ -298,7 +271,6 @@ def test_leaves_behind_the_branch_of_a_merged_pull_request_where_the_source_dele
 
 
 def test_takes_the_lines_it_prints_where_it_stops_as_lines_of_leave_behind(pasted_extra):
-    """plan-replay.py takes the lines it prints where it stops, with their comments, as lines of --leave-behind"""  # noqa: E501 # the description word for word
     again = pasted_extra.planned.result
     leave = pasted_extra.leave.read_text(encoding="utf-8")
     assert again.status == 0, leave + again.out
@@ -309,7 +281,6 @@ def test_takes_the_lines_it_prints_where_it_stops_as_lines_of_leave_behind(paste
 def test_stops_at_a_release_whose_tag_it_leaves_behind_and_plans_it_on_no_other_tag(
     odd_plans, read_plan
 ):
-    """plan-replay.py stops at a release whose tag it leaves behind, without a line of --leave-behind, and plans it on no other tag"""  # noqa: E501 # the description word for word
     stop = odd_plans.stop.result
     err = stop.err_lines
     pattern = r"  release  v0\.3 +# draft, named 'Next'; its tag is left behind"
@@ -322,7 +293,6 @@ def test_stops_at_a_release_whose_tag_it_leaves_behind_and_plans_it_on_no_other_
 def test_stops_at_a_tag_of_a_tag_a_tree_and_an_unrecreated_commit_and_takes_back_a_nbsp_name(
     odd_plans, mirror_odd, hashes, run_process
 ):
-    """plan-replay.py stops at a tag of a tag, peeled to its commit, a tag of a tree and a tag of a commit it does not recreate, and takes back a name with a no-break space"""  # noqa: E501 # the description word for word
     c5, s1 = hashes["C5"][:7], hashes["S1"][:7]
     tree = run_process("git", "--git-dir", mirror_odd, "rev-parse", f"{hashes['C5']}^{{tree}}")
     tree = tree.out.strip()[:7]
@@ -345,7 +315,6 @@ def test_stops_at_a_tag_of_a_tag_a_tree_and_an_unrecreated_commit_and_takes_back
 
 
 def test_records_the_commit_a_tag_of_a_tag_peels_to_in_the_header(odd_plans, read_plan, hashes):
-    """plan-replay.py records the commit a tag of a tag peels to in the header"""
     header = read_plan(odd_plans.planned.file).header
     assert [
         x["sha"] for x in header["left_behind"] if (x["kind"], x["name"]) == ("tag", "v0.3")
@@ -353,7 +322,6 @@ def test_records_the_commit_a_tag_of_a_tag_peels_to_in_the_header(odd_plans, rea
 
 
 def test_stops_at_an_annotated_and_a_lightweight_tag_whose_name_git_tag_refuses(msg_plans, hashes):
-    """plan-replay.py stops at an annotated and a lightweight tag whose name git tag refuses, and carries the others"""  # noqa: E501 # the description word for word
     c5 = hashes["C5"][:7]
     stop, again = msg_plans.stop, msg_plans.planned.result
     err = stop.result.err_lines
@@ -367,7 +335,6 @@ def test_stops_at_an_annotated_and_a_lightweight_tag_whose_name_git_tag_refuses(
 
 
 def test_keeps_whole_a_tag_message_that_holds_the_lines_of_a_signature(root, msg_plans, read_plan):
-    """plan-replay.py keeps whole a tag message that holds the lines of a signature in its text"""
     p = read_plan(msg_plans.planned.file)
     message = (root / "notes-message").read_text(encoding="utf-8")
     assert [e["message"] for e in p.of("create-tag") if e["name"] == "notes"] == [message]
@@ -375,7 +342,6 @@ def test_keeps_whole_a_tag_message_that_holds_the_lines_of_a_signature(root, msg
 
 
 def test_refuses_a_line_of_leave_behind_other_than_a_kind_and_a_name(root, api_extra, plan_extra):
-    """plan-replay.py refuses a line of --leave-behind other than a kind and a name"""
     bad_leave = root / "bad-leave"
     bad_leave.write_text("tags v0.1\n", encoding="utf-8")
     events = root / "bad-leave.jsonl"
@@ -389,7 +355,6 @@ def test_refuses_a_line_of_leave_behind_other_than_a_kind_and_a_name(root, api_e
 def test_stops_at_no_tags_without_no_releases_before_it_reads_the_mirror_or_github(
     root, source, plan, source_gh
 ):
-    """plan-replay.py stops at --no-tags without --no-releases, before it reads the mirror or GitHub"""  # noqa: E501 # the description word for word
     gh = source_gh("notags-gh")
     events = root / "notags.jsonl"
     nothing = root / "nothing.git"
@@ -410,7 +375,6 @@ def test_stops_at_no_tags_without_no_releases_before_it_reads_the_mirror_or_gith
 def test_no_tags_no_releases_accepts_every_tag_and_release_and_still_stops_at_each_branch(
     off_plan, off_stop, hashes
 ):
-    """plan-replay.py --no-tags --no-releases accepts every tag and release without a line of --leave-behind, lists each as turned off, and still stops at each branch"""  # noqa: E501 # the description word for word
     off = off_plan.result
     stop_file, stop = off_stop
     m2 = hashes["M2"][:7]
@@ -435,7 +399,6 @@ def test_no_tags_no_releases_accepts_every_tag_and_release_and_still_stops_at_ea
 def test_no_tags_no_releases_plans_no_tag_lists_both_as_turned_off_and_nothing_else_differently(
     off_plan, run_plan, read_plan
 ):
-    """plan-replay.py --no-tags --no-releases plans no tag, lists tags and releases as turned off in the header, and plans nothing else differently"""  # noqa: E501 # the description word for word
     p = read_plan(off_plan.file)
     header = p.header
     assert header["turned_off"] == ["tags", "releases"]
@@ -457,9 +420,10 @@ def test_no_tags_no_releases_plans_no_tag_lists_both_as_turned_off_and_nothing_e
     assert p.events == events_of(run_plan.file)
 
 
-def test_no_releases_alone_accepts_the_releases_plans_none_and_carries_the_tags(norel):
-    """plan-replay.py --no-releases alone accepts the releases, plans none of them, and carries the tags"""  # noqa: E501 # the description word for word
-    _, r = norel
+def test_no_releases_alone_accepts_the_releases_plans_none_and_carries_the_tags(
+    no_releases_alone,
+):
+    _, r = no_releases_alone
     out = r.out_lines
     assert r.status == 0, r.err + r.out
     assert r.err == ""
@@ -472,10 +436,9 @@ def test_no_releases_alone_accepts_the_releases_plans_none_and_carries_the_tags(
 
 
 def test_no_releases_alone_plans_the_tags_as_without_a_switch_and_no_release(
-    norel, extra_plan, read_plan
+    no_releases_alone, extra_plan, read_plan
 ):
-    """plan-replay.py --no-releases alone plans the tags as without a switch and no release, and lists only releases as turned off"""  # noqa: E501 # the description word for word
-    events, _ = norel
+    events, _ = no_releases_alone
     p = read_plan(events)
     assert p.header["turned_off"] == ["releases"]
     assert [(x["kind"], x["name"]) for x in p.header["left_behind"]] == [
@@ -494,7 +457,6 @@ def test_no_releases_alone_plans_the_tags_as_without_a_switch_and_no_release(
 def test_no_releases_alone_still_stops_at_each_tag_it_cannot_place_unaccepted(
     root, api_extra, mirror_odd, leave_branches, plan_extra
 ):
-    """plan-replay.py --no-releases alone still stops at each tag it cannot place that --leave-behind does not accept"""  # noqa: E501 # the description word for word
     events = root / "norel-odd.jsonl"
     options = ("--no-releases", "--leave-behind", leave_branches)
     r = plan_extra(api_extra, events, *options, mirror=mirror_odd)
@@ -516,7 +478,6 @@ OFF_ALL_WARNINGS = (
 
 
 def test_warns_of_a_line_of_leave_behind_for_what_a_switch_accepts_already(off_all):
-    """plan-replay.py warns of a line of --leave-behind for a tag or release a switch accepts already, and does not stop at it"""  # noqa: E501 # the description word for word
     _, r = off_all
     err = r.err_lines
     assert r.status == 0, r.err
@@ -533,7 +494,6 @@ def test_warns_of_a_line_of_leave_behind_for_what_a_switch_accepts_already(off_a
 def test_stops_at_a_draft_it_cannot_place_and_warns_of_an_asset_an_upload_left_half_done(
     root, api_drafts, leave_branches, drafts_plan, plan_extra
 ):
-    """plan-replay.py stops at a draft whose target_commitish names neither the default branch nor a commit it recreates, and warns of an asset an upload left half done"""  # noqa: E501 # the description word for word
     stop_file = root / "drafts-stop.jsonl"
     stop = plan_extra(api_drafts, stop_file, "--leave-behind", leave_branches)
     drafts = drafts_plan.result
@@ -554,7 +514,6 @@ def test_stops_at_a_draft_it_cannot_place_and_warns_of_an_asset_an_upload_left_h
 def test_plans_a_draft_for_a_commit_named_by_a_prefix_of_its_hash_after_it_is_recreated(
     drafts_plan, read_plan, hashes
 ):
-    """plan-replay.py plans a draft for a commit it recreates, named by a prefix of its hash, after the event that recreates it"""  # noqa: E501 # the description word for word
     p = read_plan(drafts_plan.file)
     events, of = p.events, p.of
     r = next(e for e in of("create-release") if e["tag_name"] == "v0.9")
@@ -570,7 +529,6 @@ def test_plans_a_draft_for_a_commit_named_by_a_prefix_of_its_hash_after_it_is_re
 def test_plans_a_draft_and_a_published_release_of_one_tag_as_two_and_a_later_one_not_latest(
     drafts_plan, read_plan, hashes
 ):
-    """plan-replay.py plans a draft and a published release of one tag as two releases, and a release published after the latest one as not the latest"""  # noqa: E501 # the description word for word
     p = read_plan(drafts_plan.file)
     events, releases = p.events, p.of("create-release")
     assert sorted(
