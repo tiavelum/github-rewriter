@@ -32,8 +32,8 @@ ADA = ("Ada Example", "ada@example.com")
 
 
 def as_read(text):
-    """The text as open().read() of the shell test's conditions reads it: in
-    universal newlines mode, which turns "\\r\\n" and a lone "\\r" into "\\n"."""
+    """The text as open().read() reads it from a file: in universal newlines
+    mode, which turns "\\r\\n" and a lone "\\r" into "\\n"."""
     return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
@@ -43,8 +43,8 @@ def tag_refs(run_process, target):
 
 
 def same_tags(run_process, uninterrupted, resumed):
-    """Whether two targets hold the same three tags, as the shell test diffs
-    the for-each-ref of each, written to a file, after counting the first."""
+    """Asserts that two targets hold the same tags, three in the first, by
+    what git for-each-ref refs/tags/ prints of each."""
     x, other = tag_refs(run_process, uninterrupted), tag_refs(run_process, resumed)
     assert (x.status, other.status) == (0, 0), x.err + other.err
     assert x.out.count("\n") == 3, x.out
@@ -81,9 +81,9 @@ def changed_tags(root, base_env, extra_plan, mirror_extra, api_extra, replay_x, 
 
 @pytest.fixture(scope="module")
 def killed_tag(root, run_process, extra_plan, mirror_extra, make_target, replay):
-    """TK killed and resumed, the output of both runs in one, as the shell
-    test appends it to tk-out; and TC, copied from TK after the kill, with
-    its refs before its run, and resumed."""
+    """TK killed and resumed, the output of both runs in one, in the order
+    they ran; and TC, copied from TK after the kill, with its refs before its
+    run, and resumed."""
     target = make_target("gh-tk", TOOL_X)
     write_hook(target, "post-receive", kill_hook("refs/tags/v0.2"))
     state = root / "tk.state.json"
@@ -98,16 +98,16 @@ def killed_tag(root, run_process, extra_plan, mirror_extra, make_target, replay)
     copy = copy_target(root, target, "gh-tc")
     copy_state = root / "tc.state.json"
     recorded = json.loads(state.read_text(encoding="utf-8")) if state.exists() else {"tags": {}}
-    # Where the killed run saved no tag, the shell test's assert writes no
-    # state file of TC, and only the check of TC fails for it.
+    # Where the killed run saved no tag, no state file of TC is written, so
+    # that only the check of TC fails for it.
     if "v0.2" in recorded["tags"]:
         recorded["tags"]["v0.2"] = "0123456789abcdef0123456789abcdef01234567"
         copy_state.write_text(json.dumps(recorded), encoding="utf-8")
     tc_refs = run_process("git", "--git-dir", copy.repo, "for-each-ref").out
     second = tk_replay(target, state)
     tc = tk_replay(copy, copy_state)
-    # One text, as the second run appends to the file of the first: a line
-    # the killed run left unended runs on into the second run's first line.
+    # One text, the output of the second run right after that of the first: a
+    # line the killed run left unended runs on into the second run's first line.
     out = first.out + second.out
     return SimpleNamespace(
         target=target,
@@ -205,7 +205,7 @@ def pushed_tags(root, extra_plan, mirror_extra, make_target, replay):
     # The killed run's push goes on without it: time to end before the resume.
     time.sleep(1)
     second = tp_replay()
-    # Empty where the state file is missing, as the shell test's file then is.
+    # Empty where the state file is missing, so that the check of v0.2 fails on it.
     v02 = (
         json.loads(state.read_text(encoding="utf-8"))["tags"].get("v0.2", "")
         if state.exists()
@@ -522,7 +522,7 @@ def reviewed(
     the plan of run.jsonl under a header without reviews, replayed and
     compared; RT, RV's plan replayed with --with-times and compared; and RV
     compared under a header written before the switches, without turned_off,
-    with a state file for that header. In the order of the shell test."""
+    with a state file for that header."""
     events, mirror = review_plans.reviews.file, source.mirror
     rv_slug = "ada-example/tool-rv"
     rv = make_target("gh-rv", rv_slug)
